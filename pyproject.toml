@@ -1,0 +1,41 @@
+[project]
+name = "homelab"
+version = "0.1.0"
+description = "A small applied-AI platform: model access, knowledge retrieval and durable jobs that applications build on."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic-settings",
+    "pyyaml",
+    "httpx",
+    "procrastinate",
+    "llama-index-core",
+    "llama-index-vector-stores-postgres",
+    "llama-index-embeddings-openai-like",
+    "llama-index-llms-openai-like",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

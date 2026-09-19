@@ -1,0 +1,80 @@
+# Home Lab v2 — the whole stack. Only `api` publishes a port, on loopback. Everything derived
+# (Postgres data, model files) lives on the encrypted volume; Brain is mounted read-only.
+# Paths and the database password come from .env (see .env.example); the gateway key is a secret.
+
+name: homelab
+
+x-app: &app
+  build: .
+  environment: &app-env
+    HOMELAB_DATABASE_URL: postgresql://homelab:${HOMELAB_DB_PASSWORD}@postgres:5432/homelab
+    HOMELAB_GATEWAY_API_KEY_FILE: /run/secrets/gateway_api_key
+    HOMELAB_LOCAL_BASE_URL: http://llama-embed:8080/v1
+    HOMELAB_BRAIN_DIR: /data/brain
+  secrets:
+    - gateway_api_key
+  volumes:
+    - ${HOMELAB_BRAIN_PATH:-/srv/homelab/brain}:/data/brain:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  logging:
+    driver: journald
+
+services:
+  api:
+    <<: *app
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+
+  worker:
+    <<: *app
+    # One local-model job at a time: the `local` queue is served with concurrency 1.
+    command: ["procrastinate", "--app", "homelab.jobs.app.app", "worker", "--queues", "local,default", "--concurrency", "1"]
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: homelab
+      POSTGRES_PASSWORD: ${HOMELAB_DB_PASSWORD}
+      POSTGRES_DB: homelab
+    volumes:
+      - ${HOMELAB_POSTGRES_PATH:-/srv/homelab/postgres}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U homelab -d homelab"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging:
+      driver: journald
+
+  llama-embed:
+    # llama.cpp server, CPU only, serving the `embed` route. The model is fetched from Hugging
+    # Face on first start into the models directory on the volume. The name must match the
+    # `embed` route in config/routes.yaml in spirit; llama-server serves one model per instance.
+    image: ghcr.io/ggml-org/llama.cpp:server
+    command: >
+      -hf ${HOMELAB_EMBED_MODEL:-mradermacher/llama-nemotron-embed-1b-v2-GGUF:Q8_0}
+      --embeddings --pooling mean
+      -c 8192 -b 2048 -ub 2048 -t 4 -ngl 0
+      --host 0.0.0.0 --port 8080
+    environment:
+      LLAMA_CACHE: /models
+    volumes:
+      - ${HOMELAB_MODELS_PATH:-/srv/homelab/models}:/models
+    restart: unless-stopped
+    logging:
+      driver: journald
+
+secrets:
+  gateway_api_key:
+    file: ./secrets/gateway_api_key

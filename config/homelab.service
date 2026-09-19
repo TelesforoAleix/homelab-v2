@@ -1,0 +1,26 @@
+# Home Lab v2 — the Compose stack as one systemd unit.
+#
+# Installed to /etc/systemd/system/homelab.service. It exists so the stack follows the encrypted
+# volume: it starts after homelab-data.target (the volume unlocked and mounted at /srv/homelab)
+# and stops with it, and a failure to start alerts through the notifier like every other unit.
+# The containers' own restart policies handle restarts while the volume is up.
+
+[Unit]
+Description=Home Lab v2 (Docker Compose stack)
+Documentation=https://github.com/TelesforoAleix/homelab-v2
+ConditionPathIsMountPoint=/srv/homelab
+Requires=docker.service homelab-data.target
+After=docker.service homelab-data.target
+PartOf=homelab-data.target
+OnFailure=homelab-notify@homelab.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/srv/homelab/homelab-v2
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=homelab-data.target

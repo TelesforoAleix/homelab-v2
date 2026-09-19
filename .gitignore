@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+
+# Local configuration and secrets — never committed
+.env
+secrets/
+
+# Temporary working documents from the v1 -> v2 rethink; deleted once v2 is established
+first_prompt.md
+homelab-architecture-overengineering.md
+reports/

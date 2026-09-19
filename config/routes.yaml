@@ -1,0 +1,23 @@
+# Purpose -> provider + model. Applications ask for a purpose; this file decides.
+#
+# providers: each is an OpenAI-compatible endpoint. `gateway` is Vercel AI Gateway
+# (key from the Compose secret); `local` is llama-server on this node (no key).
+# A future inference node is one more entry here with its base_url.
+#
+# routes: the purposes applications may ask for. Unknown purposes are refused.
+
+providers:
+  gateway:
+    base_url: https://ai-gateway.vercel.sh/v1
+  local:
+    base_url: http://llama-embed:8080/v1
+
+routes:
+  chat:
+    provider: gateway
+    # Verified through this gateway on 2026-09-13. Change freely; nothing else moves.
+    model: openai/gpt-5.6-luna
+  embed:
+    provider: local
+    # The index is built with this model. Changing it means reindexing.
+    model: llama-nemotron-embed-1b-v2

@@ -1,0 +1,9 @@
+.git
+.venv
+.env
+secrets
+tests
+reports
+*.md
+!README.md
+__pycache__
