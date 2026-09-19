@@ -16,7 +16,8 @@ its server, uses mature libraries for the machinery, and optimises for building 
 
 ## Status
 
-**Slice 1 — "Ask my Brain"**: in progress. See [ROADMAP.md](ROADMAP.md).
+The FastAPI service exposes health and configured model routes. Procrastinate provides a durable
+Postgres-backed worker, and Docker Compose defines the loopback-only stack.
 
 ## Run it
 
@@ -46,11 +47,8 @@ uv run uvicorn homelab.api.app:app --reload
 |---|---|
 | `src/homelab/api/` | FastAPI — the one published port |
 | `src/homelab/models/` | the route table: purpose → provider + model, and framework clients built from it |
-| `src/homelab/knowledge/` | ingestion and retrieval (LlamaIndex + pgvector); the provenance shape |
 | `src/homelab/jobs/` | Procrastinate tasks and the worker |
-| `clients/telegram/` | the reference client |
 | `config/routes.yaml` | which model serves which purpose |
-| `eval/` | known-answer questions; every retrieval change is judged against them |
 
 [ARCHITECTURE.md](ARCHITECTURE.md) has the boundaries and the rules. [DECISIONS.md](DECISIONS.md)
 records choices that weren't obvious. MIT licence.

@@ -1,8 +1,10 @@
 # Working in this repository
 
-Read `README.md`, `ARCHITECTURE.md` and `ROADMAP.md` first; `DECISIONS.md` when a choice looks odd.
+Read `README.md` and `ARCHITECTURE.md` first; `DECISIONS.md` when a choice looks odd.
 
-- Work in slices that end with something runnable. Update `ROADMAP.md` checkboxes as you go.
+- This repository describes what exists. Work arrives as self-contained task prompts; do not look
+  for plans, roadmaps or research here or elsewhere.
+- Work in slices that end with something runnable.
 - `README`/`ARCHITECTURE` change when behaviour changes. Append to `DECISIONS.md` when a choice
   was not obvious. Write nothing else: no briefs, handovers, ADR files or phase numbers.
 - Libraries own machinery (LlamaIndex, LangGraph, Procrastinate). Do not hand-roll a retriever,

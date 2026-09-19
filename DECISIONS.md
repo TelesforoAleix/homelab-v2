@@ -31,8 +31,12 @@ interrupt/resume.
 sources are expected. The two never touch: LangGraph nodes call the knowledge service as a
 function. LangChain retrieval classes and LlamaIndex agents/Workflows stay out.
 
-**2026-09-18 — Public, minimal docs, not a teaching project.** README, this file, ARCHITECTURE,
-ROADMAP, CLAUDE.md. No guides, briefs or handovers; docs change when behaviour changes.
+**2026-09-18 — Public, minimal docs, not a teaching project.** README, this file, ARCHITECTURE and
+CLAUDE.md. No guides, briefs or handovers; docs change when behaviour changes.
 
 **2026-09-19 — The Telegram bot is the first client and stays a host service.** Its code moves
 here; its unit and TPM-sealed token do not change. It moves into Compose when it is redesigned.
+
+**2026-09-19 — Planning, research and history live outside this repository.** This repository
+describes only what exists. Work arrives as self-contained task prompts; plans, research notes and
+historical process artifacts are kept elsewhere and are not named here.
