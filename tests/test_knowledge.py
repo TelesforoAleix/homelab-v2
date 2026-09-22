@@ -9,7 +9,8 @@ from llama_index.core.storage.docstore import SimpleDocumentStore
 from llama_index.core.vector_stores import SimpleVectorStore
 from pydantic import PrivateAttr
 
-from homelab.knowledge.index import ingest, probe_embedding_dimension
+from homelab.knowledge import index
+from homelab.knowledge.index import build_stores, ingest, probe_embedding_dimension
 from homelab.knowledge.sources import PROVENANCE_KEYS, load_brain_documents
 from homelab.settings import Settings
 
@@ -129,6 +130,39 @@ def test_ingest_is_incremental_and_preserves_chunk_provenance(tmp_path: Path):
 
 def test_probe_returns_mock_embedding_dimension():
     assert probe_embedding_dimension(MockEmbedding(embed_dim=8)) == 8
+
+
+def test_build_stores_configures_sync_and_async_vector_connections(monkeypatch):
+    calls = {}
+    vector_store = object()
+    kvstore = object()
+    docstore = object()
+
+    class FakeVectorStore:
+        @classmethod
+        def from_params(cls, **kwargs):
+            calls["vector"] = kwargs
+            return vector_store
+
+    class FakeKVStore:
+        @classmethod
+        def from_params(cls, **kwargs):
+            calls["kv"] = kwargs
+            return kvstore
+
+    monkeypatch.setattr(index, "PGVectorStore", FakeVectorStore)
+    monkeypatch.setattr(index, "PostgresKVStore", FakeKVStore)
+    monkeypatch.setattr(index, "PostgresDocumentStore", lambda store: docstore)
+
+    stores = build_stores(
+        Settings(database_url="postgresql://user:password@database:5432/homelab"),
+        embed_dim=8,
+    )
+
+    assert stores == (vector_store, docstore)
+    assert calls["vector"]["connection_string"].drivername == "postgresql+psycopg2"
+    assert calls["vector"]["async_connection_string"].drivername == "postgresql+asyncpg"
+    assert calls["vector"]["async_connection_string"].port == 5432
 
 
 def test_brain_include_is_comma_separated(monkeypatch):

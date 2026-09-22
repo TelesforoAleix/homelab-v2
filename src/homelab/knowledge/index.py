@@ -36,7 +36,8 @@ def build_stores(settings: Settings, embed_dim: int):
     """Build the PostgreSQL vector and ingestion doc stores."""
     url = make_url(settings.database_url)
     vector_store = PGVectorStore.from_params(
-        connection_string=settings.database_url,
+        connection_string=url.set(drivername="postgresql+psycopg2"),
+        async_connection_string=url.set(drivername="postgresql+asyncpg"),
         table_name="brain_chunks",
         embed_dim=embed_dim,
     )
