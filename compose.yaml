@@ -38,7 +38,13 @@ services:
   worker:
     <<: *app
     # One local-model job at a time: the `local` queue is served with concurrency 1.
-    command: ["procrastinate", "--app", "homelab.jobs.app.app", "worker", "--queues", "local,default", "--concurrency", "1"]
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        procrastinate --app homelab.jobs.app.app schema --apply &&
+        exec procrastinate --app homelab.jobs.app.app worker
+        --queues local,default --concurrency 1
 
   postgres:
     image: pgvector/pgvector:pg17

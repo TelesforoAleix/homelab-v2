@@ -19,3 +19,13 @@ def test_health_reports_routes_and_no_key(tmp_path, monkeypatch):
     assert body["status"] == "ok"
     assert body["routes"] == ["chat"]
     assert body["gateway_key_present"] is False
+
+
+def test_ingest_trigger_returns_job_id(monkeypatch):
+    async def fake_enqueue():
+        return 42
+
+    monkeypatch.setattr("homelab.api.app.enqueue_brain_ingest", fake_enqueue)
+    response = TestClient(app).post("/v1/knowledge/ingest")
+    assert response.status_code == 200
+    assert response.json() == {"job_id": 42}

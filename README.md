@@ -22,19 +22,15 @@ worker, and Docker Compose defines the loopback-only stack.
 
 ## Run it
 
-On the node, unlock `/srv/homelab`, connect with `ssh homelab`, and run this owner setup once,
-replacing the database-password placeholder. Enter the gateway key only at its hidden prompt.
+On the node, unlock `/srv/homelab`, connect with `ssh homelab`, and run this owner setup once.
+Enter the gateway key and a random database password only at their hidden prompts.
 
 ```bash
 sudo git clone https://github.com/TelesforoAleix/homelab-v2.git /srv/homelab/homelab-v2
 sudo install -d -m 0700 /srv/homelab/homelab-v2/secrets
-sudo sh -c 'umask 077; read -r -s -p "gateway key: " K; printf "%s" "$K" > /srv/homelab/homelab-v2/secrets/gateway_api_key; echo'
-sudo sh -c 'umask 077; cat > /srv/homelab/homelab-v2/.env <<EOF
-HOMELAB_DB_PASSWORD=<RANDOM-PASSWORD>
-HOMELAB_BRAIN_PATH=/srv/homelab/brain
-HOMELAB_POSTGRES_PATH=/srv/homelab/postgres
-HOMELAB_MODELS_PATH=/srv/homelab/models
-EOF'
+sudo bash -c 'umask 077; read -r -s -p "gateway key: " K; printf "%s" "$K" > /srv/homelab/homelab-v2/secrets/gateway_api_key; echo'
+sudo chown 10001:10001 /srv/homelab/homelab-v2/secrets/gateway_api_key && sudo chmod 0400 /srv/homelab/homelab-v2/secrets/gateway_api_key
+sudo bash -c 'umask 077; read -r -s -p "database password: " P; echo; test -n "$P" && test "$P" != "<RANDOM-PASSWORD>" || exit 1; printf "%s\n" "HOMELAB_DB_PASSWORD=$P" "HOMELAB_BRAIN_PATH=/srv/homelab/brain" "HOMELAB_POSTGRES_PATH=/srv/homelab/postgres" "HOMELAB_MODELS_PATH=/srv/homelab/models" > /srv/homelab/homelab-v2/.env'
 sudo install -d /srv/homelab/postgres /srv/homelab/models
 sudo visudo -cf /srv/homelab/homelab-v2/config/sudoers.d/homelab-agent-v2 && sudo install -m 0440 /srv/homelab/homelab-v2/config/sudoers.d/homelab-agent-v2 /etc/sudoers.d/homelab-agent-v2
 sudo usermod -aG systemd-journal homelab-agent

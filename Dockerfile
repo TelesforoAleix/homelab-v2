@@ -13,6 +13,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev
 
 FROM python:3.13-slim-bookworm
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq5 \
+    && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin homelab
 WORKDIR /app
 COPY --from=builder --chown=homelab:homelab /app /app
