@@ -22,17 +22,25 @@ worker, and Docker Compose defines the loopback-only stack.
 
 ## Run it
 
-On the node (Docker, an unlocked data volume at `/srv/homelab`, a clone of this repo there):
+On the node, unlock `/srv/homelab`, connect with `ssh homelab`, and run this owner setup once,
+replacing the database-password placeholder. Enter the gateway key only at its hidden prompt.
 
 ```bash
-mkdir -p secrets && printf '%s' "$GATEWAY_KEY" > secrets/gateway_api_key
-cp .env.example .env            # paths and the database password
-docker compose up -d --build
-curl -s 127.0.0.1:8000/health
+sudo git clone https://github.com/TelesforoAleix/homelab-v2.git /srv/homelab/homelab-v2
+sudo install -d -m 0700 /srv/homelab/homelab-v2/secrets
+sudo sh -c 'umask 077; read -r -s -p "gateway key: " K; printf "%s" "$K" > /srv/homelab/homelab-v2/secrets/gateway_api_key; echo'
+sudo sh -c 'umask 077; cat > /srv/homelab/homelab-v2/.env <<EOF
+HOMELAB_DB_PASSWORD=<RANDOM-PASSWORD>
+HOMELAB_BRAIN_PATH=/srv/homelab/brain
+HOMELAB_POSTGRES_PATH=/srv/homelab/postgres
+HOMELAB_MODELS_PATH=/srv/homelab/models
+EOF'
+sudo install -d /srv/homelab/postgres /srv/homelab/models
+sudo visudo -cf /srv/homelab/homelab-v2/config/sudoers.d/homelab-agent-v2 && sudo install -m 0440 /srv/homelab/homelab-v2/config/sudoers.d/homelab-agent-v2 /etc/sudoers.d/homelab-agent-v2
+sudo usermod -aG systemd-journal homelab-agent
+sudo cp /srv/homelab/homelab-v2/config/homelab.service /etc/systemd/system/homelab.service
+sudo systemctl daemon-reload && sudo systemctl enable --now homelab.service
 ```
-
-`config/homelab.service` starts the stack after the volume is unlocked and stops it with the
-volume; install it once with `sudo cp config/homelab.service /etc/systemd/system/ && sudo systemctl enable homelab`.
 
 On a laptop, for development:
 

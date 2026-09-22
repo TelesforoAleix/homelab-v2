@@ -1,0 +1,2 @@
+Cmnd_Alias HOMELAB_V2 = /usr/bin/systemctl start homelab.service, /usr/bin/systemctl stop homelab.service, /usr/bin/systemctl restart homelab.service, /usr/bin/systemctl reset-failed homelab.service
+homelab-agent ALL=(root) NOPASSWD: HOMELAB_V2
