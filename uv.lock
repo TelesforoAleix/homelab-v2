@@ -644,6 +644,7 @@ dependencies = [
     { name = "llama-index-core" },
     { name = "llama-index-embeddings-openai-like" },
     { name = "llama-index-llms-openai-like" },
+    { name = "llama-index-storage-docstore-postgres" },
     { name = "llama-index-vector-stores-postgres" },
     { name = "procrastinate" },
     { name = "pydantic-settings" },
@@ -665,6 +666,7 @@ requires-dist = [
     { name = "llama-index-core" },
     { name = "llama-index-embeddings-openai-like" },
     { name = "llama-index-llms-openai-like" },
+    { name = "llama-index-storage-docstore-postgres", specifier = ">=0.6.0" },
     { name = "llama-index-vector-stores-postgres" },
     { name = "procrastinate" },
     { name = "pydantic-settings" },
@@ -956,6 +958,33 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/0b/83/9695e5414b458e82b8baafdfec8f94dc1566cac712a171bcab4a03ca3a30/llama_index_llms_openai_like-0.8.0.tar.gz", hash = "sha256:459f115ca343c96252b9d123986056193a7d088f64f73c5336ce381e02c9d6d2", size = 5380, upload-time = "2026-08-31T15:57:21.75Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/56/59/21eb418402edef9f5d1b6e8632b26fd6ec35eae9705b70537a4b3ea341ef/llama_index_llms_openai_like-0.8.0-py3-none-any.whl", hash = "sha256:c629179cd5984439111337be1dd705b045d0e5f6cb3b7ea44a4b68a6c596c53a", size = 6603, upload-time = "2026-08-31T15:57:20.979Z" },
+]
+
+[[package]]
+name = "llama-index-storage-docstore-postgres"
+version = "0.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "llama-index-core" },
+    { name = "llama-index-storage-kvstore-postgres" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7b/74/e405eb3954bce8420712410e14f0dfa4c5689f00eb44e12c7ba4dbe78590/llama_index_storage_docstore_postgres-0.6.0.tar.gz", hash = "sha256:643f467e8591c53ca3a2c61092dd6c73c54f8cf6b363e96cc2b101fd4c521752", size = 3564, upload-time = "2026-08-31T16:07:45.296Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/97/db/350ed438ab3c6d381ea6eec770edf084c479df2af97c4e96540104c5b137/llama_index_storage_docstore_postgres-0.6.0-py3-none-any.whl", hash = "sha256:5106d6f345181b3edcdb5eb89213b5c6bbbac7762764a05b7401dcc4c2c79edc", size = 3256, upload-time = "2026-08-31T16:07:44.498Z" },
+]
+
+[[package]]
+name = "llama-index-storage-kvstore-postgres"
+version = "0.4.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "asyncpg" },
+    { name = "llama-index-core" },
+    { name = "psycopg2-binary" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/40/17/2e0ca7a558377e06c9b75828d86eb0efdc02416ef5df2be1c963b64e9555/llama_index_storage_kvstore_postgres-0.4.3.tar.gz", hash = "sha256:a6ea957c8505807f08e5cc22725b189af675a8f40493ef2efc4aa7ce67833670", size = 5755, upload-time = "2025-11-10T19:58:43.207Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/74/32/df7a2b90a77d4e2efd92b8fd8cd834cf9322795a93f27d80d0ae94929f4b/llama_index_storage_kvstore_postgres-0.4.3-py3-none-any.whl", hash = "sha256:831caff5d7e0f7a08236d992b35d568916991a540af57f16f184b0d996201ecf", size = 5413, upload-time = "2025-11-10T19:58:42.16Z" },
 ]
 
 [[package]]

@@ -17,10 +17,5 @@ from homelab.settings import get_settings
 
 app = procrastinate.App(
     connector=procrastinate.PsycopgConnector(conninfo=get_settings().database_url),
+    import_paths=["homelab.jobs.tasks"],
 )
-
-
-@app.task(queue="default", name="ping")
-def ping(message: str = "pong") -> str:
-    """The smallest task: proves the queue, the schema and the worker."""
-    return message

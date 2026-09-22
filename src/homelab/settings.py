@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://homelab:homelab@localhost:5432/homelab"
     routes_file: Path = Path("config/routes.yaml")
     brain_dir: Path = Path("/data/brain")
+    brain_include: Annotated[list[str], NoDecode] = ["01-knowledge", "02-ideas", "05-logs"]
 
     # The gateway key is read from a file (a Compose secret) when one is given,
     # otherwise from HOMELAB_GATEWAY_API_KEY. It never appears in config files.
@@ -30,6 +32,13 @@ class Settings(BaseSettings):
         description="Log prompts and retrieved text. Off by default; "
         "ids, sizes and timings are always logged.",
     )
+
+    @field_validator("brain_include", mode="before")
+    @classmethod
+    def split_brain_include(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
 
     def resolve_gateway_api_key(self) -> str | None:
         if self.gateway_api_key_file and self.gateway_api_key_file.exists():

@@ -7,6 +7,7 @@
 ┌─────────────────────────────▼───────────────────────────────────────────────┐
 │  HOME LAB API                                                                │
 │  models/     purpose → provider+model; the only holder of provider keys      │
+│  knowledge/  Markdown → structured chunks → embeddings → pgvector            │
 │  jobs/       durable tasks (Procrastinate)                                   │
 └──────┬──────────────────────────┬─────────────────────────┬──────────────────┘
        │ OpenAI-compatible        │                          │
@@ -14,8 +15,9 @@
   (hosted models)           local embeddings)             (jobs)
 ```
 
-Home Lab owns provider keys, the route table, job durability and the API contract. Procrastinate
-owns the job machinery.
+Home Lab owns provider keys, the route table, knowledge provenance, job durability and the API
+contract. LlamaIndex owns parsing, chunking, embedding and storage; Procrastinate owns the job
+machinery.
 
 ## Deployment
 
@@ -33,7 +35,15 @@ purposes are refused, never defaulted. Both providers expose OpenAI-compatible A
 
 ## Jobs
 
-The Procrastinate app persists jobs in Postgres. Its `ping` task runs on the default queue.
+The Procrastinate app persists jobs in Postgres. Its `ping` task runs on the default queue;
+`ingest_brain` runs on the concurrency-1 `local` queue and is not scheduled.
+
+## Knowledge
+
+Included Markdown from Brain is loaded with source provenance, split by Markdown structure and
+sentence boundaries, embedded by the configured `embed` route, and stored in pgvector. The
+Postgres document store tracks source hashes for incremental upserts and deletions. Brain remains
+read-only and frontmatter is not embedded.
 
 ## Rules
 

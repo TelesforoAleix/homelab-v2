@@ -16,7 +16,11 @@ dependencies = [
     "llama-index-vector-stores-postgres",
     "llama-index-embeddings-openai-like",
     "llama-index-llms-openai-like",
+    "llama-index-storage-docstore-postgres>=0.6.0",
 ]
+
+[project.scripts]
+homelab = "homelab.cli:main"
 
 [dependency-groups]
 dev = [
