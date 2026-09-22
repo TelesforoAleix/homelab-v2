@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 from homelab.jobs.schema import ensure_schema
 
 
@@ -13,8 +15,18 @@ class FakeApp:
     def __init__(self, schema_exists):
         self.schema_exists = schema_exists
         self.schema_manager = FakeSchemaManager()
+        self.is_open = False
+
+    @contextmanager
+    def open(self):
+        self.is_open = True
+        try:
+            yield
+        finally:
+            self.is_open = False
 
     def check_connection(self):
+        assert self.is_open
         return self.schema_exists
 
 
@@ -23,6 +35,7 @@ def test_ensure_schema_applies_when_absent():
 
     assert ensure_schema(app) is True
     assert app.schema_manager.applied is True
+    assert app.is_open is False
 
 
 def test_ensure_schema_skips_when_present():
@@ -30,3 +43,4 @@ def test_ensure_schema_skips_when_present():
 
     assert ensure_schema(app) is False
     assert app.schema_manager.applied is False
+    assert app.is_open is False

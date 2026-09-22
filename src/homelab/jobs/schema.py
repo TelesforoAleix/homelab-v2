@@ -12,10 +12,11 @@ logger = logging.getLogger(__name__)
 
 def ensure_schema(jobs_app: Any = app) -> bool:
     """Apply the schema only when Procrastinate reports that it is absent."""
-    if jobs_app.check_connection():
-        return False
-    jobs_app.schema_manager.apply_schema()
-    return True
+    with jobs_app.open():
+        if jobs_app.check_connection():
+            return False
+        jobs_app.schema_manager.apply_schema()
+        return True
 
 
 def main() -> None:
