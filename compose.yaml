@@ -42,7 +42,7 @@ services:
       - /bin/sh
       - -c
       - >-
-        procrastinate --app homelab.jobs.app.app schema --apply &&
+        python -m homelab.jobs.schema &&
         exec procrastinate --app homelab.jobs.app.app worker
         --queues local,default --concurrency 1
 
