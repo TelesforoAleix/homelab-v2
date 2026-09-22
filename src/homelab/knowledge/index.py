@@ -36,8 +36,12 @@ def build_stores(settings: Settings, embed_dim: int):
     """Build the PostgreSQL vector and ingestion doc stores."""
     url = make_url(settings.database_url)
     vector_store = PGVectorStore.from_params(
-        connection_string=url.set(drivername="postgresql+psycopg2"),
-        async_connection_string=url.set(drivername="postgresql+asyncpg"),
+        connection_string=url.set(drivername="postgresql+psycopg2").render_as_string(
+            hide_password=False
+        ),
+        async_connection_string=url.set(drivername="postgresql+asyncpg").render_as_string(
+            hide_password=False
+        ),
         table_name="brain_chunks",
         embed_dim=embed_dim,
     )
@@ -70,6 +74,9 @@ def ingest(
     documents: list[Document], *, vector_store: Any, docstore: Any, embed_model: Any
 ) -> IngestionResult:
     """Incrementally ingest documents and report the observable changes."""
+    # PGVectorStore connects lazily. Exercise its public write path before spending
+    # significant CPU time embedding a first ingestion.
+    vector_store.add([])
     existing_hashes = docstore.get_all_document_hashes()
     existing_by_id = {doc_id: value_hash for value_hash, doc_id in existing_hashes.items()}
     current_ids = {document.id_ for document in documents}

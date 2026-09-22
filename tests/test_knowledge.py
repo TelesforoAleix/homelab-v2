@@ -4,10 +4,12 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from llama_index.core.embeddings import MockEmbedding
 from llama_index.core.storage.docstore import SimpleDocumentStore
 from llama_index.core.vector_stores import SimpleVectorStore
 from pydantic import PrivateAttr
+from sqlalchemy.engine import make_url
 
 from homelab.knowledge import index
 from homelab.knowledge.index import build_stores, ingest, probe_embedding_dimension
@@ -132,6 +134,24 @@ def test_probe_returns_mock_embedding_dimension():
     assert probe_embedding_dimension(MockEmbedding(embed_dim=8)) == 8
 
 
+def test_ingest_preflights_vector_store_before_embedding():
+    class UnavailableVectorStore:
+        def add(self, nodes):
+            raise ConnectionError("unavailable")
+
+    embedding = RecordingEmbedding(embed_dim=8)
+
+    with pytest.raises(ConnectionError, match="unavailable"):
+        ingest(
+            load_brain_documents(FIXTURE_BRAIN, INCLUDE),
+            vector_store=UnavailableVectorStore(),
+            docstore=SimpleDocumentStore(),
+            embed_model=embedding,
+        )
+
+    assert embedding.texts == []
+
+
 def test_build_stores_configures_sync_and_async_vector_connections(monkeypatch):
     calls = {}
     vector_store = object()
@@ -160,9 +180,12 @@ def test_build_stores_configures_sync_and_async_vector_connections(monkeypatch):
     )
 
     assert stores == (vector_store, docstore)
-    assert calls["vector"]["connection_string"].drivername == "postgresql+psycopg2"
-    assert calls["vector"]["async_connection_string"].drivername == "postgresql+asyncpg"
-    assert calls["vector"]["async_connection_string"].port == 5432
+    sync_url = make_url(calls["vector"]["connection_string"])
+    async_url = make_url(calls["vector"]["async_connection_string"])
+    assert sync_url.drivername == "postgresql+psycopg2"
+    assert async_url.drivername == "postgresql+asyncpg"
+    assert async_url.password == "password"
+    assert async_url.port == 5432
 
 
 def test_brain_include_is_comma_separated(monkeypatch):
