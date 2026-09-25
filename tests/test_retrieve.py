@@ -3,11 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from llama_index.core.embeddings import MockEmbedding
-from llama_index.core.storage.docstore import SimpleDocumentStore
+from llama_index.core.node_parser import MarkdownNodeParser
 from llama_index.core.vector_stores import SimpleVectorStore
 from pydantic import PrivateAttr
 
-from homelab.knowledge.index import ingest
 from homelab.knowledge.retrieve import retrieve
 from homelab.knowledge.sources import PROVENANCE_KEYS, load_brain_documents
 
@@ -37,12 +36,12 @@ class InMemoryTextVectorStore(SimpleVectorStore):
 def fixture_index():
     vector_store = InMemoryTextVectorStore()
     embed_model = MockEmbedding(embed_dim=8)
-    ingest(
-        load_brain_documents(FIXTURE_BRAIN, INCLUDE),
-        vector_store=vector_store,
-        docstore=SimpleDocumentStore(),
-        embed_model=embed_model,
-    )
+    documents = load_brain_documents(FIXTURE_BRAIN, INCLUDE)
+    nodes = MarkdownNodeParser().get_nodes_from_documents(documents)
+    embedding = embed_model.get_text_embedding("neutral fixture vector")
+    for node in nodes:
+        node.embedding = embedding
+    vector_store.add(nodes)
     return vector_store, embed_model
 
 
