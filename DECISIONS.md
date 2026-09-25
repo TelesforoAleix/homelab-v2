@@ -68,3 +68,8 @@ containers read the key while retaining root ownership on the encrypted volume.
 **2026-09-25 — Use `AGENTS.md` as the shared repository guide.** The original `CLAUDE.md`
 guidance is now maintained in one file for both tools; a one-line import keeps Claude compatible
 without duplicating instructions.
+
+**2026-09-25 — Configure application logging under Uvicorn.** Uvicorn only handles its own logger
+hierarchy, so application INFO metrics otherwise disappear when the root logger has no handler.
+Give `homelab` its own stderr handler at startup and a configurable log level (INFO by default),
+without changing Uvicorn's logging or recording content.
