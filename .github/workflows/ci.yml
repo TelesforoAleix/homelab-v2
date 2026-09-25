@@ -5,6 +5,8 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      UV_LINK_MODE: copy
     steps:
       - uses: actions/checkout@v6
         with:

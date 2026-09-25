@@ -64,3 +64,7 @@ image. A system package supplies it without adding a Python dependency.
 **2026-09-25 — Keep the gateway secret root-owned and group-readable by the app.** File-backed
 Compose secrets retain host ownership and mode. `root:10001` with mode `0440` lets the non-root
 containers read the key while retaining root ownership on the encrypted volume.
+
+**2026-09-25 — Use `AGENTS.md` as the shared repository guide.** The original `CLAUDE.md`
+guidance is now maintained in one file for both tools; a one-line import keeps Claude compatible
+without duplicating instructions.
