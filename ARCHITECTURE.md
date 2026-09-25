@@ -16,8 +16,8 @@
 ```
 
 Home Lab owns provider keys, the route table, knowledge provenance, job durability and the API
-contract. LlamaIndex owns parsing, chunking, embedding and storage; Procrastinate owns the job
-machinery.
+contract. LlamaIndex owns parsing, chunking, embedding, storage and retrieval; Procrastinate owns
+the job machinery.
 
 ## Deployment
 
@@ -43,7 +43,8 @@ The Procrastinate app persists jobs in Postgres. Its `ping` task runs on the def
 Included Markdown from Brain is loaded with source provenance, split by Markdown structure and
 sentence boundaries, embedded by the configured `embed` route, and stored in pgvector. The
 Postgres document store tracks source hashes for incremental upserts and deletions. Brain remains
-read-only and frontmatter is not embedded.
+read-only and frontmatter is not embedded. The loopback API retrieves top-k scored chunks with
+provenance through LlamaIndex's vector retriever.
 
 ## Rules
 
