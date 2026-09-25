@@ -1,13 +1,44 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi.testclient import TestClient
 from llama_index.core.embeddings import MockEmbedding
 from pydantic import PrivateAttr
 
 from homelab.api.app import app, query_brain
+from homelab.jobs.app import app as jobs_app
 from homelab.knowledge.retrieve import retrieve
 from homelab.settings import Settings, get_settings
 from tests.test_retrieve import fixture_index
+
+
+def test_application_logging_is_configured_at_startup(monkeypatch):
+    @asynccontextmanager
+    async def fake_open():
+        yield
+
+    application_logger = logging.getLogger("homelab")
+    query_logger = logging.getLogger("homelab.api.app")
+    monkeypatch.setattr(application_logger, "handlers", [])
+    monkeypatch.setattr(application_logger, "level", logging.NOTSET)
+    monkeypatch.setattr(application_logger, "propagate", True)
+    monkeypatch.setattr(jobs_app, "open_async", fake_open)
+    level = ["INFO"]
+    monkeypatch.setattr(
+        "homelab.api.app.get_settings", lambda: Settings(_env_file=None, log_level=level[0])
+    )
+
+    with TestClient(app):
+        assert query_logger.isEnabledFor(logging.INFO)
+        assert any(
+            isinstance(handler, logging.StreamHandler) for handler in application_logger.handlers
+        )
+        assert application_logger.propagate is False
+
+    level[0] = "WARNING"
+    with TestClient(app):
+        assert not query_logger.isEnabledFor(logging.INFO)
+        assert len(application_logger.handlers) == 1
 
 
 def test_health_reports_routes_and_no_key(tmp_path, monkeypatch):

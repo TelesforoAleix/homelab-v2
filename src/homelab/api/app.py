@@ -18,6 +18,19 @@ from homelab.models import load_routes
 from homelab.settings import get_settings
 
 logger = logging.getLogger(__name__)
+_application_handler_name = "homelab-application"
+
+
+def configure_logging() -> None:
+    application_logger = logging.getLogger("homelab")
+    application_logger.setLevel(get_settings().log_level)
+    if not any(
+        handler.name == _application_handler_name for handler in application_logger.handlers
+    ):
+        handler = logging.StreamHandler()
+        handler.set_name(_application_handler_name)
+        application_logger.addHandler(handler)
+    application_logger.propagate = False
 
 
 class KnowledgeQuery(BaseModel):
@@ -48,6 +61,7 @@ class KnowledgeQueryResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    configure_logging()
     async with jobs_app.open_async():
         yield
 
