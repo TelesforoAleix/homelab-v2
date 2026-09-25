@@ -16,9 +16,9 @@ its server, uses mature libraries for the machinery, and optimises for building 
 
 ## Status
 
-The FastAPI service exposes health and configured model routes. `homelab ingest` incrementally
-indexes included Brain Markdown with provenance. Procrastinate provides a durable Postgres-backed
-worker, and Docker Compose defines the loopback-only stack.
+The FastAPI service exposes health, an ingestion trigger and top-k Brain retrieval with provenance.
+`homelab ingest` also indexes included Brain Markdown incrementally. Procrastinate provides a
+durable Postgres-backed worker, and Docker Compose defines the loopback-only stack.
 
 ## Run it
 
@@ -52,7 +52,7 @@ uv run uvicorn homelab.api.app:app --reload
 |---|---|
 | `src/homelab/api/` | FastAPI — the one published port |
 | `src/homelab/models/` | the route table: purpose → provider + model, and framework clients built from it |
-| `src/homelab/knowledge/` | Markdown ingestion with provenance through LlamaIndex |
+| `src/homelab/knowledge/` | Markdown ingestion and retrieval with provenance through LlamaIndex |
 | `src/homelab/jobs/` | Procrastinate tasks and the worker |
 | `config/routes.yaml` | which model serves which purpose |
 

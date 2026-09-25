@@ -40,3 +40,31 @@ here; its unit and TPM-sealed token do not change. It moves into Compose when it
 **2026-09-19 — Planning, research and history live outside this repository.** This repository
 describes only what exists. Work arrives as self-contained task prompts; plans, research notes and
 historical process artifacts are kept elsewhere and are not named here.
+
+**2026-09-25 — LlamaIndex names the Brain tables.** `brain_chunks` and `brain_docs` are logical
+table names passed to its adapters; the physical `data_` prefix is accepted because no application
+code reads the tables by name and adapter-owned storage should not be overridden.
+
+**2026-09-25 — Use `gitleaks-action@v3` in CI.** Version 2 stopped working on GitHub runners;
+version 3 keeps the repository's secret scan in the normal push and pull-request checks.
+
+**2026-09-25 — Inject the Postgres KV store into the document store.** The installed LlamaIndex
+`PostgresDocumentStore.from_params` and KV adapter disagree on their arguments. Constructing a
+`PostgresKVStore` through its public API and passing it to `PostgresDocumentStore` keeps the
+library responsible for persistence without depending on adapter internals.
+
+**2026-09-25 — Build application images on service start and in CI.** The systemd unit pulls
+`main` and runs Compose with `--build`, making an agent restart deploy the current Dockerfile;
+CI builds that image so Dockerfile failures are caught before a protected-main deployment.
+
+**2026-09-25 — Install `libpq5` in the runtime image.** The PostgreSQL adapter needs the native
+client library at runtime, and the first node deployment exposed its absence from the slim base
+image. A system package supplies it without adding a Python dependency.
+
+**2026-09-25 — Keep the gateway secret root-owned and group-readable by the app.** File-backed
+Compose secrets retain host ownership and mode. `root:10001` with mode `0440` lets the non-root
+containers read the key while retaining root ownership on the encrypted volume.
+
+**2026-09-25 — Use `AGENTS.md` as the shared repository guide.** The original `CLAUDE.md`
+guidance is now maintained in one file for both tools; a one-line import keeps Claude compatible
+without duplicating instructions.
