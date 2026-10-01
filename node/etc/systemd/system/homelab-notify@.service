@@ -1,0 +1,70 @@
+# Home Lab failure notifier.
+# Installed to /etc/systemd/system/homelab-notify@.service.
+#
+# OnFailure= uses literal aliases (bot, model-helper, watchdog, workbench,
+# harness, homelab). Raw %n/%N specifiers can introduce systemd escaping;
+# homelab-notify.sh maps each literal alias to the real unit name.
+#
+# Alias mapping and journal reads live in the script so bash -n and shellcheck
+# can check them without systemd's shell quoting and %-escaping rules.
+# ExecStart= stays one plain command with one argument.
+#
+# The notifier and watchdog use the bot account, credential and outbound
+# address families: neither needs access to the model helper's UNIX socket.
+# No OnFailure= here: a failed alert remains visible as a failed unit rather
+# than recursively alerting about itself.
+
+[Unit]
+Description=Home Lab notify -- failure alert for %i
+Documentation=https://github.com/TelesforoAleix/homelab-v2
+
+# No [Install]: failure handlers invoke this template through OnFailure=.
+
+[Service]
+Type=oneshot
+User=homelab-bot
+Group=homelab-bot
+SupplementaryGroups=systemd-journal
+
+ExecStart=/usr/local/sbin/homelab-notify.sh --alert %i
+
+LoadCredential=bot-token:/etc/homelab-telegram-bot/token
+
+# No Restart=: a failed alert is terminal, not retried (see the header note).
+
+# --- Privilege -------------------------------------------------------------
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+# --- Filesystem ------------------------------------------------------------
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+DevicePolicy=closed
+ProtectProc=invisible
+ReadOnlyPaths=/etc/homelab-telegram-bot
+
+# --- Kernel and system -------------------------------------------------
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# --- Network -------------------------------------------------------------
+# Outbound HTTPS only; excluding AF_UNIX blocks the model helper socket.
+RestrictAddressFamilies=AF_INET AF_INET6
+
+# --- System calls --------------------------------------------------------
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @swap @reboot @raw-io @debug @module @cpu-emulation

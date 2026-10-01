@@ -32,11 +32,25 @@ sudo bash -c 'umask 077; read -r -s -p "gateway key: " K; printf "%s" "$K" > /sr
 sudo chown 10001:10001 /srv/homelab/homelab-v2/secrets/gateway_api_key && sudo chmod 0400 /srv/homelab/homelab-v2/secrets/gateway_api_key
 sudo bash -c 'umask 077; read -r -s -p "database password: " P; echo; test -n "$P" && test "$P" != "<RANDOM-PASSWORD>" || exit 1; printf "%s\n" "HOMELAB_DB_PASSWORD=$P" "HOMELAB_BRAIN_PATH=/srv/homelab/brain" "HOMELAB_POSTGRES_PATH=/srv/homelab/postgres" "HOMELAB_MODELS_PATH=/srv/homelab/models" > /srv/homelab/homelab-v2/.env'
 sudo install -d /srv/homelab/postgres /srv/homelab/models
-sudo visudo -cf /srv/homelab/homelab-v2/config/sudoers.d/homelab-agent-v2 && sudo install -m 0440 /srv/homelab/homelab-v2/config/sudoers.d/homelab-agent-v2 /etc/sudoers.d/homelab-agent-v2
+sudo visudo -cf /srv/homelab/homelab-v2/node/etc/sudoers.d/homelab-agent-v2 && sudo install -m 0440 -o root -g root /srv/homelab/homelab-v2/node/etc/sudoers.d/homelab-agent-v2 /etc/sudoers.d/homelab-agent-v2
 sudo usermod -aG systemd-journal homelab-agent
-sudo cp /srv/homelab/homelab-v2/config/homelab.service /etc/systemd/system/homelab.service
+sudo install -m 0644 -o root -g root /srv/homelab/homelab-v2/node/etc/systemd/system/homelab.service /etc/systemd/system/homelab.service
 sudo systemctl daemon-reload && sudo systemctl enable --now homelab.service
 ```
+
+Host files live under `node/`: `node/<path>` is installed at `/<path>`, owned by `root:root`.
+Units and drop-ins use mode `0644`, scripts under `usr/local/sbin/` use `0755`, and sudoers
+uses `0440`. Install from the node's clone after it pulls merged `main`: back up the installed
+files, show each diff, copy changed files with `sudo install`, and run their validators
+(`visudo -c` for sudoers and `systemd-analyze verify` for units). Reload systemd after unit
+changes. The existing unlock, notifier and watchdog files are recorded here; the bot's own
+host configuration remains outside this repository. Credential drop-ins name TPM-sealed
+credentials already provisioned on the node; credential contents are never committed.
+
+The agent uses `ssh homelab-agent`, which has root through sudo. The owner approves the plan
+and its risks before execution. Deploy with `sudo systemctl restart homelab.service`; it pulls
+`main` and builds the images. Host-file changes also require the explicit installation above;
+restarting the stack does not install them.
 
 On a laptop, for development:
 
@@ -55,6 +69,7 @@ uv run uvicorn homelab.api.app:app --reload
 | `src/homelab/knowledge/` | Markdown ingestion and retrieval with provenance through LlamaIndex |
 | `src/homelab/jobs/` | Procrastinate tasks and the worker |
 | `config/routes.yaml` | which model serves which purpose |
+| `node/` | host operational files, mirroring their installed paths |
 
 [ARCHITECTURE.md](ARCHITECTURE.md) has the boundaries and the rules. [DECISIONS.md](DECISIONS.md)
 records choices that weren't obvious. MIT licence.

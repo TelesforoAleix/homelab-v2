@@ -1,0 +1,20 @@
+# Home Lab watchdog timer: one recovery notice per boot.
+# Installed to /etc/systemd/system/homelab-watchdog.timer.
+#
+# systemd supplies the trigger without a separate scheduler daemon.
+# OnBootSec=90s and no OnUnitActiveSec= make this a boot recovery signal.
+# The delay leaves headroom for Tailscale and DNS before the Telegram send;
+# it is a starting allowance rather than a measured requirement.
+# WantedBy=timers.target places this in the boot sequence. It only reads
+# system state and sends a notice.
+
+[Unit]
+Description=Home Lab watchdog -- once-per-boot recovery notice
+Documentation=https://github.com/TelesforoAleix/homelab-v2
+
+[Timer]
+OnBootSec=90s
+Unit=homelab-watchdog.service
+
+[Install]
+WantedBy=timers.target
