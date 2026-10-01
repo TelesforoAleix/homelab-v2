@@ -1,0 +1,138 @@
+# Home Lab watchdog -- Phase 12.
+#
+# Installed to /etc/systemd/system/homelab-watchdog.service
+#
+# Started once per boot by homelab-watchdog.timer. Runs
+# /usr/local/sbin/homelab-watchdog.sh, which reads the previous boot's
+# cleanliness and the data volume's lock state and sends exactly one of the
+# Phase 12 brief's four literal messages (§7.4) via homelab-notify.sh.
+#
+# WHY User=homelab-bot, REUSING THE BOT'S OWN ACCOUNT
+#
+#   The allowlist at /etc/homelab-telegram-bot/allowlist (root:homelab-bot
+#   0640) already grants exactly the read this needs -- the same numeric IDs
+#   that double as Telegram chat_ids -- with no new group grant. A new account
+#   would reproduce that grant for no isolation benefit: this unit's failure
+#   mode (leak the bot token to the same channel) is identical to the bot's
+#   own. `id homelab-bot` is unaffected by this reuse -- a second, independent
+#   unit naming the same account does not change what that account reports
+#   about itself (verified in §8's regression checks, not merely asserted).
+#
+# WHY RestrictAddressFamilies HAS NO AF_UNIX (Phase 12 brief §6)
+#
+#   Nothing this phase schedules may call a model, and the spend governor
+#   (Phase 15.1) does not exist yet. Excluding AF_UNIX means this process
+#   cannot open a UNIX socket AT ALL -- /run/homelab-model-helper.sock is
+#   refused at the kernel's seccomp filter, before the socket's own
+#   SocketGroup=homelab-bot would otherwise let this same account through (it
+#   would, at the DAC layer, since this unit reuses the bot's group). Do not
+#   add AF_UNIX back to "fix" something without first reading Phase 12 brief
+#   §6 and §13 -- that is a decision reversal, not a configuration fix, and
+#   needs a superseding ADR before it happens, not after.
+#
+# WHY THIS SCRIPT DOES NOT CALL `systemctl is-active` -- A DEVIATION FROM THE
+# BRIEF'S OWN §7.4 TABLE, RECORDED HERE AND IN THE STAGE REPORT
+#
+#   `systemctl` has no way to ask PID 1 anything without AF_UNIX: it talks
+#   over D-Bus or, failing that, connects directly to /run/systemd/private,
+#   both UNIX sockets. That is unconditionally incompatible with the
+#   directive above, for any account. `findmnt /srv/homelab` alone is used
+#   instead: reading it needs no socket, and this node's own unlock procedure
+#   (data-volume.sh unlock) always mounts before starting the target, so a
+#   mount existing without the target ever having started is not a real state
+#   this node produces. See the Phase 12 execution stage report for the full
+#   reasoning.
+#
+# WHY SupplementaryGroups=systemd-journal
+#
+#   §7.3's classification and downtime both read the previous boot's journal
+#   (`journalctl -b -1`). Journal files are root:systemd-journal by default. This grants
+#   read access to THIS UNIT's own processes via the unit file -- the same
+#   place ADR-025 puts access control -- rather than by adding homelab-bot to
+#   the group in /etc/group, which would be a permanent, account-wide
+#   widening for a need only this unit has. `id homelab-bot` is unaffected:
+#   that command reads /etc/passwd and /etc/group, neither of which this line
+#   touches.
+#
+# Verify with `systemd-analyze security homelab-watchdog.service`, and check
+# the RUNNING unit rather than this file, per the bot's own lesson about
+# configuration versus daemon.
+
+[Unit]
+Description=Home Lab watchdog -- once-per-boot recovery notice (Phase 12)
+Documentation=https://github.com/TelesforoAleix/homelab
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Deliberately no After=/Requires=/Wants=/PartOf=/Condition*= naming
+# homelab-data.target, the probe, or the bot: this unit must not share fate
+# with anything it watches (Phase 12 brief §7.1; §5 point 4 inherited from
+# Phase 18.1). Checked structurally in §8, not just asserted here.
+
+# §7.6: this unit alerts on its own failure too -- it costs one line and the
+# mechanism already exists for the bot and the model helper.
+OnFailure=homelab-notify@watchdog.service
+
+[Service]
+Type=oneshot
+User=homelab-bot
+Group=homelab-bot
+SupplementaryGroups=systemd-journal
+
+ExecStart=/usr/local/sbin/homelab-watchdog.sh
+
+# --- The token -------------------------------------------------------------
+# Same file the bot's own unit names (config/systemd/homelab-telegram-bot.service).
+# LoadCredential= is evaluated by PID 1 before this process starts and hands
+# it a private tmpfs copy -- no DAC read permission on the source file is
+# needed, the source file's root:root 0600 mode is untouched, and the bot's
+# own unit is not edited (Phase 12 brief §7.2).
+LoadCredential=bot-token:/etc/homelab-telegram-bot/token
+
+# --- Restart policy ----------------------------------------------------
+# on-failure, not always: a clean exit (the message sent, or a genuinely
+# unconfigured node) should stay stopped. Mirrors the bot's own reasoning
+# (config/systemd/homelab-telegram-bot.service) for why this is bounded
+# rather than an unbounded retry loop.
+Restart=on-failure
+RestartSec=10
+
+# --- Privilege ---------------------------------------------------------
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+# --- Filesystem ----------------------------------------------------------
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+DevicePolicy=closed
+ProtectProc=invisible
+ReadOnlyPaths=/etc/homelab-telegram-bot
+
+# --- Kernel and system ---------------------------------------------------
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# --- Network -------------------------------------------------------------
+# Outbound HTTPS only. No AF_UNIX -- see the header note above and Phase 12
+# brief §6. This is the directive §8's refusal/positive-control pair for the
+# model helper exercises directly.
+RestrictAddressFamilies=AF_INET AF_INET6
+
+# --- System calls --------------------------------------------------------
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @swap @reboot @raw-io @debug @module @cpu-emulation

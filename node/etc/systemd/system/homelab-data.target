@@ -1,0 +1,6 @@
+[Unit]
+Description=Encrypted data volume unlocked and mounted at /srv/homelab (ADR-037)
+ConditionPathIsMountPoint=/srv/homelab
+Requires=srv-homelab.mount
+After=srv-homelab.mount
+# No [Install] section, on purpose: nothing pulls this in at boot. The unlock script starts it.

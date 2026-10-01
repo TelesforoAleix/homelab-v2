@@ -1,0 +1,37 @@
+# Home Lab watchdog timer -- Phase 12.
+#
+# Installed to /etc/systemd/system/homelab-watchdog.timer
+#
+# WHY A TIMER, AND WHY ONLY ONE SHOT PER BOOT
+#
+#   systemd-timer(7) already does everything a "trigger source" needs to do
+#   here: fire once, without a human present, and not double-fire. Writing a
+#   scheduler daemon to reproduce that would duplicate what one stanza below
+#   gets for free (Phase 12 brief §7.1).
+#
+#   OnBootSec=90s, no OnUnitActiveSec=. This is a boot-recovery signal, not a
+#   heartbeat -- the roadmap's own "recovery-oriented, not real-time" rules out
+#   a repeat interval. 90 s is headroom for Tailscale and DNS to come up before
+#   the first Telegram send is attempted (the node's own cold boot measured
+#   27.6 s in Phase 18.1); it is a starting guess, not a measured requirement,
+#   and is called out as such in the execution runbook and handover.
+#
+# WHY THIS COUNTS AS BOOT-CLASS
+#
+#   WantedBy=timers.target puts this in the default boot sequence
+#   (docs/standards/safe-changes-headless.md, ADR-041). It is classified and
+#   handled as such in the install runbook, the same way Phase 18.1 classified
+#   /etc/fstab edits -- not because it can lock anyone out (it cannot: it only
+#   ever reads and sends a Telegram message), but because "part of the boot
+#   sequence" is the standard's own bar, independent of blast radius.
+
+[Unit]
+Description=Home Lab watchdog -- once-per-boot recovery notice (Phase 12)
+Documentation=https://github.com/TelesforoAleix/homelab
+
+[Timer]
+OnBootSec=90s
+Unit=homelab-watchdog.service
+
+[Install]
+WantedBy=timers.target

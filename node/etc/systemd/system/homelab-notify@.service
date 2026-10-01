@@ -1,0 +1,105 @@
+# Home Lab notify -- Phase 12, §7.6.
+#
+# Installed to /etc/systemd/system/homelab-notify@.service
+#
+# Fired by OnFailure= from homelab-telegram-bot.service (via its drop-in),
+# homelab-model-helper@.service (via its drop-in), and homelab-watchdog.service
+# (directly, in its own [Unit] section, since that file is new this phase and
+# needs no drop-in). Templated so one file serves all three.
+#
+# WHY %i IS A LITERAL ALIAS (bot / model-helper / watchdog), NEVER %n OR %N
+#
+#   systemd escapes "-" as \x2d in specifier expansions -- Phase 18.1 defect 4
+#   made exactly this mistake once (`homelab-data` vs `homelab\x2ddata`). The
+#   OnFailure= lines that trigger this unit spell out a literal instance name
+#   (e.g. `OnFailure=homelab-notify@bot.service`), never a raw %n/%N from the
+#   failing unit, so there is no escaping to get wrong. homelab-notify.sh's
+#   `--alert` mode maps that literal alias to the real unit name(s) itself.
+#
+# WHY THE CASE STATEMENT AND JOURNAL PULL LIVE IN homelab-notify.sh, NOT HERE
+#
+#   The brief describes this as "a two-line case statement" -- small enough to
+#   write inline in ExecStart=. It is deliberately NOT inline here anyway:
+#   systemd's own quoting and %-escaping rules for a multi-statement shell
+#   one-liner in a unit file are exactly the class of thing Phase 18.1's seven
+#   runbook defects were made of (see that handover's §Problems), and
+#   homelab-notify.sh is one file `bash -n` and shellcheck can actually check.
+#   ExecStart= here is one plain command line with one argument -- nothing to
+#   misquote.
+#
+# WHY User=homelab-bot, LoadCredential=, and RestrictAddressFamilies MATCH
+# homelab-watchdog.service EXACTLY
+#
+#   Same reasoning, restated rather than shared via Include= (Phase 18.1's
+#   "two committed config files did not match" lesson about drift between
+#   nominally-linked files): a failure alert has no more business reaching the
+#   model helper than the boot notice does (Phase 12 brief §7.6), and reuses
+#   the same account and the same token file for the same reason.
+#
+# THE RECURSION GUARD IS AN ABSENCE
+#
+#   No OnFailure= appears anywhere in this file. If this unit itself fails,
+#   that is terminal and visible (`systemctl --failed`,
+#   `systemctl is-system-running` -> degraded) rather than triggering a second
+#   alert about the first alert failing. Checked with
+#   `systemctl show -p OnFailure --value homelab-notify@.service`, which must
+#   print nothing (§8).
+
+[Unit]
+Description=Home Lab notify -- failure alert for %i (Phase 12)
+Documentation=https://github.com/TelesforoAleix/homelab
+
+# No [Install] section: this unit is never enabled or started directly, only
+# ever reached via another unit's OnFailure=, the same reasoning
+# homelab-model-helper@.service gives for having none.
+
+[Service]
+Type=oneshot
+User=homelab-bot
+Group=homelab-bot
+SupplementaryGroups=systemd-journal
+
+ExecStart=/usr/local/sbin/homelab-notify.sh --alert %i
+
+LoadCredential=bot-token:/etc/homelab-telegram-bot/token
+
+# No Restart=: a failed alert is terminal, not retried (see the header note).
+
+# --- Privilege -------------------------------------------------------------
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+# --- Filesystem ------------------------------------------------------------
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+DevicePolicy=closed
+ProtectProc=invisible
+ReadOnlyPaths=/etc/homelab-telegram-bot
+
+# --- Kernel and system -------------------------------------------------
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# --- Network -------------------------------------------------------------
+# Outbound HTTPS only. No AF_UNIX -- Phase 12 brief §6 applies to this path
+# exactly as it does to the boot notice: an alert has no business reaching
+# the model helper either.
+RestrictAddressFamilies=AF_INET AF_INET6
+
+# --- System calls --------------------------------------------------------
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @swap @reboot @raw-io @debug @module @cpu-emulation
