@@ -1,13 +1,16 @@
+import json
 import logging
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from llama_index.core.embeddings import MockEmbedding
 from pydantic import PrivateAttr
 
 from homelab.api.app import app, query_brain
 from homelab.jobs.app import app as jobs_app
-from homelab.knowledge.retrieve import retrieve
+from homelab.knowledge.retrieve import Chunk, retrieve
 from homelab.settings import Settings, get_settings
 from tests.test_retrieve import fixture_index
 
@@ -157,3 +160,107 @@ def test_knowledge_query_rejects_invalid_bodies():
 
     for body in invalid_bodies:
         assert client.post("/v1/knowledge/query", json=body).status_code == 422
+        assert client.post("/v1/knowledge/answer", json=body).status_code == 422
+
+
+def stub_answer(monkeypatch, model_reply):
+    chunks = [
+        Chunk(
+            f"Private fixture content {n}",
+            0.9 - n / 10,
+            f"fixture/{n}.md",
+            f"Title {n}",
+            "",
+            None,
+            "",
+            "hash",
+            None,
+        )
+        for n in range(1, 4)
+    ]
+    retrieval_calls = []
+    prompts = []
+
+    def fake_retrieve(question, top_k):
+        retrieval_calls.append((question, top_k))
+        return chunks[:top_k]
+
+    class FakeLLM:
+        def complete(self, prompt):
+            prompts.append(prompt)
+            return SimpleNamespace(text=model_reply)
+
+    class FakeRoutes:
+        def llm(self, purpose, **kwargs):
+            assert purpose == "chat"
+            assert kwargs == {"timeout": 60, "max_retries": 0}
+            return FakeLLM()
+
+    monkeypatch.setattr("homelab.api.app.query_brain", fake_retrieve)
+    monkeypatch.setattr("homelab.api.app.load_routes", lambda settings: FakeRoutes())
+    return chunks, retrieval_calls, prompts
+
+
+def test_answer_citations_order_and_content_safe_metrics(monkeypatch, caplog):
+    answer = "The third source [3] precedes the first [1], then repeats [3]."
+    chunks, calls, prompts = stub_answer(
+        monkeypatch, json.dumps({"answer": answer, "refused": False})
+    )
+    question = "Private fixture question 9876"
+    with caplog.at_level(logging.DEBUG):
+        response = TestClient(app).post("/v1/knowledge/answer", json={"question": question})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": answer,
+        "refused": False,
+        "sources": [
+            {
+                "number": n,
+                "title": chunks[n - 1].title,
+                "path": chunks[n - 1].path,
+                "score": chunks[n - 1].score,
+            }
+            for n in (3, 1)
+        ],
+    }
+    assert calls == [(question, 5)]
+    assert len(prompts) == 1
+    assert all(f'"number": "[{n}]"' in prompts[0] for n in (1, 2, 3))
+    assert question in prompts[0]
+    assert all(chunk.text in prompts[0] for chunk in chunks)
+    metrics = [record.message for record in caplog.records if "knowledge answer" in record.message]
+    assert len(metrics) == 1
+    assert f"question_length={len(question)} top_k=5 chunks=3 cited=2 refused=False" in metrics[0]
+    assert "elapsed_seconds=" in metrics[0]
+    assert question not in caplog.text
+    assert answer not in caplog.text
+    assert all(chunk.text not in caplog.text for chunk in chunks)
+
+
+@pytest.mark.parametrize(
+    "model_reply",
+    [
+        '{"answer": "Sources cannot answer this.", "refused": true}',
+        '{"answer": "Unsupported [8]", "refused": false}',
+        '{"answer": "No citation", "refused": false}',
+        '{"answer": "Invalid [0]", "refused": false}',
+        '{"answer": "Answer [1]", "refused": "false"}',
+        "malformed reply",
+    ],
+)
+def test_answer_refuses_and_fails_closed(monkeypatch, caplog, model_reply):
+    _, calls, prompts = stub_answer(monkeypatch, model_reply)
+    with caplog.at_level(logging.INFO):
+        response = TestClient(app).post(
+            "/v1/knowledge/answer", json={"question": "Neutral question", "top_k": 2}
+        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": "The retrieved sources do not answer this question.",
+        "refused": True,
+        "sources": [],
+    }
+    assert calls == [("Neutral question", 2)]
+    assert len(prompts) == 1
+    assert "chunks=2 cited=0 refused=True" in caplog.text

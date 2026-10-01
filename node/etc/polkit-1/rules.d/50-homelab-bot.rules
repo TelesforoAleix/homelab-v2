@@ -1,0 +1,28 @@
+// Home Lab bot escalation grant: one user, one unit, one verb; no wildcards.
+// Installed to /etc/polkit-1/rules.d/50-homelab-bot.rules.
+//
+// NoNewPrivileges refuses setuid sudo. Polkit authorises systemctl's D-Bus call
+// outside the bot, so the sandbox retains NoNewPrivileges. The executor checks
+// its own unit allowlist too: neither process relies on the other's gate alone.
+// A malformed polkit rule denies access instead of breaking the admin sudo path.
+// Wildcards could reach services whose loss would disconnect this node.
+//
+// Polkit logs denials but not grants at its default level; polkit.log() also
+// produced no output when tested. The bot records requester, command and result,
+// and systemd independently records the actual service restart. Those two
+// processes provide the audit trail for successes without global polkit debug.
+
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.user == "homelab-bot" &&
+        action.lookup("unit") == "chrony.service" &&
+        action.lookup("verb") == "restart") {
+
+        // systemd records the actual restart independently of the bot.
+        return polkit.Result.YES;
+    }
+
+    // Everything else falls through to the system default, which for
+    // manage-units is auth_admin -- i.e. denied for an unprivileged,
+    // non-interactive service account. Fail closed by omission.
+});

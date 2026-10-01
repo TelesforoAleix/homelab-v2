@@ -38,9 +38,23 @@ boot watchdog, stack unit and agent sudo grant. The notifier's `homelab` alias a
 v2 stack alongside the five existing aliases. Host files are installed as `root:root` from the
 node's clone of merged `main`, after backups and visible diffs, with mode `0644` for units and
 drop-ins, `0755` for scripts and `0440` for sudoers. Unit changes require `daemon-reload` and
-validation on the node. The agent has root through sudo; the owner approves execution plans
+validation on the node. Bot Python files and the polkit rule also use `0644`. The agent has root
+through sudo; the owner approves execution plans
 and risks. The service restart pulls `main` and rebuilds containers, while host-file installation
-is explicit. Bot host configuration and secret credential contents are outside this tree.
+is explicit. Bot code, its unit, credential and failure drop-ins, and the narrow polkit grant
+are recorded here. Private allowlists and secret credential contents stay outside this tree.
+
+The Telegram client remains a stdlib-only host service, running as `homelab-bot` with its
+existing sandbox and TPM-sealed token. It long-polls Telegram with no listening port. The main
+allowlist gates dispatch; the privileged allowlist is a subset and gates `/restart`, which also
+checks its unit allowlist. Polkit independently permits only restarting `chrony.service`.
+`/ask` posts to the loopback answer API, returns only text and never dispatches model output.
+Host metrics, restart and help do not depend on the knowledge service or unlocked volume.
+Answers include numbered source titles, refusals omit sources, and replies are split within
+Telegram's length limit. The router also supplies startup `setMyCommands` and `setMyDescription`;
+registration failures are nonfatal. The v1 model helper is no longer a bot dependency.
+User IDs remain audit metadata in the node's journal; `/ask` logs its argument length only.
+Handler errors log the registered command and exception type, never exception text.
 
 The embedding model is the only resident local model. The `local` queue has concurrency 1.
 
@@ -61,6 +75,16 @@ sentence boundaries, embedded by the configured `embed` route, and stored in pgv
 Postgres document store tracks source hashes for incremental upserts and deletions. Brain remains
 read-only and frontmatter is not embedded. The loopback API retrieves top-k scored chunks with
 provenance through LlamaIndex's vector retriever.
+
+`POST /v1/knowledge/answer` shares `/query`'s question and `top_k` validation and retrieval.
+One prompt numbers retrieved chunks `[1]` through `[k]` and instructs the `chat` route to answer
+only from those chunks with `[n]` citations, or to refuse when they cannot answer. The question
+and chunks are untrusted data, not instructions. One LlamaIndex client call returns an internal
+JSON answer/refusal signal. Sources expose number, title, path and score in first-citation order,
+without duplicates. Missing or out-of-range citations and malformed replies fail closed to a
+plain refusal. A 60-second model timeout with no retries bounds the call. Only the question and
+chunk text leave the node; logs contain question length, top-k, retrieved/cited counts, refusal
+and elapsed time, never content. This contract works with any indexed corpus.
 
 ## Rules
 

@@ -104,3 +104,24 @@ Mapping it to `homelab.service` fixes v2 alerts while keeping all five aliases s
 executables and users that the CI runner does not have. Run it after installation on the node;
 the pytest volume-contract check runs inside the existing required CI `test` job, where it
 gates merges without inventing host users or substituting executables on the runner.
+
+**2026-10-01 — Grounded answers use one retrieval and one chat call.** The answer endpoint shares
+the query request and retrieval, numbers chunks in one prompt and asks the configured `chat`
+route for a JSON answer/refusal signal with inline citations. It returns cited provenance in
+first-citation order. Malformed replies, missing citations and invalid source numbers fail closed
+to a plain refusal rather than exposing an unsupported answer. The model has no tools; only the
+question and retrieved chunk text go to it. Metrics contain counts and timing without content.
+
+**2026-10-01 — Adopt the Telegram bot under mirrored host paths.** Its public installed code,
+unit, credential/failure drop-ins and chrony-only polkit rule are recorded under `node/`, then
+formatted and adopted in separate commits. Private allowlists and the TPM-sealed token stay on
+the node. The bot remains a stdlib host client: `/ask` uses the loopback answer API, the old model
+helper client and `/spend`/`/model` go, and host commands retain their capability gates. Output is
+only text sent to Telegram, never instructions to dispatch. Handler errors log command and
+exception type without exception text; requester IDs remain metadata in the node's journal.
+
+**2026-10-01 — Register Telegram commands from the router at startup.** `setMyCommands` and
+`setMyDescription` derive from the same registry as help, including aliases, so the phone menu
+tracks the actual commands without a separate setup script. Registration failure is logged with
+safe metadata and does not stop polling. Plain-text replies are split at 4096 UTF-16 units so long
+answers and source lists fit Telegram without cutting a Unicode character.

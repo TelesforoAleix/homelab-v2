@@ -1,0 +1,89 @@
+# Home Lab Telegram bot. Installed at the same path beneath / on the node.
+# The unit is the security boundary: deny by default and enable only what the
+# handlers need. Check the running service with systemd-analyze security as well
+# as validating this file; a directive that fails to apply is not protection.
+#
+# Host metrics and /ask are read capabilities. /restart invokes systemctl with
+# NoNewPrivileges retained; polkit grants only chrony.service restart.
+# bot.py, router.py and executors.py must be installed together. Python adds the
+# script directory to sys.path, so no PYTHONPATH is needed.
+#
+# Network.target avoids a boot ordering barrier: polling backs off and retries
+# without waiting for full connectivity on a node with no console.
+# Start limits belong in [Unit]; putting the interval in [Service] is ignored.
+# Restart=on-failure keeps a deliberate clean exit stopped. The 300s limit and
+# 10s restart delay bound a tight crash loop and the resulting journal growth.
+#
+# The token lives in systemd's credential tmpfs, owned by the service user and
+# removed on stop. Environment variables leak through /proc, dumps and logs.
+# The credential drop-in replaces the plain source with the TPM-sealed file.
+#
+# ProtectHome keeps private home files unreachable. ProcSubset=pid is omitted:
+# it hides /proc/uptime, loadavg and meminfo and makes host metrics fail.
+# ProtectProc=invisible hides other processes without hiding those host files.
+#
+# AF_UNIX lets systemctl reach PID 1 for the polkit-authorised restart. It does
+# not grant socket permissions: homelab-bot has no docker group membership and
+# cannot use the root:docker Docker socket. AF_INET/AF_INET6 permit outbound
+# Telegram HTTPS and the loopback knowledge API; the bot opens no listening port.
+# NoNewPrivileges refuses setuid sudo; polkit leaves this hardening intact.
+
+[Unit]
+Description=Home Lab Telegram status bot (read-only)
+Documentation=https://github.com/TelesforoAleix/homelab-v2
+
+After=network.target
+
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=homelab-bot
+Group=homelab-bot
+
+ExecStart=/usr/bin/python3 /opt/homelab-telegram-bot/bot.py
+
+LoadCredential=bot-token:/etc/homelab-telegram-bot/token
+
+Environment=HOMELAB_BOT_ALLOWLIST=/etc/homelab-telegram-bot/allowlist
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+DevicePolicy=closed
+ProtectProc=invisible
+
+ReadOnlyPaths=/etc/homelab-telegram-bot
+
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @swap @reboot @raw-io @debug @module @cpu-emulation
+
+[Install]
+WantedBy=multi-user.target
