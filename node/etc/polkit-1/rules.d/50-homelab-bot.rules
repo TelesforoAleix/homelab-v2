@@ -1,0 +1,80 @@
+// Home Lab — Phase 08 escalation grant (ADR-024).
+//
+// Installed to /etc/polkit-1/rules.d/50-homelab-bot.rules
+//
+// WHY POLKIT AND NOT SUDO
+//
+//   The brief specified a sudoers rule. That cannot work here, and the reason
+//   was found by testing rather than reasoning:
+//
+//     $ setpriv --no-new-privs sudo -n true
+//     sudo: The "no new privileges" flag is set, which prevents sudo from
+//           running as root.
+//
+//   homelab-telegram-bot.service sets NoNewPrivileges=yes, which is one of the
+//   strongest properties Phase 07 established. sudo is setuid, so it is refused
+//   outright under that flag. Using sudo would have meant REMOVING the
+//   hardening in order to add an escalation -- exactly backwards.
+//
+//   polkit needs no setuid. systemctl asks PID 1 over D-Bus, and polkit decides
+//   inside PID 1. NoNewPrivileges stays on.
+//
+//   It is also safer to get wrong. A malformed sudoers file breaks sudo
+//   entirely, on a node whose admin has no console and no other escalation
+//   path. A malformed polkit rule DENIES. The failure modes are not comparable.
+//
+// SCOPE
+//
+//   One user, one unit, one verb. No wildcards anywhere.
+//
+//   A wildcard here would be the same mistake as `systemctl restart *` in
+//   sudoers: it would reach ssh, tailscaled and systemd-networkd -- every
+//   service whose loss costs access to this machine.
+//
+// AUDIT -- and a correction, because the first version of this file was wrong
+//
+//   The claim here used to be "polkit logs every authorisation decision". It
+//   does not. Measured on this node:
+//
+//     denials  -> polkitd logs "FAILED to authenticate to gain authorization
+//                 for action org.freedesktop.systemd1.manage-units ...
+//                 (owned by unix-user:homelab-bot)"
+//     grants   -> NOTHING. Zero lines.
+//
+//   A polkit.log() call was added here to cover that and produced no output
+//   either; polkitd filters it out at its default log level, and turning on
+//   polkit debugging globally to record one rule is not a trade worth making.
+//   The dead call has been removed rather than left in place implying a
+//   guarantee it never provided.
+//
+//   An audit trail that records refusals but not approvals is half an audit
+//   trail, and it is the wrong half: for a privileged action, the successes are
+//   what you most want to be able to reconstruct.
+//
+//   The second independent record is therefore SYSTEMD's, not polkit's:
+//
+//     Sep 09 19:53:09 systemd[1]: Stopping chrony.service ...
+//     Sep 09 19:53:09 systemd[1]: Started chrony.service ...
+//
+//   That is PID 1, a different process from the bot with a different failure
+//   mode, and it records the action actually happening rather than someone's
+//   intention to perform it. Together with the bot's own log -- which names the
+//   requesting user, the executor and the outcome -- that is two independent
+//   records. polkit contributes a third, for denials only.
+
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.user == "homelab-bot" &&
+        action.lookup("unit") == "chrony.service" &&
+        action.lookup("verb") == "restart") {
+
+        // No polkit.log() here: it is filtered out at the default log level and
+        // produced nothing when tested. See the AUDIT note above -- systemd's
+        // own record of the unit starting is the durable evidence of a grant.
+        return polkit.Result.YES;
+    }
+
+    // Everything else falls through to the system default, which for
+    // manage-units is auth_admin -- i.e. denied for an unprivileged,
+    // non-interactive service account. Fail closed by omission.
+});
