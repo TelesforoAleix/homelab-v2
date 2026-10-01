@@ -42,7 +42,7 @@ def build_stores(settings: Settings, embed_dim: int):
         async_connection_string=url.set(drivername="postgresql+asyncpg").render_as_string(
             hide_password=False
         ),
-        table_name="brain_chunks",
+        table_name=f"{settings.active_collection}_chunks",
         embed_dim=embed_dim,
     )
     kvstore = PostgresKVStore.from_params(
@@ -51,7 +51,7 @@ def build_stores(settings: Settings, embed_dim: int):
         database=url.database,
         user=url.username,
         password=url.password,
-        table_name="brain_docs",
+        table_name=f"{settings.active_collection}_docs",
     )
     docstore = PostgresDocumentStore(kvstore)
     return vector_store, docstore

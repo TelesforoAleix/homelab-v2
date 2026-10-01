@@ -15,6 +15,8 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql://homelab:homelab@localhost:5432/homelab"
     routes_file: Path = Path("config/routes.yaml")
+    active_collection: Literal["brain", "about_aleix"] = "about_aleix"
+    corpus_file: Path = Path("/data/corpus/about-aleix/corpus.json")
     brain_dir: Path = Path("/data/brain")
     brain_include: Annotated[list[str], NoDecode] = ["01-knowledge", "02-ideas", "05-logs"]
 

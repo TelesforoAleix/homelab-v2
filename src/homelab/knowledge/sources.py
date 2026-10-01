@@ -1,14 +1,19 @@
-"""Load Markdown notes from Brain as LlamaIndex documents."""
+"""Load Brain Markdown or public JSON corpus entries as LlamaIndex documents."""
 
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
+import re
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 from llama_index.core import Document
+
+from homelab.settings import Settings
 
 PROVENANCE_KEYS = ("path", "title", "header_path", "type", "created", "content_hash", "revision")
 _HIDDEN_METADATA_KEYS = ["path", "type", "created", "content_hash", "revision"]
@@ -110,3 +115,61 @@ def load_brain_documents(brain_dir: Path, include: list[str]) -> list[Document]:
             )
         )
     return documents
+
+
+def load_corpus_documents(corpus_file: Path) -> list[Document]:
+    """Read public JSON entries; errors never include source content."""
+    try:
+        entries = json.loads(corpus_file.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise ValueError("corpus must be valid UTF-8 JSON") from None
+    if not isinstance(entries, list):
+        raise ValueError("corpus must be a JSON list")
+    documents = []
+    seen = set()
+    for position, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            logging.getLogger(__name__).warning("corpus invalid_entry position=%d", position)
+            continue
+        if entry.get("visibility") != "public":
+            continue
+        fields = ("id", "question", "answer", "category")
+        if any(not isinstance(entry.get(key), str) or not entry[key].strip() for key in fields):
+            logging.getLogger(__name__).warning("corpus invalid_entry position=%d", position)
+            continue
+        entry_id = entry["id"]
+        match = re.fullmatch(r"(.+)-(\d+)", entry_id)
+        if not match:
+            logging.getLogger(__name__).warning("corpus invalid_entry position=%d", position)
+            continue
+        if entry_id in seen:
+            raise ValueError("corpus contains duplicate public ids")
+        seen.add(entry_id)
+        text = entry["question"] + "\n\n" + entry["answer"]
+        metadata = {
+            "path": entry_id,
+            "title": entry["question"],
+            "type": match[1],
+            "category": entry["category"],
+            "created": "",
+            "revision": None,
+            "content_hash": hashlib.sha256(text.encode()).hexdigest(),
+        }
+        hidden = [*_HIDDEN_METADATA_KEYS, "category", "header_path"]
+        documents.append(
+            Document(
+                text=text,
+                id_=entry_id,
+                metadata=metadata,
+                excluded_embed_metadata_keys=hidden,
+                excluded_llm_metadata_keys=hidden,
+            )
+        )
+    return documents
+
+
+def load_documents(settings: Settings) -> list[Document]:
+    """Load only the selected collection."""
+    if settings.active_collection == "brain":
+        return load_brain_documents(settings.brain_dir, settings.brain_include)
+    return load_corpus_documents(settings.corpus_file)

@@ -7,7 +7,7 @@
 ┌─────────────────────────────▼───────────────────────────────────────────────┐
 │  HOME LAB API                                                                │
 │  models/     purpose → provider+model; the only holder of provider keys      │
-│  knowledge/  Markdown → structured chunks → embeddings → pgvector            │
+│  knowledge/  JSON/Markdown → chunks → embeddings → pgvector                     │
 │  jobs/       durable tasks (Procrastinate)                                   │
 └──────┬──────────────────────────┬─────────────────────────┬──────────────────┘
        │ OpenAI-compatible        │                          │
@@ -24,7 +24,8 @@ the job machinery.
 One `compose.yaml`: `api`, `worker`, `postgres` (pgvector image), `llama-embed` (llama.cpp
 server). Only `api` publishes a port, on loopback. `node/etc/systemd/system/homelab.service`
 wraps the stack so it starts after the encrypted volume is unlocked (`homelab-data.target`) and
-stops with it. Brain is bind-mounted read-only; Postgres data and model files live on the volume.
+stops with it. Brain and the corpus are bind-mounted read-only; Postgres data and model files
+live on the volume.
 
 Volume users declare `ConditionPathIsMountPoint=/srv/homelab`, `After=homelab-data.target`,
 `PartOf=homelab-data.target` and `WantedBy=homelab-data.target`. They do not require that target
@@ -66,9 +67,20 @@ purposes are refused, never defaulted. Both providers expose OpenAI-compatible A
 ## Jobs
 
 The Procrastinate app persists jobs in Postgres. Its `ping` task runs on the default queue;
-`ingest_brain` runs on the concurrency-1 `local` queue and is not scheduled.
+`ingest_brain` retains its durable task name but ingests the active collection on the
+concurrency-1 `local` queue and is not scheduled.
 
 ## Knowledge
+
+`HOMELAB_ACTIVE_COLLECTION` selects `about_aleix` (default) or `brain` for the ingest job,
+CLI and both readers. LlamaIndex stores each in its own logical `<collection>_chunks` and
+`<collection>_docs` tables (physical `data_` prefix). Switching collections leaves the other
+collection's data untouched. Public JSON corpus entries load directly as documents: question
+then answer, stable id and path, question title, id-prefix pillar type and category metadata.
+Bookkeeping, category and pillar type are hidden from embedding and LLM metadata. Non-public
+entries are skipped. Invalid individual entries log only their position; structural corpus
+errors abort before storage writes. The read-only corpus mount defaults to `/data/corpus`,
+with `HOMELAB_CORPUS_FILE=/data/corpus/about-aleix/corpus.json`.
 
 Included Markdown from Brain is loaded with source provenance, split by Markdown structure and
 sentence boundaries, embedded by the configured `embed` route, and stored in pgvector. The
@@ -85,6 +97,10 @@ without duplicates. Missing or out-of-range citations and malformed replies fail
 plain refusal. A 60-second model timeout with no retries bounds the call. Only the question and
 chunk text leave the node; logs contain question length, top-k, retrieved/cited counts, refusal
 and elapsed time, never content. This contract works with any indexed corpus.
+
+`homelab eval` measures corpus self-question hit@5 and MRR by stable provenance id, and
+refusals through the answer endpoint's code path. It requires the about-Aleix collection and
+prints only numbers and ids, without persisting an evaluation artifact.
 
 ## Rules
 

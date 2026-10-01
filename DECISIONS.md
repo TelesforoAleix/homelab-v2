@@ -125,3 +125,19 @@ exception type without exception text; requester IDs remain metadata in the node
 tracks the actual commands without a separate setup script. Registration failure is logged with
 safe metadata and does not stop polling. Plain-text replies are split at 4096 UTF-16 units so long
 answers and source lists fit Telegram without cutting a Unicode character.
+
+**2026-10-01 — One active collection setting, separate stores.** `HOMELAB_ACTIVE_COLLECTION`
+defaults to `about_aleix` and selects the loader and logical table prefix for CLI ingestion,
+the existing durable ingest task and both API readers. Brain remains available by configuration
+without modifying its indexed data or changing public request and response shapes.
+
+**2026-10-01 — Load the about-Aleix JSON directly.** Public entries become question-and-answer
+documents with stable entry ids, question titles and id-prefix pillar types. The provenance
+path is the entry id, allowing existing readers and citations to identify entries. Category is
+retained but hidden with bookkeeping metadata. A read-only corpus mount keeps draft content
+outside the repository; structural errors abort before writes and bad entries log only positions.
+
+**2026-10-01 — Evaluate corpus self-questions from the CLI.** `homelab eval` reports hit@5 and
+MRR against each entry's own id, plus retrieval miss ids and answer refusal count and ids. It
+uses the same answer code path as the API and prints numbers and ids only; no eval file or
+personal content is committed or logged.
