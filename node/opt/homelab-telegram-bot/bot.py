@@ -226,6 +226,7 @@ def send_message(chat_id: int, text: str) -> None:
 # Main loop
 # --------------------------------------------------------------------------
 
+
 def poll_forever(allowlist: set[int], router: Router) -> None:
     offset = 0
     backoff = BACKOFF_START

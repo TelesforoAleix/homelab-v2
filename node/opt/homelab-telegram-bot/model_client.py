@@ -34,8 +34,7 @@ import socket
 SOCKET_PATH = "/run/homelab-model-helper.sock"
 
 
-def request(payload: dict, *, socket_path: str = SOCKET_PATH,
-            timeout: float = 150.0) -> dict:
+def request(payload: dict, *, socket_path: str = SOCKET_PATH, timeout: float = 150.0) -> dict:
     """
     One request, one reply. Returns a dict; never raises.
 
@@ -67,24 +66,23 @@ def request(payload: dict, *, socket_path: str = SOCKET_PATH,
             chunks.append(chunk)
             total += len(chunk)
             if total > 256 * 1024:
-                return {"ok": False, "kind": "error",
-                        "message": "helper reply too large"}
+                return {"ok": False, "kind": "error", "message": "helper reply too large"}
         raw = b"".join(chunks)
     except FileNotFoundError:
-        return {"ok": False, "kind": "error",
-                "message": "the model helper is not installed on this host"}
+        return {
+            "ok": False,
+            "kind": "error",
+            "message": "the model helper is not installed on this host",
+        }
     except PermissionError:
         # The socket exists and the kernel refused us. That is the access
         # control working, and it is worth a distinct message: it means the
         # socket's group or mode is wrong, not that the helper is down.
-        return {"ok": False, "kind": "error",
-                "message": "not permitted to reach the model helper"}
+        return {"ok": False, "kind": "error", "message": "not permitted to reach the model helper"}
     except (ConnectionRefusedError, ConnectionResetError):
-        return {"ok": False, "kind": "error",
-                "message": "the model helper refused the connection"}
+        return {"ok": False, "kind": "error", "message": "the model helper refused the connection"}
     except socket.timeout:
-        return {"ok": False, "kind": "error",
-                "message": "the model helper did not reply in time"}
+        return {"ok": False, "kind": "error", "message": "the model helper did not reply in time"}
     except OSError as exc:
         return {"ok": False, "kind": "error", "message": f"helper unreachable: {exc}"}
     finally:
@@ -96,8 +94,11 @@ def request(payload: dict, *, socket_path: str = SOCKET_PATH,
     try:
         reply = json.loads(raw.decode("utf-8", errors="replace").splitlines()[0])
     except (json.JSONDecodeError, IndexError):
-        return {"ok": False, "kind": "error",
-                "message": "the model helper sent something unreadable"}
+        return {
+            "ok": False,
+            "kind": "error",
+            "message": "the model helper sent something unreadable",
+        }
 
     if not isinstance(reply, dict):
         return {"ok": False, "kind": "error", "message": "malformed helper reply"}
@@ -111,12 +112,13 @@ def ping(*, socket_path: str = SOCKET_PATH) -> dict:
 
 def spend(user_id: int, *, socket_path: str = SOCKET_PATH) -> dict:
     """Read the governor through the helper; the bot gets no ledger path."""
-    return request({"v": 1, "op": "spend", "user_id": user_id},
-                   socket_path=socket_path, timeout=10.0)
+    return request(
+        {"v": 1, "op": "spend", "user_id": user_id}, socket_path=socket_path, timeout=10.0
+    )
 
 
-def ask(question: str, context: str, user_id: int, *,
-        socket_path: str = SOCKET_PATH) -> dict:
-    return request({"v": 1, "op": "ask", "user_id": user_id,
-                    "question": question, "context": context},
-                   socket_path=socket_path)
+def ask(question: str, context: str, user_id: int, *, socket_path: str = SOCKET_PATH) -> dict:
+    return request(
+        {"v": 1, "op": "ask", "user_id": user_id, "question": question, "context": context},
+        socket_path=socket_path,
+    )

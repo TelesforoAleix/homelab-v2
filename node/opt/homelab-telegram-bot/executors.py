@@ -49,6 +49,7 @@ SYSTEMCTL = "/usr/bin/systemctl"
 # Host state. /proc and statvfs only. No subprocess.
 # --------------------------------------------------------------------------
 
+
 def _fmt_duration(seconds: float) -> str:
     s = int(seconds)
     d, s = divmod(s, 86400)
@@ -121,6 +122,7 @@ def host_name() -> str:
 # READ executors
 # --------------------------------------------------------------------------
 
+
 def _status(_args: list[str]) -> str:
     return (
         f"host:   {host_name()}\n"
@@ -152,9 +154,7 @@ def _spend(_args: list[str], user_id: int) -> str:
             lines.append(f"{kind}:")
             for window in ("hour", "day", "week", "month"):
                 item = snapshot[kind][window]
-                lines.append(
-                    f"  {window:<5} ${item['spent_usd']} / ${item['ceiling_usd']}"
-                )
+                lines.append(f"  {window:<5} ${item['spent_usd']} / ${item['ceiling_usd']}")
         lines.append(f"metered calls this week: {snapshot['week_ledger_count']}")
     except (KeyError, TypeError):
         return "Could not read spend: malformed helper reply"
@@ -164,6 +164,7 @@ def _spend(_args: list[str], user_id: int) -> str:
 # --------------------------------------------------------------------------
 # PRIVILEGED executor
 # --------------------------------------------------------------------------
+
 
 def make_restart(allowed_units: set[str], log) -> Executor:
     """
@@ -235,6 +236,7 @@ def make_restart(allowed_units: set[str], log) -> Executor:
 # The model executor — Phase 09 connected it
 # --------------------------------------------------------------------------
 
+
 def _ask(args: list[str], user_id: int) -> str:
     """
     Ask a model a question. Phase 09, ADR-025.
@@ -299,6 +301,7 @@ def _ask(args: list[str], user_id: int) -> str:
 # Registration
 # --------------------------------------------------------------------------
 
+
 def build_help(router) -> Executor:
     """
     /help, generated from the registry.
@@ -349,15 +352,14 @@ def build_help(router) -> Executor:
 
 
 def register_all(router, *, allowed_units: set[str], log) -> None:
-    router.register(Executor("/status", Capability.READ, _status,
-                             "host, uptime, load, memory, disk"))
-    router.register(Executor("/disk", Capability.READ, _disk,
-                             "root filesystem usage"))
-    router.register(Executor("/uptime", Capability.READ, _uptime,
-                             "uptime and load average"))
-    router.register(Executor("/spend", Capability.READ, _spend,
-                             "metered spend and ceilings",
-                             wants_user=True))
+    router.register(
+        Executor("/status", Capability.READ, _status, "host, uptime, load, memory, disk")
+    )
+    router.register(Executor("/disk", Capability.READ, _disk, "root filesystem usage"))
+    router.register(Executor("/uptime", Capability.READ, _uptime, "uptime and load average"))
+    router.register(
+        Executor("/spend", Capability.READ, _spend, "metered spend and ceilings", wants_user=True)
+    )
     router.register(make_restart(allowed_units, log))
     # /ask carries wants_user because the audit record of a call that spends
     # the owner's subscription allowance must name who asked for it, and
@@ -372,10 +374,15 @@ def register_all(router, *, allowed_units: set[str], log) -> None:
     # /model stays as an alias. It was the documented command from Phase 07
     # onwards and it now does what it always said it would.
     router.register(
-        Executor("/ask", Capability.READ, _ask,
-                 "ask a model a question, with /status as context",
-                 usage="/ask <question>",
-                 wants_user=True, log_args=False),
+        Executor(
+            "/ask",
+            Capability.READ,
+            _ask,
+            "ask a model a question, with /status as context",
+            usage="/ask <question>",
+            wants_user=True,
+            log_args=False,
+        ),
         "/model",
     )
     router.register(build_help(router), "/start")
