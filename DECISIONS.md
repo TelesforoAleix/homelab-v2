@@ -73,3 +73,34 @@ without duplicating instructions.
 hierarchy, so application INFO metrics otherwise disappear when the root logger has no handler.
 Give `homelab` its own stderr handler at startup and a configurable log level (INFO by default),
 without changing Uvicorn's logging or recording content.
+
+**2026-10-01 — Record host operational files under `node/`.** Paths mirror the node's filesystem:
+`node/<path>` installs at `/<path>` from the node's clone of merged `main`, after backing up and
+showing installed-file diffs. All are `root:root`; units and drop-ins use `0644`, scripts use
+`0755` and sudoers uses `0440`. The installed bytes were recorded before adoption so changes
+remain reviewable. Container route configuration stays in `config/routes.yaml`.
+
+**2026-10-01 — The agent has root through sudo; the owner approves plans.** The repository now
+records the node's existing `homelab-agent ALL=(ALL) NOPASSWD: ALL` grant. Its SSH key is accepted
+only from the owner's Mac. The owner approves what a task touches, its risks and recovery before
+execution, rather than each command. Any irreversible step outside that approval stops the run;
+recording this security boundary requires the owner's approval before merge.
+
+**2026-10-01 — Volume users rely on a mount condition and target lifecycle.** They declare
+`ConditionPathIsMountPoint=/srv/homelab`, `After=homelab-data.target`,
+`PartOf=homelab-data.target` and `WantedBy=homelab-data.target`, without requiring the target or
+placing working, root or state directories on the volume. systemd creates mount dependencies
+for those directories and runs dependency jobs before conditions, causing a locked volume to
+fail and alert instead of being skipped. `homelab.service` retains its Docker requirement and
+uses an absolute Compose file path in start and stop commands; Compose preserves the named
+project and resolves relative paths from that file's directory. Pytest checks the contract for
+every recorded unit wanted by the data target.
+
+**2026-10-01 — The notifier recognises the `homelab` alias.** The stack already invokes
+`homelab-notify@homelab.service`, but the shared script rejected that alias and dropped alerts.
+Mapping it to `homelab.service` fixes v2 alerts while keeping all five aliases still used by v1.
+
+**2026-10-01 — Verify systemd units on the node, not in CI.** `systemd-analyze verify` checks host
+executables and users that the CI runner does not have. Run it after installation on the node;
+the pytest volume-contract check runs inside the existing required CI `test` job, where it
+gates merges without inventing host users or substituting executables on the runner.

@@ -9,7 +9,7 @@
 Description=Home Lab v2 (Docker Compose stack)
 Documentation=https://github.com/TelesforoAleix/homelab-v2
 ConditionPathIsMountPoint=/srv/homelab
-Requires=docker.service homelab-data.target
+Requires=docker.service
 After=docker.service homelab-data.target
 PartOf=homelab-data.target
 OnFailure=homelab-notify@homelab.service
@@ -17,10 +17,9 @@ OnFailure=homelab-notify@homelab.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/srv/homelab/homelab-v2
 ExecStartPre=-/usr/bin/git -C /srv/homelab/homelab-v2 pull --ff-only
-ExecStart=/usr/bin/docker compose up -d --build --remove-orphans
-ExecStop=/usr/bin/docker compose down
+ExecStart=/usr/bin/docker compose -f /srv/homelab/homelab-v2/compose.yaml up -d --build --remove-orphans
+ExecStop=/usr/bin/docker compose -f /srv/homelab/homelab-v2/compose.yaml down
 TimeoutStartSec=0
 
 [Install]

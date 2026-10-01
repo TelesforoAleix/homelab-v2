@@ -1,30 +1,15 @@
 #!/usr/bin/env bash
 #
-# data-volume.sh -- unlock, lock and report the encrypted data volume (Phase 18.1, ADR-037).
+# data-volume.sh -- unlock, lock and report the encrypted data volume.
 #
-# WHY THIS EXISTS
+# The owner unlocks over SSH after boot, with a passphrase. Three verbs give
+# the owner and watchdog a way to inspect the volume without a daemon.
+# cryptsetup open is the command whose wrong-passphrase refusal was tested;
+# the equivalent systemd-cryptsetup unit is not needed here.
 #
-#   ADR-037 §3 unlocks the volume over SSH after boot, not from the initramfs and not from a TPM.
-#   That makes unlocking a thing a person does, and a thing Phase 12's watchdog will later need to
-#   ask about. Three verbs, one file, no daemon.
-#
-# WHY `cryptsetup open` RATHER THAN THE SYSTEMD UNIT
-#
-#   `systemctl start systemd-cryptsetup@homelab\x2ddata.service` is equivalent and would work. This
-#   uses `cryptsetup open` because it is the command whose refusal on a wrong passphrase the owner
-#   watched in step C4. The command you have seen refuse is the command you should trust.
-#
-# WHY `status` NEEDS NO PRIVILEGE
-#
-#   Asking whether the volume is unlocked must never require sudo: the owner asks it constantly, and
-#   Phase 12's watchdog will ask it unattended, as a service account. Only `unlock` and `lock` are
-#   privileged. `status` reads; it never opens, mounts or stops anything.
-#
-# ORDER MATTERS IN `lock`
-#
-#   Services, then mount, then key. Stopping the target first stops every unit that declares
-#   `PartOf=homelab-data.target`, so nothing is still writing when the umount happens. Reversing it
-#   gives a busy mount and a volume that will not close.
+# status only reads and needs no privilege; unlock and lock require root.
+# lock stops services, then unmounts, then closes the mapper. PartOf= stops
+# volume users before unmounting, avoiding a busy mount or ongoing writes.
 #
 set -euo pipefail
 

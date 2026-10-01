@@ -1,61 +1,24 @@
 #!/usr/bin/env bash
 #
-# homelab-notify.sh -- post one line of plain text to every allowlisted
-# Telegram chat_id (Phase 12).
+# homelab-notify.sh -- post plain text to every allowlisted Telegram chat_id.
 #
-# WHY THIS EXISTS, AND WHY IT IS THE ONLY PLACE THIS PROJECT DEFINES "SEND"
+# The watchdog and failure notifier share one send implementation so fixes
+# and token redaction cannot drift between copies.
+# --alert maps bot, model-helper, watchdog, workbench, harness and homelab
+# to unit names and adds recent journal context. This stays in a script that
+# bash -n and shellcheck can check, avoiding systemd's shell quoting and
+# %-escaping rules for embedded commands.
 #
-#   Two independent units need to reach Telegram: homelab-watchdog.service
-#   (the once-per-boot recovery notice) and homelab-notify@.service (a
-#   service's failure alert, §7.6 of the Phase 12 brief). Two copies of
-#   "build the URL, read the token, loop the allowlist, POST" is how they
-#   drift -- one gets a bug fix, the token-redaction logic in the other one
-#   doesn't, and nobody notices until the wrong one leaks something into a
-#   log. This file is called by both, so there is exactly one definition to
-#   get right.
-#
-# WHY IT ALSO KNOWS HOW TO COMPOSE A FAILURE ALERT (--alert)
-#
-#   §7.6 needs a short case statement mapping a literal alias (bot,
-#   model-helper, watchdog; workbench since Phase 18.2; harness since Phase
-#   23.0) to the unit(s) that actually failed, then a few
-#   journal lines for context, before sending. That composition step lives
-#   here, in one `bash -n`- and shellcheck-able file, rather than as an inline
-#   one-liner inside homelab-notify@.service's ExecStart= -- systemd's own
-#   quoting and %-escaping rules for a shell one-liner embedded in a unit file
-#   are exactly the kind of thing Phase 18.1's seven runbook defects were made
-#   of (written to be read once, not typed -- or in this case, parsed --
-#   under real conditions). See that unit file for the fuller argument.
-#
-# WHY THE TOKEN IS READ FROM $CREDENTIALS_DIRECTORY, NEVER FROM
-# /etc/homelab-telegram-bot/token DIRECTLY
-#
-#   Both calling units get their own LoadCredential=bot-token:... line naming
-#   the same file the bot's own unit names. systemd (PID 1, root) resolves
-#   that before this script ever runs and hands it a private tmpfs copy --
-#   this script has no DAC read permission on the source file and does not
-#   need any. Running this script outside systemd (no LoadCredential=) is a
-#   deliberate hard failure, not a fallback to a world-readable path.
-#
-# WHAT IT DELIBERATELY DOES NOT DO
-#
-#   - Retry a failed send. The calling unit's own bounded on-failure restart
-#     (or, for homelab-notify@.service, no restart at all -- see that unit's
-#     header) is the retry policy; a loop in here would duplicate or fight it.
-#   - Touch the model helper, the data volume, or anything requiring
-#     privilege. It reads one credential and one allowlist file and makes one
-#     outbound HTTPS call per recipient.
-#   - Use parse_mode or any Markdown/HTML formatting. Plain text only, matching
-#     the bot's own /status reply style (services/telegram-bot/executors.py)
-#     and avoiding a formatting foot-gun in a message this project does not
-#     need styled.
+# PID 1 supplies the credential in $CREDENTIALS_DIRECTORY. The script needs
+# no source-token permission; running outside systemd is a hard failure.
+# Calling units own retry policy. The script touches no model helper or
+# volume and needs no privilege: it reads the credential and allowlist and
+# makes an outbound HTTPS call per recipient. Plain text avoids formatting
+# errors in operational messages.
 #
 # USAGE
-#
-#   homelab-notify.sh "message text"        # send this exact text
-#   homelab-notify.sh --alert <alias>       # compose and send a failure alert
-#                                            # for bot | model-helper | watchdog
-#                                            #     | workbench | harness
+#   homelab-notify.sh "message text"
+#   homelab-notify.sh --alert <bot|model-helper|watchdog|workbench|harness|homelab>
 #
 set -euo pipefail
 
@@ -105,7 +68,7 @@ send_to_allowlist() {
             failed=$((failed + 1))
             # The token never appears in Telegram's own response, but a
             # connection-level curl error can echo back the URL it tried --
-            # redact defensively, the same discipline bot.py's redact() uses.
+            # redact defensively before logging the error.
             printf 'homelab-notify: send to chat_id %s failed: %s\n' \
                 "$chat_id" "${response//$token/<redacted-token>}" >&2
         fi
@@ -115,7 +78,7 @@ send_to_allowlist() {
     [ "$failed" -eq 0 ] || exit 1
 }
 
-# --- §7.6: map a literal alias to its unit(s) and pull recent context ------
+# --- map a literal alias to its unit(s) and pull recent context ----------
 compose_alert() {
     local alias="$1" unit logs
 
@@ -123,14 +86,15 @@ compose_alert() {
         bot)          unit="homelab-telegram-bot.service" ;;
         model-helper) unit="homelab-model-helper@*.service" ;;
         watchdog)     unit="homelab-watchdog.service" ;;
-        # Phase 18.2: the Workbench's OnFailure= drop-in names this alias.
+        # The Workbench's OnFailure= drop-in names this alias.
         # An alias not listed here dies at the notifier, so the alert for a
         # new unit is lost exactly when it is wanted -- add the case with the
         # drop-in, same commit.
         workbench)    unit="homelab-workbench.service" ;;
-        # Phase 23.0: the harness's OnFailure= drop-in names this alias.
+        # The harness's OnFailure= drop-in names this alias.
         harness)      unit="homelab-harness.service" ;;
-        *) die "unknown alert alias: '${alias}' (expected bot, model-helper, watchdog, workbench or harness)" ;;
+        homelab)      unit="homelab.service" ;;
+        *) die "unknown alert alias: '${alias}' (expected bot, model-helper, watchdog, workbench, harness or homelab)" ;;
     esac
 
     # journalctl -u accepts a glob (systemd >= 246; this node runs 259.5), so
@@ -144,7 +108,7 @@ compose_alert() {
 
 case "${1:-}" in
     --alert)
-        [ $# -eq 2 ] || die "usage: homelab-notify.sh --alert <bot|model-helper|watchdog|workbench|harness>"
+        [ $# -eq 2 ] || die "usage: homelab-notify.sh --alert <bot|model-helper|watchdog|workbench|harness|homelab>"
         compose_alert "$2"
         ;;
     -* )
