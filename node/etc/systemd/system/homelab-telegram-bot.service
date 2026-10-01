@@ -1,30 +1,39 @@
-# Home Lab Telegram status bot — Phase 07, ADR-023.
+# Home Lab Telegram bot. Installed at the same path beneath / on the node.
+# The unit is the security boundary: deny by default and enable only what the
+# handlers need. Check the running service with systemd-analyze security as well
+# as validating this file; a directive that fails to apply is not protection.
 #
-# Installed to /etc/systemd/system/homelab-telegram-bot.service
+# Host metrics and /ask are read capabilities. /restart invokes systemctl with
+# NoNewPrivileges retained; polkit grants only chrony.service restart.
+# bot.py, router.py and executors.py must be installed together. Python adds the
+# script directory to sys.path, so no PYTHONPATH is needed.
 #
-# THIS UNIT IS THE SECURITY BOUNDARY.
+# Network.target avoids a boot ordering barrier: polling backs off and retries
+# without waiting for full connectivity on a node with no console.
+# Start limits belong in [Unit]; putting the interval in [Service] is ignored.
+# Restart=on-failure keeps a deliberate clean exit stopped. The 300s limit and
+# 10s restart delay bound a tight crash loop and the resulting journal growth.
 #
-# The bot is read-only Python that never forks a process, so almost everything
-# below can be forbidden outright without breaking it. The rule applied here:
-# deny by default, and re-enable only what was demonstrably needed.
+# The token lives in systemd's credential tmpfs, owned by the service user and
+# removed on stop. Environment variables leak through /proc, dumps and logs.
+# The credential drop-in replaces the plain source with the TPM-sealed file.
 #
-# Verify with `systemd-analyze security homelab-telegram-bot.service`, and
-# check the RUNNING service rather than this file -- a directive that failed to
-# apply is silent (Phase 03's lesson about configuration versus daemon).
+# ProtectHome keeps private home files unreachable. ProcSubset=pid is omitted:
+# it hides /proc/uptime, loadavg and meminfo and makes host metrics fail.
+# ProtectProc=invisible hides other processes without hiding those host files.
+#
+# AF_UNIX lets systemctl reach PID 1 for the polkit-authorised restart. It does
+# not grant socket permissions: homelab-bot has no docker group membership and
+# cannot use the root:docker Docker socket. AF_INET/AF_INET6 permit outbound
+# Telegram HTTPS and the loopback knowledge API; the bot opens no listening port.
+# NoNewPrivileges refuses setuid sudo; polkit leaves this hardening intact.
 
 [Unit]
 Description=Home Lab Telegram status bot (read-only)
-Documentation=https://github.com/TelesforoAleix/homelab
+Documentation=https://github.com/TelesforoAleix/homelab-v2
 
-# Network, not network-online. The bot backs off and retries by design, so it
-# does not need to wait for full connectivity -- and depending on
-# network-online.target would tie a non-essential service to a boot-time
-# ordering barrier on a node with no console (ADR-020).
 After=network.target
 
-# The start rate limit belongs to the UNIT, not the service. systemd moved
-# these out of [Service] and does not error on the misplacement -- it ignores
-# the interval and carries on. See the note further down.
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -35,60 +44,20 @@ Group=homelab-bot
 
 ExecStart=/usr/bin/python3 /opt/homelab-telegram-bot/bot.py
 
-# bot.py imports router.py, executors.py and model_client.py from its own
-# directory. Python adds the script's directory to sys.path, so no PYTHONPATH is
-# needed -- but all four must be installed together or the service fails at
-# import. model_client.py joined the set in Phase 09.
-
-# --- The token -----------------------------------------------------------
-#
-# LoadCredential puts the file in $CREDENTIALS_DIRECTORY, mode 0400, owned by
-# the service user, on a tmpfs unmounted when the unit stops.
-#
-# Deliberately NOT Environment= or EnvironmentFile=. Anything that can read
-# /proc/PID/environ would see an environment variable, and environment
-# variables leak into crash dumps, `systemctl show`, and logs. A bot token is a
-# bearer credential: whoever holds it IS the bot.
 LoadCredential=bot-token:/etc/homelab-telegram-bot/token
 
 Environment=HOMELAB_BOT_ALLOWLIST=/etc/homelab-telegram-bot/allowlist
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 
-# --- Restart policy ------------------------------------------------------
-#
-# on-failure, not always: a clean exit is deliberate and should stay stopped.
-# The rate limit exists because a tight restart loop on a console-less node is
-# a self-inflicted denial of service, and journald is not free on a volume
-# group with no free extents.
 Restart=on-failure
 RestartSec=10
 
-# StartLimitIntervalSec and StartLimitBurst are in [Unit], NOT here.
-#
-# Phase 07 put them in [Service]. systemd silently ignored the interval and
-# used its 10s default, which Phase 09 found with `systemd-analyze verify`:
-#     Unknown key 'StartLimitIntervalSec' in section [Service], ignoring.
-#
-# The running unit confirmed it: StartLimitIntervalUSec=10s, not 300s. With
-# RestartSec=10 the starts are ~10s apart, so five of them could never fall
-# inside a 10s window -- the limit was not merely wrong, it was unreachable,
-# and the restart loop it was written to stop could have run forever.
-#
-# StartLimitBurst=5 WAS accepted in [Service], which is what made the mistake
-# survive: half the setting appeared to work.
-
-# --- Privilege -----------------------------------------------------------
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 UMask=0077
 
-# --- Filesystem ----------------------------------------------------------
-#
-# ProtectHome=yes is load-bearing, not decorative. The Phase 06 handover
-# requires that this process cannot reach /home/aleix or either AI OAuth file.
-# This is the directive that enforces it.
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
@@ -96,21 +65,8 @@ PrivateDevices=yes
 DevicePolicy=closed
 ProtectProc=invisible
 
-# ProcSubset=pid is deliberately NOT set, and this comment is the reason.
-#
-# It restricts /proc to process directories only, hiding /proc/uptime,
-# /proc/loadavg and /proc/meminfo. Those are exactly what this bot reads. It is
-# an excellent directive for a service that has no business reading system-wide
-# state -- and this service's entire job is reading system-wide state.
-#
-# Setting it made every /status crash with FileNotFoundError on /proc/uptime.
-# Hardening that breaks the function it protects is not hardening.
-#
-# ProtectProc=invisible is kept: it hides OTHER processes' directories, which
-# this bot genuinely does not need, without touching the files it does.
 ReadOnlyPaths=/etc/homelab-telegram-bot
 
-# --- Kernel and system ---------------------------------------------------
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
@@ -123,28 +79,8 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 
-# --- Network -------------------------------------------------------------
-#
-# Outbound HTTPS, plus AF_UNIX.
-#
-# Phase 07 deliberately omitted AF_UNIX, on the grounds that the bot talked to
-# nothing locally. Phase 08 changed that: the privileged executor runs
-# `systemctl restart`, and systemctl reaches PID 1 over a UNIX socket. Without
-# AF_UNIX the call fails at the socket, never reaching polkit.
-#
-# What this does NOT open up, checked rather than assumed: the Docker socket is
-# root:docker 0660 and homelab-bot is in no group but its own, so file
-# permissions still refuse it. AF_UNIX grants the ability to *attempt* a local
-# socket, not the right to use one.
-#
-# This is a real widening of Phase 07's posture and it is recorded as such
-# (ADR-024). It is much smaller than the alternative was: sudo is setuid and is
-# refused under NoNewPrivileges, so the sudoers approach would have meant
-# removing NoNewPrivileges to add an escalation -- weakening the process to
-# grant it privilege, rather than leaving the decision outside it.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
-# --- System calls --------------------------------------------------------
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @obsolete @mount @swap @reboot @raw-io @debug @module @cpu-emulation

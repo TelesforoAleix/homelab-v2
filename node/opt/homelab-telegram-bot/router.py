@@ -1,39 +1,16 @@
-"""
-Router — Phase 08.
+"""Registry plus dispatch, with one authorisation check before handlers.
 
-Turns a parsed command into a named capability, and decides whether this user is
-entitled to it.
-
-WHY THIS IS A TABLE AND NOT A CHAIN OF IFs
-------------------------------------------
-Phase 09 adds transcription, Phase 10 adds knowledge retrieval, Phase 12 adds
-automation. If dispatch were a chain of `if command == ...` branches, each of
-those phases would edit the same function and the authorisation check would
-drift into the branches. A registry means a new executor is a new entry, and the
-check stays in exactly one place.
-
-TWO CHECKS, NOT ONE
--------------------
-Phase 07 had authentication: *may this user talk to the bot at all?* That was
-sufficient while everything was read-only.
-
-This phase adds authorisation: *may this user invoke THIS executor?* They are
-different questions with different answers, and conflating them is how a
-read-only bot quietly acquires a privileged command.
-
-    allowlist          -> may use the bot          (authentication)
-    privileged-allow   -> may invoke PRIVILEGED    (authorisation)
-
-The second is enforced as a SUBSET of the first: a user cannot be privileged
-without first being permitted. That is checked at load time, not per request, so
-a misconfiguration is a startup failure rather than a surprise at 3am.
+The main allowlist gates use of the bot; the privileged allowlist gates changes.
+The privileged set must be a subset of the main set, checked at startup so a
+misconfiguration fails visibly. New handlers are registry entries and cannot
+accidentally bypass the capability check.
 """
 
 from __future__ import annotations
 
 import enum
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 
 class Capability(enum.Enum):
@@ -43,7 +20,7 @@ class Capability(enum.Enum):
     READ        answers from the host's own state; changes nothing.
     PRIVILEGED  changes something. Requires the privileged allowlist.
     UNAVAILABLE registered so it appears in /help and in the architecture, but
-                deliberately not wired. See executors.model_executor.
+                deliberately not wired.
     """
 
     READ = "read"
@@ -61,26 +38,11 @@ class Executor:
     summary: str
     usage: str = ""
 
-    # Phase 09 added these two, and they are the first change to this class
-    # since it was written. The Phase 08 handover hoped a new executor would
-    # never require touching dispatch(); /ask does, and the reason is recorded
-    # rather than worked around with a module-level "current user" variable,
-    # which is how this kind of thing usually gets smuggled in.
-
-    # wants_user: the handler is called with (args, user_id) instead of (args).
-    #
-    # /ask is the first executor whose action costs a shared resource -- the
-    # owner's own subscription allowance. The audit record of who spent it has
-    # to be in the record written by the process that spent it, not stitched
-    # together from two journals by timestamp.
+    # Pass (args, user_id) instead of (args) when a handler needs caller metadata.
     wants_user: bool = False
 
-    # log_args: whether the router writes the arguments to the journal.
-    #
-    # True for everything before Phase 09, and deliberately so: `/restart
-    # chrony.service` without the unit name is a useless audit line. False for
-    # /ask, because its argument is the owner's own prose. The journal should
-    # record that a question was asked and what it cost, not what was asked.
+    # /restart needs the unit name for auditing. /ask arguments are private
+    # prose: log only the question length, never its content.
     log_args: bool = True
 
 
@@ -172,13 +134,13 @@ def load_ids(path: str, *, required: bool) -> set[int]:
     Read numeric ids, one per line. '#' comments and blank lines ignored.
 
     `required` distinguishes the two allowlists. The main allowlist being empty
-    is fatal -- an empty file must never mean "allow everyone" (Phase 07). The
+    is fatal -- an empty file must never mean "allow everyone". The
     privileged allowlist being empty is FINE and means "nobody may escalate",
     which is a perfectly reasonable posture and must not stop the bot starting.
     """
     ids: set[int] = set()
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.split("#", 1)[0].strip()
                 if not line:

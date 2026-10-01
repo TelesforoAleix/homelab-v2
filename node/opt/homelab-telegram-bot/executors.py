@@ -1,41 +1,20 @@
-"""
-Executors — Phase 08.
+"""Each executor declares its capability; the router checks entitlement.
 
-Each executor does one thing and declares what it needs. The router decides
-whether the caller is entitled to it; nothing here re-decides that.
-
-THE READ EXECUTORS STILL NEVER FORK
------------------------------------
-Every figure comes from /proc, /etc/hostname or os.statvfs(). That was a Phase 07
-property and it is kept: a process that cannot execute a program cannot be talked
-into executing the wrong one.
-
-THE PRIVILEGED EXECUTOR BREAKS THAT, DELIBERATELY
--------------------------------------------------
-`restart` execs /usr/bin/systemctl. That is a real loss of a Phase 07 guarantee
-and it is recorded rather than glossed. What replaces it:
-
-  - NoNewPrivileges=yes is RETAINED, so the exec cannot gain privilege via
-    setuid. This is why polkit is used instead of sudo -- sudo is setuid and
-    is refused outright under no_new_privs:
-        "sudo: The "no new privileges" flag is set, which prevents sudo from
-         running as root."
-  - CapabilityBoundingSet is empty.
-  - The authority comes from a polkit rule scoped to ONE user, ONE unit and ONE
-    verb -- evaluated by polkit inside PID 1, not by anything in this process.
-  - The unit name is checked against an explicit allowlist here as well, so a
-    bug in this file cannot reach a unit the rule would have permitted.
-
-Two independent gates, in two different processes, neither trusting the other.
+Host metrics come from /proc, /etc/hostname and statvfs without subprocesses.
+Only /restart executes systemctl, with an exact argv and no shell. It retains
+NoNewPrivileges and an empty capability set: polkit authorises one user, unit
+and verb outside this process, while the restart allowlist is a second gate.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
+import urllib.error
+import urllib.request
 
-import model_client
 from router import Capability, Executor
 
 SYSTEMCTL = "/usr/bin/systemctl"
@@ -71,19 +50,19 @@ def _fmt_bytes(n: float) -> str:
 
 
 def host_uptime() -> str:
-    with open("/proc/uptime", "r", encoding="utf-8") as fh:
+    with open("/proc/uptime", encoding="utf-8") as fh:
         return _fmt_duration(float(fh.read().split()[0]))
 
 
 def host_load() -> str:
-    with open("/proc/loadavg", "r", encoding="utf-8") as fh:
+    with open("/proc/loadavg", encoding="utf-8") as fh:
         one, five, fifteen = fh.read().split()[:3]
     return f"{one} {five} {fifteen}"
 
 
 def host_memory() -> str:
     vals = {}
-    with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+    with open("/proc/meminfo", encoding="utf-8") as fh:
         for line in fh:
             key, _, rest = line.partition(":")
             vals[key] = int(rest.split()[0]) * 1024
@@ -100,7 +79,7 @@ def host_disk(path: str = "/") -> str:
 
     used = total - f_bfree, available = f_bavail. The naive
     `used = total - available` counts the filesystem's root-reserved blocks as
-    used and reported 19.3G where df said 8.9G (Phase 07 build log).
+    used and reported 19.3G where df said 8.9G (root-reserved space).
     """
     st = os.statvfs(path)
     total = st.f_blocks * st.f_frsize
@@ -112,7 +91,7 @@ def host_disk(path: str = "/") -> str:
 
 def host_name() -> str:
     try:
-        with open("/etc/hostname", "r", encoding="utf-8") as fh:
+        with open("/etc/hostname", encoding="utf-8") as fh:
             return fh.read().strip()
     except OSError:
         return socket.gethostname()
@@ -139,26 +118,6 @@ def _disk(_args: list[str]) -> str:
 
 def _uptime(_args: list[str]) -> str:
     return f"uptime: {host_uptime()}\nload:   {host_load()}"
-
-
-def _spend(_args: list[str], user_id: int) -> str:
-    reply = model_client.spend(user_id)
-    if not reply.get("ok"):
-        return f"Could not read spend: {reply.get('message', 'the model helper failed')}"
-    snapshot = reply.get("spend")
-    if not isinstance(snapshot, dict):
-        return "Could not read spend: malformed helper reply"
-    lines = ["Metered spend (USD, rolling windows):"]
-    try:
-        for kind in ("attended", "unattended"):
-            lines.append(f"{kind}:")
-            for window in ("hour", "day", "week", "month"):
-                item = snapshot[kind][window]
-                lines.append(f"  {window:<5} ${item['spent_usd']} / ${item['ceiling_usd']}")
-        lines.append(f"metered calls this week: {snapshot['week_ledger_count']}")
-    except (KeyError, TypeError):
-        return "Could not read spend: malformed helper reply"
-    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------
@@ -209,7 +168,7 @@ def make_restart(allowed_units: set[str], log) -> Executor:
             log(f"restart {unit}: TIMEOUT")
             return f"restart {unit}: timed out after 30s"
         except OSError as exc:
-            log(f"restart {unit}: could not execute systemctl: {exc}")
+            log(f"/restart {unit}: could not execute systemctl: {type(exc).__name__}")
             return f"restart {unit}: could not run systemctl ({exc})"
 
         if proc.returncode == 0:
@@ -233,68 +192,55 @@ def make_restart(allowed_units: set[str], log) -> Executor:
 
 
 # --------------------------------------------------------------------------
-# The model executor — Phase 09 connected it
+# Knowledge answers
 # --------------------------------------------------------------------------
 
+ANSWER_URL = "http://127.0.0.1:8000/v1/knowledge/answer"
 
-def _ask(args: list[str], user_id: int) -> str:
-    """
-    Ask a model a question. Phase 09, ADR-025.
 
-    THIS EXECUTOR CANNOT REACH A PRIVILEGED ONE
-    -------------------------------------------
-    It returns a string. That string is sent to Telegram and nothing else is
-    done with it -- it is never parsed, never matched against the registry, and
-    never passed back into dispatch(). The router's capability check is what
-    guarantees `/ask` cannot become a route to `/restart`, and the reason it
-    holds is that there is no code path from a model's output to a dispatch.
+def _ask(args: list[str]) -> str:
+    """Return text to send, never commands to dispatch or tools to execute.
 
-    That is not a theoretical concern. A model with its tools disabled will
-    happily EMIT TEXT SHAPED LIKE A TOOL CALL: during Phase 09 testing, Haiku
-    with --tools "" replied with a function_calls block and a confabulated
-    answer. Anything that parsed model output looking for commands would have
-    found one.
-
-    WHAT THIS SENDS OFF THE MACHINE
-    -------------------------------
-    The question, and the literal output of /status. That is all, and it is the
-    same five figures the owner can already see on their phone. The list is
-    enforced here by construction: _status() is called with no arguments and
-    there is nowhere to add a sixth source without editing this line.
+    The API sends only the question and retrieved chunks to its configured chat
+    route. Model output is never parsed as a command or returned to the router.
     """
     question = " ".join(args).strip()
     if not question:
-        return (
-            "Usage: /ask <question>\n\n"
-            "Sends your question and the /status figures to a model.\n"
-            "Nothing else about this host is sent."
-        )
+        return "Usage: /ask <question>\nAnswers from indexed knowledge, with numbered sources."
 
-    context = _status([])
-    reply = model_client.ask(question, context, user_id)
+    request = urllib.request.Request(
+        ANSWER_URL,
+        data=json.dumps({"question": question}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        # Allow retrieval plus the API's 60-second model timeout. No helper,
+        # provider credentials or third-party client belongs in this process.
+        with urllib.request.urlopen(request, timeout=90) as response:
+            reply = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError):
+        return "The knowledge service is down. Try again later; /status still works."
+    except (ValueError, UnicodeError):
+        return "The knowledge service returned an invalid response."
 
-    if reply.get("ok"):
-        text = str(reply.get("text", "")).strip() or "(the model returned nothing)"
-        provider = reply.get("provider", "?")
-        model = reply.get("model", "?")
-        # The provenance line is not decoration. Two providers answer here and
-        # they are not interchangeable; the owner should never have to guess
-        # which subscription just paid for an answer.
-        return f"{text}\n\n-- {provider}/{model}"
-
-    kind = reply.get("kind", "error")
-    message = str(reply.get("message", "the model helper failed"))
-
-    if kind == "exhausted":
-        lines = ["Both providers are spent."]
-        for item in reply.get("detail", []) or []:
-            lines.append(f"  {item}")
-        lines.append("")
-        lines.append("This is a usage limit, not a fault. The read-only")
-        lines.append("commands are unaffected -- try /status.")
+    try:
+        answer = reply["answer"]
+        refused = reply["refused"]
+        if not isinstance(answer, str) or not answer.strip() or not isinstance(refused, bool):
+            raise ValueError("invalid answer")
+        if refused:
+            return answer
+        sources = reply["sources"]
+        lines = [answer, "", "Sources:"]
+        for source in sources:
+            number, title = source["number"], source["title"]
+            if type(number) is not int or number < 1 or not isinstance(title, str):
+                raise ValueError("invalid source")
+            lines.append(f"[{number}] {title}")
         return "\n".join(lines)
-
-    return f"Could not ask a model: {message}"
+    except (KeyError, TypeError, ValueError):
+        return "The knowledge service returned an invalid response."
 
 
 # --------------------------------------------------------------------------
@@ -325,11 +271,8 @@ def build_help(router) -> Executor:
 
         # The legend describes what is actually on the list above.
         #
-        # Phase 09 connected the last UNAVAILABLE executor, and /help went on
-        # explaining a "-" marker that no longer appeared against anything --
-        # help text describing a state the system had left behind. Deriving the
-        # legend from the registry is the same principle as deriving the command
-        # list from it: prose that is maintained by hand goes stale silently.
+        # Derive the legend from the registry too, so it cannot describe a
+        # capability that no registered command uses.
         legend = []
         if Capability.PRIVILEGED in seen:
             legend.append(" * privileged — requires authorisation")
@@ -343,10 +286,7 @@ def build_help(router) -> Executor:
         name="/help",
         capability=Capability.READ,
         handler=handler,
-        # "list the commands", not "this message". The summary is now read in
-        # two places -- /help itself, and the Telegram command menu on the
-        # phone, which configure-telegram-bot-profile.sh derives from this
-        # registry. "this message" only made sense in one of them.
+        # Shared by /help and the Telegram command menu.
         summary="list the commands",
     )
 
@@ -357,32 +297,16 @@ def register_all(router, *, allowed_units: set[str], log) -> None:
     )
     router.register(Executor("/disk", Capability.READ, _disk, "root filesystem usage"))
     router.register(Executor("/uptime", Capability.READ, _uptime, "uptime and load average"))
-    router.register(
-        Executor("/spend", Capability.READ, _spend, "metered spend and ceilings", wants_user=True)
-    )
     router.register(make_restart(allowed_units, log))
-    # /ask carries wants_user because the audit record of a call that spends
-    # the owner's subscription allowance must name who asked for it, and
-    # log_args=False because the argument is the owner's own prose.
-    #
-    # Capability.READ, not PRIVILEGED. It reads /proc and talks to a socket it
-    # is permitted to talk to; it gains no privilege on this host. The thing it
-    # spends is a subscription allowance, and that is rationed by the helper's
-    # caps rather than by the router's allowlist -- a resource limit is not an
-    # authorisation question.
-    #
-    # /model stays as an alias. It was the documented command from Phase 07
-    # onwards and it now does what it always said it would.
+    # /ask changes no host state, and its prose must stay out of the journal.
     router.register(
         Executor(
             "/ask",
             Capability.READ,
             _ask,
-            "ask a model a question, with /status as context",
+            "ask indexed knowledge, with cited sources",
             usage="/ask <question>",
-            wants_user=True,
             log_args=False,
-        ),
-        "/model",
+        )
     )
     router.register(build_help(router), "/start")

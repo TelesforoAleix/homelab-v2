@@ -1,58 +1,15 @@
 #!/usr/bin/env python3
-"""
-Home Lab status bot — Phase 07.
+"""Home Lab Telegram client, using long polling and the standard library.
 
-A deterministic, read-only Telegram bot. It reports this machine's own state
-and can change nothing.
-
-DESIGN CONSTRAINTS, and why each one is here
---------------------------------------------
-
-1. NO INBOUND PORT.
-   Telegram offers two ways to receive messages: webhooks (Telegram connects to
-   you) and long polling (you connect to Telegram). This uses long polling, so
-   the bot opens only OUTBOUND HTTPS. It listens on nothing.
-
-   That is not a preference. This node has no firewall, and `:22` is the only
-   port reachable off-box. Long polling is what makes running this safe here.
-   Moving to webhooks would need a publicly reachable inbound HTTPS endpoint and
-   would change the exposure model completely (ADR-023).
-
-2. NO THIRD-PARTY DEPENDENCIES.
-   The Telegram Bot API is JSON over HTTPS. The standard library does it. A
-   dependency here would be a supply-chain risk and an upgrade obligation in
-   exchange for saving about forty lines (AGENTS.md: prefer minimal,
-   comprehensible implementations).
-
-3. NO SUBPROCESSES. AT ALL.
-   Every figure below comes from /proc, /etc/hostname or os.statvfs(). The bot
-   never forks or executes anything, which means the systemd unit can forbid it
-   outright. A bot that cannot execute a program cannot be talked into executing
-   the wrong one.
-
-4. READ-ONLY.
-   There is no command that changes anything. A compromise leaks host metrics;
-   it cannot act. Escalation is Phase 08's problem, deliberately (ADR-011).
-
-5. THE ALLOWLIST IS CHECKED ONCE, BEFORE DISPATCH.
-   Anyone who finds a Telegram bot can message it. The check lives in the
-   dispatch loop rather than inside each handler, so a command added later
-   cannot accidentally be unprotected.
-
-THE TOKEN
----------
-Supplied by systemd `LoadCredential=`, read from $CREDENTIALS_DIRECTORY. It is
-deliberately NOT an environment variable: anything able to read the process's
-/proc/PID/environ would see it, and environment variables have a habit of
-turning up in crash dumps and logs.
-
-It is never logged. `redact()` exists for the case where an exception message
-would otherwise carry the URL it was built into.
+Long polling needs outbound HTTPS and no inbound port. The main allowlist is
+checked once before dispatch, so new handlers cannot accidentally be public.
+The router separately gates /restart; /ask only returns text for Telegram.
+The token comes from systemd's credential directory, never the environment.
+Handler failures must log only metadata, since exception text can contain prose.
 """
 
 import json
 import os
-import socket
 import ssl
 import sys
 import time
@@ -86,19 +43,6 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def redact(text: str) -> str:
-    """
-    Remove the token from a string before it can reach the journal.
-
-    Error messages from urllib often include the full URL, and the token is IN
-    the URL for every Telegram API call. Without this, one connection error
-    would write a permanent bearer credential into the system journal.
-    """
-    if _TOKEN and _TOKEN in text:
-        text = text.replace(_TOKEN, "<redacted-token>")
-    return text
-
-
 def load_token() -> str:
     """
     Read the bot token from the systemd credential directory.
@@ -118,7 +62,7 @@ def load_token() -> str:
         )
     path = os.path.join(cred_dir, "bot-token")
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             token = fh.read().strip()
     except OSError as exc:
         sys.exit(f"ERROR: cannot read the bot token credential: {exc}")
@@ -132,8 +76,7 @@ def load_allowlist() -> set[int]:
     Read permitted Telegram user IDs, one per line. Blank lines and # comments
     are ignored.
 
-    This is not a secret -- it is a list of numeric IDs -- but it is
-    deployment-specific, so it lives on the node rather than in the repository.
+    The file contains private deployment data and stays on the node.
 
     An EMPTY allowlist is a hard error, not "allow everyone". A misconfiguration
     must fail closed: the failure mode of an accidentally-empty file must never
@@ -142,7 +85,7 @@ def load_allowlist() -> set[int]:
     path = os.environ.get("HOMELAB_BOT_ALLOWLIST", "/etc/homelab-telegram-bot/allowlist")
     ids: set[int] = set()
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.split("#", 1)[0].strip()
                 if not line:
@@ -188,7 +131,7 @@ def load_restart_units() -> set[str]:
     )
     units: set[str] = set()
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.split("#", 1)[0].strip()
                 if line:
@@ -216,10 +159,71 @@ def api_call(method: str, params: dict | None = None, timeout: int = 30) -> dict
 
 
 def send_message(chat_id: int, text: str) -> None:
+    for part in split_message(text):
+        try:
+            response = api_call("sendMessage", {"chat_id": chat_id, "text": part}, timeout=30)
+            if not response.get("ok"):
+                log("WARNING: sendMessage returned not-ok")
+                return
+        except Exception as exc:  # noqa: BLE001 - never let a reply failure kill the loop
+            log(f"WARNING: sendMessage failed: {type(exc).__name__}")
+            return
+
+
+def split_message(text: str) -> list[str]:
+    """Split plain text below Telegram's 4096 limit, counting UTF-16 units.
+
+    Counting supplementary characters twice also works for clients that measure
+    the limit in Unicode characters. No markup parsing or escape rules apply.
+    """
+    parts = []
+    chars = []
+    units = 0
+    for char in text:
+        size = 2 if ord(char) > 0xFFFF else 1
+        if units + size > 4096:
+            parts.append("".join(chars))
+            chars, units = [], 0
+        chars.append(char)
+        units += size
+    if chars:
+        parts.append("".join(chars))
+    return parts
+
+
+def register_profile(router: Router) -> None:
+    commands = [
+        {"command": name.removeprefix("/"), "description": executor.summary}
+        for name, executor in router.executors.items()
+    ]
+    description = "Home Lab commands: " + "; ".join(
+        f"/{command['command']}: {command['description']}" for command in commands
+    )
+    for method, params in (
+        ("setMyCommands", {"commands": json.dumps(commands)}),
+        ("setMyDescription", {"description": description}),
+    ):
+        try:
+            response = api_call(method, params)
+            if response.get("ok"):
+                log(f"Telegram command registration {method} succeeded")
+            else:
+                log(f"WARNING: Telegram command registration {method} returned not-ok")
+        except Exception as exc:  # noqa: BLE001 - registration must not stop polling
+            log(f"WARNING: Telegram command registration {method} failed: {type(exc).__name__}")
+
+
+def dispatch_reply(router: Router, user_id: int, text: str) -> str:
+    # A handler failure must not cause a restart loop driven by one pending
+    # message. Log the registered command, never arguments or exception text.
     try:
-        api_call("sendMessage", {"chat_id": chat_id, "text": text}, timeout=30)
-    except Exception as exc:  # noqa: BLE001 - never let a reply failure kill the loop
-        log(f"WARNING: sendMessage failed: {redact(str(exc))}")
+        return router.dispatch(user_id, text)
+    except Exception as exc:  # noqa: BLE001 - a command must never be fatal
+        command, _ = router.parse(text)
+        executor = router.executors.get(command)
+        name = executor.name if executor else "unknown"
+        log(f"ERROR: command {name} failed for user {user_id}: {type(exc).__name__}")
+        return "That command failed. The error is in the journal."
 
 
 # --------------------------------------------------------------------------
@@ -247,7 +251,7 @@ def poll_forever(allowlist: set[int], router: Router) -> None:
             # journal full of identical lines, and journald is not free on a
             # volume group with no free extents.
             if not outage_logged:
-                log(f"WARNING: Telegram unreachable, backing off: {redact(str(exc))}")
+                log(f"WARNING: Telegram unreachable, backing off: {type(exc).__name__}")
                 outage_logged = True
             time.sleep(backoff)
             backoff = min(backoff * 2, BACKOFF_MAX)
@@ -259,7 +263,7 @@ def poll_forever(allowlist: set[int], router: Router) -> None:
         backoff = BACKOFF_START
 
         if not resp.get("ok"):
-            log(f"WARNING: getUpdates returned not-ok: {redact(json.dumps(resp))}")
+            log("WARNING: getUpdates returned not-ok")
             time.sleep(backoff)
             continue
 
@@ -281,24 +285,7 @@ def poll_forever(allowlist: set[int], router: Router) -> None:
                 send_message(chat_id, "Not authorised.")
                 continue
 
-            # A failing handler must not kill the bot.
-            #
-            # Without this, one exception inside a command took the whole
-            # process down, systemd restarted it, the same message was still
-            # pending, and it crashed again -- a restart loop driven by a
-            # single bad message. That is exactly how a read-only status bot
-            # turns into a self-inflicted outage on a console-less node.
-            #
-            # Found in the reference build: ProcSubset=pid in the unit hid
-            # /proc/uptime, so every /status raised FileNotFoundError.
-            try:
-                reply = router.dispatch(user_id, text)
-            except Exception as exc:  # noqa: BLE001 - a command must never be fatal
-                log(f"ERROR: command failed for user {user_id}: {redact(str(exc))}")
-                send_message(chat_id, "That command failed. The error is in the journal.")
-                continue
-
-            send_message(chat_id, reply)
+            send_message(chat_id, dispatch_reply(router, user_id, text))
 
 
 def main() -> None:
@@ -330,6 +317,8 @@ def main() -> None:
         f"{len(restart_units)} restartable unit(s), "
         f"{len(router.unique_executors())} executors registered"
     )
+
+    register_profile(router)
 
     try:
         poll_forever(allowlist, router)
