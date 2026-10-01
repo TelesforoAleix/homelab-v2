@@ -18,7 +18,8 @@ its server, uses mature libraries for the machinery, and optimises for building 
 
 The FastAPI service exposes health, an ingestion trigger, top-k retrieval with provenance and
 answers grounded in retrieved knowledge with numbered citations.
-`homelab ingest` also indexes included Brain Markdown incrementally. Procrastinate provides a
+`homelab ingest` indexes the active collection incrementally: public entries from the
+about-Aleix JSON corpus by default, or included Brain Markdown. Procrastinate provides a
 durable Postgres-backed worker, and Docker Compose defines the loopback-only stack.
 
 ## Run it
@@ -80,6 +81,20 @@ It returns `answer`, `refused` and `sources`: each cited chunk's `number`, `titl
 malformed model replies or missing/invalid citations also fail closed. Metrics record lengths,
 counts, refusal and timing, without question, chunk or answer content.
 
+Knowledge operations share `HOMELAB_ACTIVE_COLLECTION` (`about_aleix` by default, or `brain`).
+Each collection has separate chunk and document tables; switching does not rebuild Brain.
+The corpus is mounted read-only from `${HOMELAB_CORPUS_PATH:-/srv/homelab/corpus}` at
+`/data/corpus`. `HOMELAB_CORPUS_FILE` defaults to `/data/corpus/about-aleix/corpus.json`.
+Public JSON entries become documents whose titles are their questions and whose provenance
+paths are stable entry ids. Other visibility values are skipped. Invalid individual entries
+are skipped with position-only warnings; invalid JSON, a non-list root or duplicate public ids
+abort ingestion before writing.
+
+`homelab eval` reads the same corpus and asks every public entry's own question against
+`about_aleix`. It prints only document count, hit@5, mean reciprocal rank (MRR), retrieval miss
+ids, refusal count and refusal ids. Answers use the same path as the answer endpoint; no eval
+file is written. Run it inside the app container on the node after ingestion.
+
 On a laptop, for development:
 
 ```bash
@@ -94,7 +109,7 @@ uv run uvicorn homelab.api.app:app --reload
 |---|---|
 | `src/homelab/api/` | FastAPI — the one published port |
 | `src/homelab/models/` | the route table: purpose → provider + model, and framework clients built from it |
-| `src/homelab/knowledge/` | Markdown ingestion and retrieval with provenance through LlamaIndex |
+| `src/homelab/knowledge/` | JSON/Markdown ingestion and retrieval with provenance through LlamaIndex |
 | `src/homelab/jobs/` | Procrastinate tasks and the worker |
 | `config/routes.yaml` | which model serves which purpose |
 | `node/` | host operational files, mirroring their installed paths |

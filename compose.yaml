@@ -11,10 +11,13 @@ x-app: &app
     HOMELAB_GATEWAY_API_KEY_FILE: /run/secrets/gateway_api_key
     HOMELAB_LOCAL_BASE_URL: http://llama-embed:8080/v1
     HOMELAB_BRAIN_DIR: /data/brain
+    HOMELAB_ACTIVE_COLLECTION: ${HOMELAB_ACTIVE_COLLECTION:-about_aleix}
+    HOMELAB_CORPUS_FILE: ${HOMELAB_CORPUS_FILE:-/data/corpus/about-aleix/corpus.json}
   secrets:
     - gateway_api_key
   volumes:
     - ${HOMELAB_BRAIN_PATH:-/srv/homelab/brain}:/data/brain:ro
+    - ${HOMELAB_CORPUS_PATH:-/srv/homelab/corpus}:/data/corpus:ro
   depends_on:
     postgres:
       condition: service_healthy

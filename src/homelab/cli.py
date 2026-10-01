@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from homelab.knowledge.index import build_stores, ingest, probe_embedding_dimension
-from homelab.knowledge.sources import load_brain_documents
+from homelab.knowledge.sources import load_documents
 from homelab.models import load_routes
 from homelab.settings import get_settings
 
@@ -22,7 +22,9 @@ def _routes() -> int:
 
 def _ingest(brain_dir: Path | None, dry_run: bool) -> int:
     settings = get_settings()
-    documents = load_brain_documents(brain_dir or settings.brain_dir, settings.brain_include)
+    if brain_dir is not None:
+        settings = settings.model_copy(update={"brain_dir": brain_dir})
+    documents = load_documents(settings)
     if dry_run:
         print(f"documents_seen={len(documents)} dry_run=true")
         return 0
@@ -47,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_parser.add_argument("--brain-dir", type=Path)
     ingest_parser.add_argument("--dry-run", action="store_true")
     subparsers.add_parser("routes")
+    subparsers.add_parser("eval")
     return parser
 
 
@@ -54,4 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "routes":
         return _routes()
+    if args.command == "eval":
+        from homelab.knowledge.evaluate import run_eval
+
+        return run_eval()
     return _ingest(args.brain_dir, args.dry_run)
