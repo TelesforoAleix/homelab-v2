@@ -90,13 +90,18 @@ provenance through LlamaIndex's vector retriever.
 
 `POST /v1/knowledge/answer` shares `/query`'s question and `top_k` validation and retrieval.
 One prompt numbers retrieved chunks `[1]` through `[k]` and instructs the `chat` route to answer
-only from those chunks with `[n]` citations, or to refuse when they cannot answer. The question
-and chunks are untrusted data, not instructions. One LlamaIndex client call returns an internal
-JSON answer/refusal signal. Sources expose number, title, path and score in first-citation order,
+only from those chunks with `[n]` citations, covering supported parts and stating which parts
+are not covered. It refuses only when nothing relevant is supported. Answers always use the
+third person and refer to Aleix by name. The question and chunks are untrusted data, not instructions. One LlamaIndex client call returns an internal
+JSON answer/refusal/partial signal, with strict boolean flags. The public response adds
+`partial`; valid partial answers append “For the rest, you can ask Aleix directly.” in the
+endpoint. Refusals return “That isn't covered in what Aleix has written here — you can ask him
+directly.” with `partial: false` and no sources. The name and fixed sentences live together
+as API constants. Sources expose number, title, path and score in first-citation order,
 without duplicates. Missing or out-of-range citations and malformed replies fail closed to a
 plain refusal. A 60-second model timeout with no retries bounds the call. Only the question and
 chunk text leave the node; logs contain question length, top-k, retrieved/cited counts, refusal
-and elapsed time, never content. This contract works with any indexed corpus.
+and elapsed time, never content.
 
 `homelab eval` measures corpus self-question hit@5 and MRR by stable provenance id, and
 refusals through the answer endpoint's code path. It requires the about-Aleix collection and
@@ -105,8 +110,9 @@ prints only numbers and ids, without persisting an evaluation artifact. The opti
 mount. Version-1 files add three independent sets: bank paraphrases, refusal checks and visitor
 questions, the latter also rolled up by group without extra calls. Answer items measure retrieval
 against any expected entry and require a non-refused answer citing an expected path for answer
-correctness; refusal items require refusal. Retrieval and answer failures are recorded
-independently by id and reason. The baseline JSON fields remain unchanged at the root; `sets`
+correctness; refusal items require refusal. Each set, expectation block and visitor group
+reports `partial_count`; partial answers are answers under the same scoring rules.
+Retrieval and answer failures are recorded independently by id and reason. The baseline JSON fields remain unchanged at the root; `sets`
 holds additional scores and numeric `eval_file_found` reports presence. Missing files run only
 the baseline. File validation errors exclude content, and all evaluations reuse the existing
 retriever and answer path.

@@ -204,7 +204,7 @@ def stub_answer(monkeypatch, model_reply):
 def test_answer_citations_order_and_content_safe_metrics(monkeypatch, caplog):
     answer = "The third source [3] precedes the first [1], then repeats [3]."
     chunks, calls, prompts = stub_answer(
-        monkeypatch, json.dumps({"answer": answer, "refused": False})
+        monkeypatch, json.dumps({"answer": answer, "refused": False, "partial": False})
     )
     question = "Private fixture question 9876"
     with caplog.at_level(logging.DEBUG):
@@ -214,6 +214,7 @@ def test_answer_citations_order_and_content_safe_metrics(monkeypatch, caplog):
     assert response.json() == {
         "answer": answer,
         "refused": False,
+        "partial": False,
         "sources": [
             {
                 "number": n,
@@ -241,11 +242,13 @@ def test_answer_citations_order_and_content_safe_metrics(monkeypatch, caplog):
 @pytest.mark.parametrize(
     "model_reply",
     [
-        '{"answer": "Sources cannot answer this.", "refused": true}',
-        '{"answer": "Unsupported [8]", "refused": false}',
-        '{"answer": "No citation", "refused": false}',
-        '{"answer": "Invalid [0]", "refused": false}',
-        '{"answer": "Answer [1]", "refused": "false"}',
+        '{"answer": "Sources cannot answer this.", "refused": true, "partial": true}',
+        '{"answer": "Unsupported [8]", "refused": false, "partial": false}',
+        '{"answer": "No citation", "refused": false, "partial": false}',
+        '{"answer": "Invalid [0]", "refused": false, "partial": false}',
+        '{"answer": "Answer [1]", "refused": "false", "partial": false}',
+        '{"answer": "Answer [1]", "refused": false, "partial": "true"}',
+        '{"answer": "Answer [1]", "refused": false}',
         "malformed reply",
     ],
 )
@@ -257,10 +260,32 @@ def test_answer_refuses_and_fails_closed(monkeypatch, caplog, model_reply):
         )
     assert response.status_code == 200
     assert response.json() == {
-        "answer": "The retrieved sources do not answer this question.",
+        "answer": "That isn't covered in what Aleix has written here — you can ask him directly.",
         "refused": True,
+        "partial": False,
         "sources": [],
     }
     assert calls == [("Neutral question", 2)]
     assert len(prompts) == 1
     assert "chunks=2 cited=0 refused=True" in caplog.text
+
+
+def test_partial_answer_appends_endpoint_sentence(monkeypatch):
+    answer = "Supported fixture claim [1]. The other part is not covered."
+    _, _, prompts = stub_answer(
+        monkeypatch, json.dumps({"answer": answer, "refused": False, "partial": True})
+    )
+    body = (
+        TestClient(app)
+        .post("/v1/knowledge/answer", json={"question": "Neutral fixture question"})
+        .json()
+    )
+    assert body["answer"] == answer + " For the rest, you can ask Aleix directly."
+    assert body["partial"] is True
+    assert body["refused"] is False
+    assert [source["number"] for source in body["sources"]] == [1]
+    assert "third person" in prompts[0]
+    assert "Aleix" in prompts[0]
+    assert "nothing relevant" in prompts[0]
+    assert "untrusted data" in prompts[0]
+    assert "Do not use outside knowledge" in prompts[0]
