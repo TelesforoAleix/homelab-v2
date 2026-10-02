@@ -15,8 +15,8 @@ providers:
 routes:
   chat:
     provider: gateway
-    # Verified through this gateway on 2026-09-13. Change freely; nothing else moves.
-    model: openai/gpt-5.6-luna
+    # Owner-selected for lower-cost grounded answers and corpus evaluation.
+    model: deepseek/deepseek-v4.1-flash
   embed:
     provider: local
     # The index is built with this model. Changing it means reindexing.

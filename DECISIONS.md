@@ -141,3 +141,10 @@ outside the repository; structural errors abort before writes and bad entries lo
 MRR against each entry's own id, plus retrieval miss ids and answer refusal count and ids. It
 uses the same answer code path as the API and prints numbers and ids only; no eval file or
 personal content is committed or logged.
+
+
+**2026-10-02 — Use DeepSeek V4.1 Flash for the chat route.** The owner selected
+`deepseek/deepseek-v4.1-flash` through Vercel AI Gateway for lower-cost grounded answers and
+explicitly approved sending the draft corpus questions and retrieved chunks through this route
+for evaluation. The shared setting applies to API answers, Telegram `/ask` and the CLI eval;
+local embeddings and both collections' indexed data remain unchanged.
