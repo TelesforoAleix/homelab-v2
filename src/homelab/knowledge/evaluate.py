@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from math import ceil
 from pathlib import Path
@@ -14,6 +15,10 @@ from llama_index.core import Document
 
 from homelab.knowledge.sources import load_corpus_documents
 from homelab.settings import get_settings
+
+
+def _first_person(response) -> bool:
+    return not response.refused and bool(re.search(r"\b(?:I|me|my|mine)\b", response.answer, re.I))
 
 
 def _latency(durations: list[float]) -> dict[str, int | float]:
@@ -43,6 +48,7 @@ def evaluate(
     failures = []
     durations = []
     hits = 0
+    first_person_count = 0
     for document in documents:
         question = document.metadata["title"]
         rank = 0
@@ -54,7 +60,9 @@ def evaluate(
             )
             if not rank:
                 misses.append(document.id_)
-            if _timed_answer(answerer, question, durations).refused:
+            response = _timed_answer(answerer, question, durations)
+            first_person_count += _first_person(response)
+            if response.refused:
                 refusals.append(document.id_)
         except Exception as error:
             failures.append(
@@ -74,6 +82,7 @@ def evaluate(
         "miss_ids": misses,
         "refusal_count": len(refusals),
         "refusal_ids": refusals,
+        "first_person_count": first_person_count,
         "error_count": len(failures),
         "failures": failures,
         "answer_latency_seconds": _latency(durations),
@@ -150,6 +159,7 @@ def _summarize(items: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         **metrics(items),
+        "first_person_count": sum(item["first_person"] for item in items),
         "answer": {
             **metrics(answers),
             "count": count,
@@ -183,6 +193,7 @@ def evaluate_sets(
             correct = False
             error_type = None
             durations = []
+            first_person = False
             try:
                 if item["expect"] == "answer":
                     chunks = retriever(item["question"], 5)
@@ -197,6 +208,7 @@ def evaluate_sets(
                     if not rank:
                         reasons.append("retrieval_miss")
                 response = _timed_answer(answerer, item["question"], durations)
+                first_person = _first_person(response)
                 if item["expect"] == "answer":
                     correct = not response.refused and any(
                         source.path in item["entries"] for source in response.sources
@@ -220,6 +232,7 @@ def evaluate_sets(
                     "reasons": reasons,
                     "error_type": error_type,
                     "duration": durations[0] if durations else None,
+                    "first_person": first_person,
                 }
             )
         report = _summarize(scores)

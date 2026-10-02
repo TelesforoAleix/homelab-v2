@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from llama_index.core import Document
 
 from homelab import cli
 from homelab.knowledge import evaluate as module
@@ -251,3 +252,77 @@ def test_stubbed_answer_latency_in_baseline_and_sets(monkeypatch):
         "p95": 0,
         "max": 0,
     }
+
+
+@pytest.mark.parametrize(
+    ("tokens", "expected"),
+    [
+        ("I", True),
+        ("me", True),
+        ("my", True),
+        ("mine", True),
+        ("MY", True),
+        ("(me),", True),
+        ('"my"', True),
+        ("myth Ireland mining time", False),
+        ("", False),
+    ],
+)
+def test_first_person_whole_words_and_refusals(tokens, expected):
+    assert module._first_person(SimpleNamespace(refused=False, answer=tokens)) is expected
+    assert module._first_person(SimpleNamespace(refused=True, answer=tokens)) is False
+
+
+def test_first_person_counts_answers_once_without_text_or_match_details(monkeypatch):
+    monkeypatch.setattr(module, "monotonic", lambda: 0)
+    tokens = ["I me my mine", "myth Ireland", "my", "mine"]
+    items = [
+        dict(item(str(n), "refuse" if n >= 2 else "answer"), question=str(n)) for n in range(4)
+    ]
+
+    def answerer(question, top_k):
+        n = int(question)
+        return SimpleNamespace(
+            refused=n == 3,
+            answer=tokens[n],
+            sources=[SimpleNamespace(path="entry-a")],
+        )
+
+    def retriever(*args):
+        return [SimpleNamespace(path="entry-a")]
+
+    reports = module.evaluate_sets(
+        {
+            "bank_paraphrases": items[:2],
+            "refusal_checks": items[2:],
+            "visitor": items,
+        },
+        retriever=retriever,
+        answerer=answerer,
+    )
+    assert reports["bank_paraphrases"]["first_person_count"] == 1
+    assert reports["refusal_checks"]["first_person_count"] == 1
+    assert reports["visitor"]["first_person_count"] == 2
+    assert reports["visitor"]["groups"]["hiring"]["first_person_count"] == 2
+    assert reports["visitor"]["groups"]["tech"]["first_person_count"] == 0
+    baseline = module.evaluate(
+        [Document(id_=str(n), metadata={"title": str(n)}) for n in range(4)],
+        retriever=retriever,
+        answerer=answerer,
+    )
+    assert baseline["first_person_count"] == 2
+
+    def check_report(value):
+        if isinstance(value, dict):
+            assert "answer" not in value or isinstance(value["answer"], dict)
+            assert not {"question", "text", "matches", "first_person_ids"} & value.keys()
+            for child in value.values():
+                check_report(child)
+        elif isinstance(value, list):
+            for child in value:
+                check_report(child)
+        elif isinstance(value, str):
+            assert value not in tokens
+
+    check_report(reports)
+    check_report(baseline)
