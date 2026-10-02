@@ -91,11 +91,13 @@ provenance through LlamaIndex's vector retriever.
 `POST /v1/knowledge/answer` shares `/query`'s question and `top_k` validation and retrieval.
 One prompt numbers retrieved chunks `[1]` through `[k]` and instructs the `chat` route to answer
 only from those chunks with `[n]` citations, or to refuse when they cannot answer. The question
-and chunks are untrusted data, not instructions. One LlamaIndex client call returns an internal
-JSON answer/refusal signal. Sources expose number, title, path and score in first-citation order,
+and chunks are untrusted data, not instructions. Answers always refer to Aleix by name in the
+third person. One LlamaIndex client call returns an internal JSON answer/refusal signal.
+Sources expose number, title, path and score in first-citation order,
 without duplicates. Missing or out-of-range citations and malformed replies fail closed to a
-plain refusal. A 60-second model timeout with no retries bounds the call. Only the question and
-chunk text leave the node; logs contain question length, top-k, retrieved/cited counts, refusal
+plain refusal: “That isn't covered in what Aleix has written here — you can ask him directly.”
+A 60-second model timeout with no retries bounds the call. Only the question and chunk text
+leave the node; logs contain question length, top-k, retrieved/cited counts, refusal
 and elapsed time, never content. This contract works with any indexed corpus.
 
 `homelab eval` measures corpus self-question hit@5 and MRR by stable provenance id, and
@@ -110,6 +112,9 @@ independently by id and reason. The baseline JSON fields remain unchanged at the
 holds additional scores and numeric `eval_file_found` reports presence. Missing files run only
 the baseline. File validation errors exclude content, and all evaluations reuse the existing
 retriever and answer path.
+The baseline, each set and each visitor group include `first_person_count`, counting each
+non-refused answer once if it contains whole-word `I`, `me`, `my` or `mine` (case-insensitive,
+including quotes). Only counts are exposed, without text or match details.
 
 ## Rules
 

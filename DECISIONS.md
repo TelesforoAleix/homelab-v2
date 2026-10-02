@@ -190,3 +190,13 @@ but refusal checks fell to 9/33 and visitor refusals to 4/5, below the required 
 answer prompt, response shape, refusal text and eval reporting through a separate validated
 revert PR. Keep the original decision here as append-only history. No corpus, answer key,
 retrieval, model route or client changes are made.
+
+
+**2026-10-02 — Restore third-person voice and the invitation without partial answers.** Add
+only a third-person rule naming Aleix to the strict answer prompt, and use the fixed refusal
+inviting visitors to ask him directly. The partial-answer logic from PR #10 stays reverted as
+recorded by PR #11; internal JSON remains answer/refused, public responses keep sources, and
+citation validation still fails closed. Eval counts non-refused answers containing whole-word
+I, me, my or mine case-insensitively, once per answer, including quotes. Baseline, set and
+visitor-group counts contain no text or match details and reuse existing calls. Retrieval,
+routes, clients and other endpoints are unchanged.

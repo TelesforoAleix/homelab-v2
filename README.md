@@ -78,8 +78,10 @@ in TPM-sealed `token.cred`; the bot reads only systemd's `$CREDENTIALS_DIRECTORY
 provenance. Answer retrieves the same chunks and makes one call to the configured `chat` route.
 It returns `answer`, `refused` and `sources`: each cited chunk's `number`, `title`, `path` and
 `score`, in first-citation order. Insufficient evidence produces a plain refusal with no sources;
-malformed model replies or missing/invalid citations also fail closed. Metrics record lengths,
-counts, refusal and timing, without question, chunk or answer content.
+malformed model replies or missing/invalid citations also fail closed. The refusal text is
+“That isn't covered in what Aleix has written here — you can ask him directly.” Answers always
+refer to Aleix by name in the third person. Metrics record lengths, counts, refusal and timing,
+without question, chunk or answer content.
 
 Knowledge operations share `HOMELAB_ACTIVE_COLLECTION` (`about_aleix` by default, or `brain`).
 Each collection has separate chunk and document tables; switching does not rebuild Brain.
@@ -99,6 +101,9 @@ file is written. When `HOMELAB_EVAL_FILE` (default
 measure hit@5 and MRR against any listed entry, and answer correctness requires a non-refusal
 with a listed source path. Refusal items measure correct refusals. Failures carry ids and
 `retrieval_miss`, `refused`, `wrong_citation` or `answered` reasons; multiple reasons can apply.
+The baseline, each set and each visitor group also report `first_person_count`: non-refused
+answers containing `I`, `me`, `my` or `mine` as whole words, ignoring case. Each answer counts
+once, including quoted phrases; no text or match details are reported.
 The baseline fields stay at the JSON root, independent scores are under `sets`, and numeric
 `eval_file_found` is 0 when the file was not found (baseline only), 1 otherwise. Empty subsets
 have zero rates. No question or answer text is printed. Run it inside the app container on the

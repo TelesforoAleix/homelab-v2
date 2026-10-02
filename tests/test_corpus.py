@@ -151,7 +151,9 @@ def test_eval_arithmetic_and_refusals(tmp_path):
     result = evaluate(
         documents,
         retriever=retriever,
-        answerer=lambda q, k: SimpleNamespace(refused=q == documents[1].metadata["title"]),
+        answerer=lambda q, k: SimpleNamespace(
+            refused=q == documents[1].metadata["title"], answer=""
+        ),
     )
     assert result.pop("error_count") == 0
     assert result.pop("failures") == []
@@ -162,6 +164,7 @@ def test_eval_arithmetic_and_refusals(tmp_path):
         miss_ids=["fixture-003"],
         refusal_count=1,
         refusal_ids=["fixture-003"],
+        first_person_count=0,
     )
     assert len(calls) == 2
     assert evaluate([], retriever=retriever, answerer=lambda *a: None)["MRR"] == 0
