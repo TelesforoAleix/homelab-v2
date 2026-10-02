@@ -24,7 +24,8 @@ def write_eval(tmp_path, sets):
     return path
 
 
-def test_scoring_and_groups():
+def test_scoring_and_groups(monkeypatch):
+    monkeypatch.setattr(module, "monotonic", lambda: 0)
     items = [item(str(n)) for n in range(6)] + [
         item("6", "refuse", "scope"),
         item("7", "refuse", "scope"),
@@ -68,6 +69,8 @@ def test_scoring_and_groups():
     report = module.evaluate_sets({"visitor": items}, retriever=retriever, answerer=answerer)
     visitor = report["visitor"]
     assert visitor["answer"] == {
+        "error_count": 0,
+        "answer_latency_seconds": {"count": 6, "median": 0, "p95": 0, "max": 0},
         "count": 6,
         "hit@5": 4 / 6,
         "MRR": 3.5 / 6,
@@ -81,6 +84,8 @@ def test_scoring_and_groups():
         ],
     }
     assert visitor["refuse"] == {
+        "error_count": 0,
+        "answer_latency_seconds": {"count": 2, "median": 0, "p95": 0, "max": 0},
         "count": 2,
         "correct_refusal_rate": 0.5,
         "failures": [{"id": "7", "reason": "answered"}],
@@ -164,3 +169,85 @@ def test_eval_setting_default_and_environment(monkeypatch):
     assert str(Settings(_env_file=None).eval_file) == "/data/corpus/about-aleix/eval.json"
     monkeypatch.setenv("HOMELAB_EVAL_FILE", "/tmp/synthetic-eval.json")
     assert str(Settings(_env_file=None).eval_file) == "/tmp/synthetic-eval.json"
+
+
+@pytest.mark.parametrize("stage", ["retriever", "answerer"])
+@pytest.mark.parametrize("expect", ["answer", "refuse"])
+def test_item_errors_continue_and_keep_only_type(monkeypatch, stage, expect):
+    from llama_index.core import Document
+
+    clock = iter(range(100))
+    monkeypatch.setattr(module, "monotonic", lambda: next(clock))
+    questions = [item("bad", expect)["question"], item("good", expect)["question"]]
+    calls = []
+
+    def retriever(question, k):
+        if stage == "retriever" and question == questions[0]:
+            raise RuntimeError(question)
+        return [SimpleNamespace(path="entry-a")]
+
+    def answerer(question, k):
+        calls.append(question)
+        if question == questions[0]:
+            raise RuntimeError(question)
+        return SimpleNamespace(refused=True, sources=[])
+
+    report = module.evaluate_sets(
+        {"visitor": [item("bad", expect), item("good", expect)]},
+        retriever=retriever,
+        answerer=answerer,
+    )["visitor"]
+    failure = report[expect]["failures"][0]
+    assert failure["id"] == "bad"
+    assert failure["error_type"] == "RuntimeError"
+    assert failure.get("reason") == "error" or "error" in failure.get("reasons", [])
+    assert report["error_count"] == report[expect]["error_count"] == 1
+    assert report["groups"]["hiring"]["error_count"] == 1
+    assert questions[1] in calls
+    assert not any(question in json.dumps(report) for question in questions)
+    expected_calls = 1 if stage == "retriever" and expect == "answer" else 2
+    assert report["answer_latency_seconds"]["count"] == expected_calls
+
+    documents = [
+        Document(id_="bad", metadata={"title": questions[0]}),
+        Document(id_="entry-a", metadata={"title": questions[1]}),
+    ]
+    baseline = module.evaluate(documents, retriever=retriever, answerer=answerer)
+    assert baseline["failures"] == [{"id": "bad", "reason": "error", "error_type": "RuntimeError"}]
+    assert baseline["error_count"] == 1
+    assert baseline["refusal_ids"] == ["entry-a"]
+    assert not any(question in json.dumps(baseline) for question in questions)
+
+
+def test_stubbed_answer_latency_in_baseline_and_sets(monkeypatch):
+    from llama_index.core import Document
+
+    durations = list(range(1, 21))
+    ticks = iter(value for n in durations for value in (100 * n, 101 * n))
+    monkeypatch.setattr(module, "monotonic", lambda: next(ticks))
+    documents = [Document(id_=str(n), metadata={"title": str(n)}) for n in durations]
+
+    def answerer(question, k):
+        if question == "20":
+            raise TimeoutError(question)
+        return SimpleNamespace(refused=True, sources=[])
+
+    expected = {"count": 20, "median": 10.5, "p95": 19, "max": 20}
+    baseline = module.evaluate(documents, retriever=lambda *a: [], answerer=answerer)
+    assert baseline["answer_latency_seconds"] == expected
+    ticks = iter(value for n in durations for value in (100 * n, 101 * n))
+    items = [dict(item(str(n), "refuse"), question=str(n)) for n in durations]
+    report = module.evaluate_sets(
+        {"refusal_checks": items},
+        retriever=lambda *a: [],
+        answerer=answerer,
+    )["refusal_checks"]
+    assert report["answer_latency_seconds"] == expected
+    assert report["refuse"]["answer_latency_seconds"] == expected
+    assert report["refuse"]["correct_refusal_rate"] == 19 / 20
+    assert report["answer"]["answer_latency_seconds"] == {
+        "count": 0,
+        "median": 0,
+        "p95": 0,
+        "max": 0,
+    }

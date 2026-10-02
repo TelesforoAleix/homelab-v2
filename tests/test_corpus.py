@@ -153,6 +153,9 @@ def test_eval_arithmetic_and_refusals(tmp_path):
         retriever=retriever,
         answerer=lambda q, k: SimpleNamespace(refused=q == documents[1].metadata["title"]),
     )
+    assert result.pop("error_count") == 0
+    assert result.pop("failures") == []
+    assert result.pop("answer_latency_seconds")["count"] == 2
     assert result == dict(
         documents=2,
         **{"hit@5": 0.5, "MRR": 0.25},
