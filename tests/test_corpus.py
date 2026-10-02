@@ -194,7 +194,11 @@ def test_eval_command_output_has_only_metrics_and_ids(tmp_path, monkeypatch, cap
     from homelab.knowledge import evaluate as module
 
     monkeypatch.setattr(
-        module, "get_settings", lambda: Settings(_env_file=None, corpus_file=corpus(tmp_path))
+        module,
+        "get_settings",
+        lambda: Settings(
+            _env_file=None, corpus_file=corpus(tmp_path), eval_file=tmp_path / "missing.json"
+        ),
     )
     monkeypatch.setattr("homelab.api.app.query_brain", lambda *a: [])
     monkeypatch.setattr(

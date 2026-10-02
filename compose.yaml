@@ -13,6 +13,7 @@ x-app: &app
     HOMELAB_BRAIN_DIR: /data/brain
     HOMELAB_ACTIVE_COLLECTION: ${HOMELAB_ACTIVE_COLLECTION:-about_aleix}
     HOMELAB_CORPUS_FILE: ${HOMELAB_CORPUS_FILE:-/data/corpus/about-aleix/corpus.json}
+    HOMELAB_EVAL_FILE: ${HOMELAB_EVAL_FILE:-/data/corpus/about-aleix/eval.json}
   secrets:
     - gateway_api_key
   volumes:

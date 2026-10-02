@@ -148,3 +148,13 @@ personal content is committed or logged.
 explicitly approved sending the draft corpus questions and retrieved chunks through this route
 for evaluation. The shared setting applies to API answers, Telegram `/ask` and the CLI eval;
 local embeddings and both collections' indexed data remain unchanged.
+
+
+**2026-10-02 — Score independent eval sets alongside the baseline.** A version-1 eval file in
+the read-only corpus mount tests paraphrases, unsupported questions and visitor groups without
+committing personal content. Answer correctness requires a non-refusal citing at least one
+expected entry; retrieval hit and rank are separate measures. Multiple failure reasons preserve
+both retrieval misses and answer failures. Existing baseline fields remain at the JSON root,
+with added `sets` and numeric `eval_file_found`; a missing file leaves the baseline runnable.
+Visitor groups roll up already scored items, avoiding extra model calls. Empty subsets report
+zero rates. No endpoint, answer prompt, model route or refusal behaviour changes.

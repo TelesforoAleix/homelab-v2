@@ -93,7 +93,16 @@ abort ingestion before writing.
 `homelab eval` reads the same corpus and asks every public entry's own question against
 `about_aleix`. It prints only document count, hit@5, mean reciprocal rank (MRR), retrieval miss
 ids, refusal count and refusal ids. Answers use the same path as the answer endpoint; no eval
-file is written. Run it inside the app container on the node after ingestion.
+file is written. When `HOMELAB_EVAL_FILE` (default
+`/data/corpus/about-aleix/eval.json`) exists in the read-only corpus mount, it also scores
+`bank_paraphrases`, `refusal_checks` and `visitor`, with visitor results per group. Answer items
+measure hit@5 and MRR against any listed entry, and answer correctness requires a non-refusal
+with a listed source path. Refusal items measure correct refusals. Failures carry ids and
+`retrieval_miss`, `refused`, `wrong_citation` or `answered` reasons; multiple reasons can apply.
+The baseline fields stay at the JSON root, independent scores are under `sets`, and numeric
+`eval_file_found` is 0 when the file was not found (baseline only), 1 otherwise. Empty subsets
+have zero rates. No question or answer text is printed. Run it inside the app container on the
+node after ingestion.
 
 On a laptop, for development:
 

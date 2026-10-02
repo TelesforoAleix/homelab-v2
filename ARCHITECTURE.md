@@ -100,7 +100,16 @@ and elapsed time, never content. This contract works with any indexed corpus.
 
 `homelab eval` measures corpus self-question hit@5 and MRR by stable provenance id, and
 refusals through the answer endpoint's code path. It requires the about-Aleix collection and
-prints only numbers and ids, without persisting an evaluation artifact.
+prints only numbers and ids, without persisting an evaluation artifact. The optional
+`HOMELAB_EVAL_FILE` defaults to `/data/corpus/about-aleix/eval.json` in the existing read-only
+mount. Version-1 files add three independent sets: bank paraphrases, refusal checks and visitor
+questions, the latter also rolled up by group without extra calls. Answer items measure retrieval
+against any expected entry and require a non-refused answer citing an expected path for answer
+correctness; refusal items require refusal. Retrieval and answer failures are recorded
+independently by id and reason. The baseline JSON fields remain unchanged at the root; `sets`
+holds additional scores and numeric `eval_file_found` reports presence. Missing files run only
+the baseline. File validation errors exclude content, and all evaluations reuse the existing
+retriever and answer path.
 
 ## Rules
 
