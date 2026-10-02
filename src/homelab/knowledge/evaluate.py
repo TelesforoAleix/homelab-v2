@@ -142,6 +142,7 @@ def _summarize(items: list[dict[str, Any]]) -> dict[str, Any]:
 
     def metrics(subset):
         return {
+            "partial_count": sum(item["partial"] for item in subset),
             "error_count": sum(bool(item["error_type"]) for item in subset),
             "answer_latency_seconds": _latency(
                 [item["duration"] for item in subset if item["duration"] is not None]
@@ -181,6 +182,7 @@ def evaluate_sets(
             reasons = []
             rank = 0
             correct = False
+            partial = False
             error_type = None
             durations = []
             try:
@@ -197,6 +199,7 @@ def evaluate_sets(
                     if not rank:
                         reasons.append("retrieval_miss")
                 response = _timed_answer(answerer, item["question"], durations)
+                partial = response.partial
                 if item["expect"] == "answer":
                     correct = not response.refused and any(
                         source.path in item["entries"] for source in response.sources
@@ -217,6 +220,7 @@ def evaluate_sets(
                     "group": item.get("group"),
                     "rank": rank,
                     "correct": correct,
+                    "partial": partial,
                     "reasons": reasons,
                     "error_type": error_type,
                     "duration": durations[0] if durations else None,

@@ -170,3 +170,14 @@ zero and skip that item's answer call. Baseline retrieval errors appear as error
 than miss ids. Answer-call latency measures the entire answerer path, includes failed attempts,
 and reports count, median, nearest-rank p95 and maximum seconds (zero for no calls). No answer
 endpoint, prompt, timeout, retries, refusal behaviour or bot code changes.
+
+
+**2026-10-02 — Answer supported parts in the third person.** The answer prompt covers relevant
+parts supported by numbered chunks, identifies uncovered parts and signals partial answers,
+refusing only when nothing relevant is supported. It always refers to Aleix by name in the
+third person. API constants keep the name and fixed refusal and partial invitation together;
+the endpoint appends the invitation only after citation validation. The model's partial flag
+is a required strict boolean, the public response exposes it, and every refusal clears it.
+Existing fail-closed checks remain. Eval adds partial counts to sets, expectation blocks and
+visitor groups without changing scoring: partial answers still need an expected citation on
+answer items and fail refusal items. Retrieval, routes and clients remain unchanged.

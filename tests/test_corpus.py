@@ -102,7 +102,9 @@ def test_query_and_answer_pass_collection_to_stores(monkeypatch, collection):
     monkeypatch.setattr("homelab.api.app._retrieve_with_embedding", lambda *a, **kw: [])
     monkeypatch.setattr(
         "homelab.api.app.answer_from_chunks",
-        lambda *a: KnowledgeAnswerResponse(answer="No evidence.", refused=True, sources=[]),
+        lambda *a: KnowledgeAnswerResponse(
+            answer="No evidence.", refused=True, partial=False, sources=[]
+        ),
     )
     for endpoint in ("query", "answer"):
         assert (

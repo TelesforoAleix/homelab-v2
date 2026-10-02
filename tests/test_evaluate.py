@@ -62,6 +62,7 @@ def test_scoring_and_groups(monkeypatch):
         refused, paths = responses[n]
         return SimpleNamespace(
             refused=refused,
+            partial=n in (0, 2, 7),
             sources=[SimpleNamespace(path=path) for path in paths],
             answer="Synthetic private answer",
         )
@@ -69,6 +70,7 @@ def test_scoring_and_groups(monkeypatch):
     report = module.evaluate_sets({"visitor": items}, retriever=retriever, answerer=answerer)
     visitor = report["visitor"]
     assert visitor["answer"] == {
+        "partial_count": 2,
         "error_count": 0,
         "answer_latency_seconds": {"count": 6, "median": 0, "p95": 0, "max": 0},
         "count": 6,
@@ -84,6 +86,7 @@ def test_scoring_and_groups(monkeypatch):
         ],
     }
     assert visitor["refuse"] == {
+        "partial_count": 1,
         "error_count": 0,
         "answer_latency_seconds": {"count": 2, "median": 0, "p95": 0, "max": 0},
         "count": 2,
@@ -94,6 +97,10 @@ def test_scoring_and_groups(monkeypatch):
     assert visitor["groups"]["scope"]["refuse"] == visitor["refuse"]
     assert visitor["groups"]["tech"]["answer"]["count"] == 0
     assert visitor["groups"]["hiring"]["refuse"]["correct_refusal_rate"] == 0
+    assert visitor["partial_count"] == 3
+    assert visitor["groups"]["hiring"]["partial_count"] == 2
+    assert visitor["groups"]["scope"]["partial_count"] == 1
+    assert visitor["groups"]["tech"]["partial_count"] == 0
     assert len(calls) == len(items)
     assert "Synthetic private" not in json.dumps(report)
 
@@ -122,6 +129,7 @@ def test_cli_eval_file_and_content_safe_report(tmp_path, monkeypatch, capsys, ex
         "homelab.api.app.answer_knowledge",
         lambda body: SimpleNamespace(
             refused=" R?" in body.question,
+            partial=" R?" not in body.question,
             sources=[SimpleNamespace(path="entry-b")],
             answer="Synthetic private answer",
         ),
@@ -134,6 +142,9 @@ def test_cli_eval_file_and_content_safe_report(tmp_path, monkeypatch, capsys, ex
     assert "Synthetic private" not in captured.out + captured.err
     if exists:
         assert set(report["sets"]) == set(sets)
+        assert report["sets"]["bank_paraphrases"]["partial_count"] == 1
+        assert report["sets"]["refusal_checks"]["partial_count"] == 0
+        assert report["sets"]["visitor"]["groups"]["tech"]["partial_count"] == 1
         assert report["sets"]["bank_paraphrases"]["answer"]["answer_correct_rate"] == 1
         assert report["sets"]["refusal_checks"]["refuse"]["correct_refusal_rate"] == 1
     else:
@@ -190,7 +201,7 @@ def test_item_errors_continue_and_keep_only_type(monkeypatch, stage, expect):
         calls.append(question)
         if question == questions[0]:
             raise RuntimeError(question)
-        return SimpleNamespace(refused=True, sources=[])
+        return SimpleNamespace(refused=True, partial=False, sources=[])
 
     report = module.evaluate_sets(
         {"visitor": [item("bad", expect), item("good", expect)]},
@@ -230,7 +241,7 @@ def test_stubbed_answer_latency_in_baseline_and_sets(monkeypatch):
     def answerer(question, k):
         if question == "20":
             raise TimeoutError(question)
-        return SimpleNamespace(refused=True, sources=[])
+        return SimpleNamespace(refused=True, partial=False, sources=[])
 
     expected = {"count": 20, "median": 10.5, "p95": 19, "max": 20}
     baseline = module.evaluate(documents, retriever=lambda *a: [], answerer=answerer)
