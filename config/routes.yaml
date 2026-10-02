@@ -15,8 +15,8 @@ providers:
 routes:
   chat:
     provider: gateway
-    # Owner-selected for lower-cost grounded answers and corpus evaluation.
-    model: deepseek/deepseek-v4.1-flash
+    # Owner chose answer latency on 2026-10-02, replacing DeepSeek V4.1 Flash.
+    model: openai/gpt-5.6-luna
   embed:
     provider: local
     # The index is built with this model. Changing it means reindexing.

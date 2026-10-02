@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from math import ceil
 from pathlib import Path
+from statistics import median
+from time import monotonic
 from typing import Any
 
 from llama_index.core import Document
@@ -13,32 +16,67 @@ from homelab.knowledge.sources import load_corpus_documents
 from homelab.settings import get_settings
 
 
+def _latency(durations: list[float]) -> dict[str, int | float]:
+    ordered = sorted(durations)
+    return {
+        "count": len(ordered),
+        "median": median(ordered) if ordered else 0,
+        "p95": ordered[ceil(0.95 * len(ordered)) - 1] if ordered else 0,
+        "max": ordered[-1] if ordered else 0,
+    }
+
+
+def _timed_answer(answerer: Callable, question: str, durations: list[float]):
+    started = monotonic()
+    try:
+        return answerer(question, 5)
+    finally:
+        durations.append(monotonic() - started)
+
+
 def evaluate(
     documents: list[Document], *, retriever: Callable, answerer: Callable
 ) -> dict[str, Any]:
     misses = []
     refusals = []
     reciprocal_ranks = []
+    failures = []
+    durations = []
+    hits = 0
     for document in documents:
         question = document.metadata["title"]
-        chunks = retriever(question, 5)
-        rank = next(
-            (rank for rank, chunk in enumerate(chunks[:5], 1) if chunk.path == document.id_),
-            None,
-        )
+        rank = 0
+        try:
+            chunks = retriever(question, 5)
+            rank = next(
+                (n for n, chunk in enumerate(chunks[:5], 1) if chunk.path == document.id_),
+                0,
+            )
+            if not rank:
+                misses.append(document.id_)
+            if _timed_answer(answerer, question, durations).refused:
+                refusals.append(document.id_)
+        except Exception as error:
+            failures.append(
+                {
+                    "id": document.id_,
+                    "reason": "error",
+                    "error_type": type(error).__name__,
+                }
+            )
         reciprocal_ranks.append(1 / rank if rank else 0)
-        if rank is None:
-            misses.append(document.id_)
-        if answerer(question, 5).refused:
-            refusals.append(document.id_)
+        hits += bool(rank)
     count = len(documents)
     return {
         "documents": count,
-        "hit@5": (count - len(misses)) / count if count else 0,
+        "hit@5": hits / count if count else 0,
         "MRR": sum(reciprocal_ranks) / count if count else 0,
         "miss_ids": misses,
         "refusal_count": len(refusals),
         "refusal_ids": refusals,
+        "error_count": len(failures),
+        "failures": failures,
+        "answer_latency_seconds": _latency(durations),
     }
 
 
@@ -91,28 +129,44 @@ def _summarize(items: list[dict[str, Any]]) -> dict[str, Any]:
     refusals = [item for item in items if item["expect"] == "refuse"]
     count = len(answers)
     refusal_count = len(refusals)
+
+    def failure(item, *, refusal=False):
+        result = {"id": item["id"]}
+        if refusal:
+            result["reason"] = "error" if item["error_type"] else "answered"
+        else:
+            result["reasons"] = item["reasons"]
+        if item["error_type"]:
+            result["error_type"] = item["error_type"]
+        return result
+
+    def metrics(subset):
+        return {
+            "error_count": sum(bool(item["error_type"]) for item in subset),
+            "answer_latency_seconds": _latency(
+                [item["duration"] for item in subset if item["duration"] is not None]
+            ),
+        }
+
     return {
+        **metrics(items),
         "answer": {
+            **metrics(answers),
             "count": count,
             "hit@5": sum(item["rank"] > 0 for item in answers) / count if count else 0,
             "MRR": sum(1 / item["rank"] if item["rank"] else 0 for item in answers) / count
             if count
             else 0,
             "answer_correct_rate": sum(item["correct"] for item in answers) / count if count else 0,
-            "failures": [
-                {"id": item["id"], "reasons": item["reasons"]}
-                for item in answers
-                if item["reasons"]
-            ],
+            "failures": [failure(item) for item in answers if item["reasons"]],
         },
         "refuse": {
+            **metrics(refusals),
             "count": refusal_count,
             "correct_refusal_rate": sum(item["correct"] for item in refusals) / refusal_count
             if refusal_count
             else 0,
-            "failures": [
-                {"id": item["id"], "reason": "answered"} for item in refusals if not item["correct"]
-            ],
+            "failures": [failure(item, refusal=True) for item in refusals if not item["correct"]],
         },
     }
 
@@ -126,25 +180,36 @@ def evaluate_sets(
         for item in items:
             reasons = []
             rank = 0
-            if item["expect"] == "answer":
-                chunks = retriever(item["question"], 5)
-                rank = next(
-                    (n for n, chunk in enumerate(chunks[:5], 1) if chunk.path in item["entries"]),
-                    0,
-                )
-                if not rank:
-                    reasons.append("retrieval_miss")
-            response = answerer(item["question"], 5)
-            if item["expect"] == "answer":
-                correct = not response.refused and any(
-                    source.path in item["entries"] for source in response.sources
-                )
-                if response.refused:
-                    reasons.append("refused")
-                elif not correct:
-                    reasons.append("wrong_citation")
-            else:
-                correct = response.refused
+            correct = False
+            error_type = None
+            durations = []
+            try:
+                if item["expect"] == "answer":
+                    chunks = retriever(item["question"], 5)
+                    rank = next(
+                        (
+                            n
+                            for n, chunk in enumerate(chunks[:5], 1)
+                            if chunk.path in item["entries"]
+                        ),
+                        0,
+                    )
+                    if not rank:
+                        reasons.append("retrieval_miss")
+                response = _timed_answer(answerer, item["question"], durations)
+                if item["expect"] == "answer":
+                    correct = not response.refused and any(
+                        source.path in item["entries"] for source in response.sources
+                    )
+                    if response.refused:
+                        reasons.append("refused")
+                    elif not correct:
+                        reasons.append("wrong_citation")
+                else:
+                    correct = response.refused
+            except Exception as error:
+                reasons.append("error")
+                error_type = type(error).__name__
             scores.append(
                 {
                     "id": item["id"],
@@ -153,6 +218,8 @@ def evaluate_sets(
                     "rank": rank,
                     "correct": correct,
                     "reasons": reasons,
+                    "error_type": error_type,
+                    "duration": durations[0] if durations else None,
                 }
             )
         report = _summarize(scores)

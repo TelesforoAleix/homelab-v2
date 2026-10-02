@@ -158,3 +158,15 @@ both retrieval misses and answer failures. Existing baseline fields remain at th
 with added `sets` and numeric `eval_file_found`; a missing file leaves the baseline runnable.
 Visitor groups roll up already scored items, avoiding extra model calls. Empty subsets report
 zero rates. No endpoint, answer prompt, model route or refusal behaviour changes.
+
+
+**2026-10-02 — Restore Luna for answer latency and keep eval runs alive across call errors.**
+The owner selected `openai/gpt-5.6-luna` through the gateway, replacing DeepSeek V4.1 Flash
+after slow calls and repeated eval timeouts. Eval catches per-item retrieval or answer errors,
+records `error` with the exception type only, and continues without retrying. Error counts
+are included in baseline, set, expectation and visitor group blocks. All items stay in metric
+denominators; completed retrieval scores survive an answer error, while retrieval errors score
+zero and skip that item's answer call. Baseline retrieval errors appear as error failures rather
+than miss ids. Answer-call latency measures the entire answerer path, includes failed attempts,
+and reports count, median, nearest-rank p95 and maximum seconds (zero for no calls). No answer
+endpoint, prompt, timeout, retries, refusal behaviour or bot code changes.
