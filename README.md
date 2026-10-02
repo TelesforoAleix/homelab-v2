@@ -76,12 +76,8 @@ in TPM-sealed `token.cred`; the bot reads only systemd's `$CREDENTIALS_DIRECTORY
 `POST /v1/knowledge/query` and `POST /v1/knowledge/answer` accept `{"question": "…", "top_k": 5}`
 (nonblank question; integer `top_k` at least 1, default 5). Query returns scored chunks with
 provenance. Answer retrieves the same chunks and makes one call to the configured `chat` route.
-It returns `answer`, `refused`, `partial` and `sources`: each cited chunk's `number`, `title`, `path`
-and `score`, in first-citation order. Answers cover the supported parts in the third person,
-referring to Aleix by name. Partial
-answers state what is not covered and append “For the rest, you can ask Aleix directly.”
-Only no relevant support produces “That isn't covered in what Aleix has written here — you
-can ask him directly.” with no sources and `partial: false`;
+It returns `answer`, `refused` and `sources`: each cited chunk's `number`, `title`, `path` and
+`score`, in first-citation order. Insufficient evidence produces a plain refusal with no sources;
 malformed model replies or missing/invalid citations also fail closed. Metrics record lengths,
 counts, refusal and timing, without question, chunk or answer content.
 
@@ -103,9 +99,7 @@ file is written. When `HOMELAB_EVAL_FILE` (default
 measure hit@5 and MRR against any listed entry, and answer correctness requires a non-refusal
 with a listed source path. Refusal items measure correct refusals. Failures carry ids and
 `retrieval_miss`, `refused`, `wrong_citation` or `answered` reasons; multiple reasons can apply.
-Each set, expectation block and visitor group reports `partial_count`; partial answers score
-as answers, including failures on refusal items. The baseline fields stay at the JSON root,
-independent scores are under `sets`, and numeric
+The baseline fields stay at the JSON root, independent scores are under `sets`, and numeric
 `eval_file_found` is 0 when the file was not found (baseline only), 1 otherwise. Empty subsets
 have zero rates. No question or answer text is printed. Run it inside the app container on the
 node after ingestion.

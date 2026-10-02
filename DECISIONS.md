@@ -181,3 +181,12 @@ is a required strict boolean, the public response exposes it, and every refusal 
 Existing fail-closed checks remain. Eval adds partial counts to sets, expectation blocks and
 visitor groups without changing scoring: partial answers still need an expected citation on
 answer items and fail refusal items. Retrieval, routes and clients remain unchanged.
+
+
+**2026-10-02 — Revert partial answers after the acceptance bar failed.** The deployed partial
+answer slice passed bank paraphrases (22/22) and visitor answers (21/23) in its first run,
+but refusal checks fell to 9/33 and visitor refusals to 4/5, below the required 26/33 and
+5/5. The owner required both sequential runs to pass every threshold. Restore the preceding
+answer prompt, response shape, refusal text and eval reporting through a separate validated
+revert PR. Keep the original decision here as append-only history. No corpus, answer key,
+retrieval, model route or client changes are made.
