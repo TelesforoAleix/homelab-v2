@@ -1,8 +1,8 @@
 # Home Lab failure notifier.
 # Installed to /etc/systemd/system/homelab-notify@.service.
 #
-# OnFailure= uses literal aliases (bot, model-helper, watchdog, workbench,
-# harness, homelab). Raw %n/%N specifiers can introduce systemd escaping;
+# OnFailure= uses literal aliases (bot, watchdog, homelab).
+# Raw %n/%N specifiers can introduce systemd escaping;
 # homelab-notify.sh maps each literal alias to the real unit name.
 #
 # Alias mapping and journal reads live in the script so bash -n and shellcheck
@@ -10,7 +10,7 @@
 # ExecStart= stays one plain command with one argument.
 #
 # The notifier and watchdog use the bot account, credential and outbound
-# address families: neither needs access to the model helper's UNIX socket.
+# address families for outbound HTTPS.
 # No OnFailure= here: a failed alert remains visible as a failed unit rather
 # than recursively alerting about itself.
 
@@ -61,7 +61,7 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 
 # --- Network -------------------------------------------------------------
-# Outbound HTTPS only; excluding AF_UNIX blocks the model helper socket.
+# Outbound HTTPS only.
 RestrictAddressFamilies=AF_INET AF_INET6
 
 # --- System calls --------------------------------------------------------

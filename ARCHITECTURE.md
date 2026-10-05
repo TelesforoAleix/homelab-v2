@@ -35,8 +35,10 @@ volume into a failure alert. The stack instead passes Compose the absolute `-f` 
 project name and relative paths come from `compose.yaml`.
 
 `node/` mirrors host paths and records the volume unlock script and target, failure notifier,
-boot watchdog, stack unit and agent sudo grant. The notifier's `homelab` alias alerts for the
-v2 stack alongside the five existing aliases. Host files are installed as `root:root` from the
+boot watchdog, stack unit and agent sudo grant. The notifier accepts only `bot`, `watchdog` and
+`homelab`, mapping them to the bot, watchdog and v2 stack units. Retired v1 programs, units,
+configuration, state, accounts and checkouts have been removed from the node; Brain and v2's
+volume data remain. Host files are installed as `root:root` from the
 node's clone of merged `main`, after backups and visible diffs, with mode `0644` for units and
 drop-ins, `0755` for scripts and `0440` for sudoers. Unit changes require `daemon-reload` and
 validation on the node. Bot Python files and the polkit rule also use `0644`. The agent has root
@@ -53,7 +55,7 @@ checks its unit allowlist. Polkit independently permits only restarting `chrony.
 Host metrics, restart and help do not depend on the knowledge service or unlocked volume.
 Answers include numbered source titles, refusals omit sources, and replies are split within
 Telegram's length limit. The router also supplies startup `setMyCommands` and `setMyDescription`;
-registration failures are nonfatal. The v1 model helper is no longer a bot dependency.
+registration failures are nonfatal.
 User IDs remain audit metadata in the node's journal; `/ask` logs its argument length only.
 Handler errors log the registered command and exception type, never exception text.
 
