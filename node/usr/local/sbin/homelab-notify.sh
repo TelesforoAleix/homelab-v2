@@ -4,21 +4,21 @@
 #
 # The watchdog and failure notifier share one send implementation so fixes
 # and token redaction cannot drift between copies.
-# --alert maps bot, model-helper, watchdog, workbench, harness and homelab
+# --alert maps bot, watchdog and homelab
 # to unit names and adds recent journal context. This stays in a script that
 # bash -n and shellcheck can check, avoiding systemd's shell quoting and
 # %-escaping rules for embedded commands.
 #
 # PID 1 supplies the credential in $CREDENTIALS_DIRECTORY. The script needs
 # no source-token permission; running outside systemd is a hard failure.
-# Calling units own retry policy. The script touches no model helper or
-# volume and needs no privilege: it reads the credential and allowlist and
+# Calling units own retry policy. The script touches no volume and needs
+# no privilege: it reads the credential and allowlist and
 # makes an outbound HTTPS call per recipient. Plain text avoids formatting
 # errors in operational messages.
 #
 # USAGE
 #   homelab-notify.sh "message text"
-#   homelab-notify.sh --alert <bot|model-helper|watchdog|workbench|harness|homelab>
+#   homelab-notify.sh --alert <bot|watchdog|homelab>
 #
 set -euo pipefail
 
@@ -78,28 +78,18 @@ send_to_allowlist() {
     [ "$failed" -eq 0 ] || exit 1
 }
 
-# --- map a literal alias to its unit(s) and pull recent context ----------
+# --- map a literal alias to its unit and pull recent context -------------
 compose_alert() {
     local alias="$1" unit logs
 
     case "$alias" in
         bot)          unit="homelab-telegram-bot.service" ;;
-        model-helper) unit="homelab-model-helper@*.service" ;;
         watchdog)     unit="homelab-watchdog.service" ;;
-        # The Workbench's OnFailure= drop-in names this alias.
-        # An alias not listed here dies at the notifier, so the alert for a
-        # new unit is lost exactly when it is wanted -- add the case with the
-        # drop-in, same commit.
-        workbench)    unit="homelab-workbench.service" ;;
-        # The harness's OnFailure= drop-in names this alias.
-        harness)      unit="homelab-harness.service" ;;
         homelab)      unit="homelab.service" ;;
-        *) die "unknown alert alias: '${alias}' (expected bot, model-helper, watchdog, workbench, harness or homelab)" ;;
+        *) die "unknown alert alias: '${alias}' (expected bot, watchdog or homelab)" ;;
     esac
 
-    # journalctl -u accepts a glob (systemd >= 246; this node runs 259.5), so
-    # the model-helper case pulls from whichever templated instance failed
-    # without needing to know its connection-specific name.
+    # Add aliases alongside their OnFailure= drop-ins so failures can alert.
     logs="$(journalctl -u "$unit" -n 5 --no-pager -o short-iso 2>/dev/null | cut -c1-200)"
     [ -n "$logs" ] || logs="(no journal lines available)"
 
@@ -108,7 +98,7 @@ compose_alert() {
 
 case "${1:-}" in
     --alert)
-        [ $# -eq 2 ] || die "usage: homelab-notify.sh --alert <bot|model-helper|watchdog|workbench|harness|homelab>"
+        [ $# -eq 2 ] || die "usage: homelab-notify.sh --alert <bot|watchdog|homelab>"
         compose_alert "$2"
         ;;
     -* )

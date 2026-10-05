@@ -16,6 +16,10 @@ its server, uses mature libraries for the machinery, and optimises for building 
 
 ## Status
 
+The node runs v2. The retired v1 programs, units, configuration, state, accounts and checkouts
+have been removed; Brain and v2's volume data remain. Failure notifications accept only `bot`,
+`watchdog` and `homelab`.
+
 The FastAPI service exposes health, an ingestion trigger, top-k retrieval with provenance and
 answers grounded in retrieved knowledge with numbered citations.
 `homelab ingest` indexes the active collection incrementally: public entries from the

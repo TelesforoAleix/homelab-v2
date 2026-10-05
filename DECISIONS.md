@@ -200,3 +200,12 @@ citation validation still fails closed. Eval counts non-refused answers containi
 I, me, my or mine case-insensitively, once per answer, including quotes. Baseline, set and
 visitor-group counts contain no text or match details and reuse existing calls. Retrieval,
 routes, clients and other endpoints are unchanged.
+
+**2026-10-05 — Remove the retired v1 installation from the node.** Remove only the owner's
+approved list of v1 programs, units, configuration, state, accounts, checkouts and stale backups,
+after checking checkout cleanliness and pushed HEADs, metadata hashes against the owner's
+off-node copies, and disabled/inactive units. The helper's gateway key was already revoked.
+Keep Brain, v2's files and data, base configuration and every Docker image. Prune only Docker's
+build cache. The notifier now accepts exactly `bot`, `watchdog` and `homelab`; remove the retired
+`model-helper`, `workbench` and `harness` aliases. Restart the bot to drop the removed group and
+send one deliberate `homelab` failure alert to validate the installed notifier.
