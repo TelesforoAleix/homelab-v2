@@ -1,0 +1,58 @@
+# Disable Wi-Fi power saving on the Home Lab reference node.
+#
+# Why this exists (ADR-016): wireless drivers idle the radio to save power.
+# On a laptop that is desirable. On an always-on headless server it shows up
+# as a machine that becomes unreachable when nobody is using it — which is
+# exactly the failure the Phase 01 power-loss validation is meant to catch.
+#
+# Install:
+#   sudo mv wifi-powersave-off.service /etc/systemd/system/
+#   sudo chown root:root /etc/systemd/system/wifi-powersave-off.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now wifi-powersave-off
+#   iw dev <iface> get power_save     # expect: Power save: off
+#
+# The interface name below is the reference build's (wlp1s0). Change it to
+# match your own from `ip -br address` if it differs.
+
+[Unit]
+Description=Disable Wi-Fi power saving (always-on server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/iw dev wlp1s0 set power_save off
+RemainAfterExit=yes
+
+# --- Phase 13 (security hardening) --------------------------------------
+# OBSERVED S1: systemd-analyze security 9.6 UNSAFE -- a root oneshot with every
+# capability. `iw` needs exactly one thing: CAP_NET_ADMIN on a netlink socket.
+#
+# WHY User=root is kept: CAP_NET_ADMIN is required, and a DynamicUser with an
+# ambient capability was judged more moving parts than a bounded root for a
+# one-line command that runs once per boot on the ONLY network path. If this
+# unit fails, the node stays reachable but power-save stays on -- the exact
+# fault Phase 01 chased. Keep this minimal and test with a restart.
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+# WHY three families and not AF_NETLINK alone: nl80211 is netlink, but `iw`
+# resolves the interface name with if_nametoindex(), which glibc does via an
+# ioctl on a plain AF_UNIX/AF_INET socket. OBSERVED 2026-09-12 21:21 UTC with
+# AF_NETLINK only: "command failed: No such file or directory (-2)", the unit
+# failed and the runner reverted it.
+RestrictAddressFamilies=AF_NETLINK AF_UNIX AF_INET
+SystemCallArchitectures=native
+# WHY not more: PrivateDevices/PrivateNetwork would hide the very interface it
+# configures; a syscall filter on a root oneshot buys little and risks a silent
+# failure at boot. The residual score is recorded in the guide, not chased.
+
+[Install]
+WantedBy=multi-user.target

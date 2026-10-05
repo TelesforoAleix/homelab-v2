@@ -209,3 +209,18 @@ Keep Brain, v2's files and data, base configuration and every Docker image. Prun
 build cache. The notifier now accepts exactly `bot`, `watchdog` and `homelab`; remove the retired
 `model-helper`, `workbench` and `harness` aliases. Restart the bot to drop the removed group and
 send one deliberate `homelab` failure alert to validate the installed notifier.
+
+
+**2026-10-05 — Recovery is a rebuild from sources, with no node backup.** Record the installed
+base configuration byte for byte under mirrored `node/` paths, retaining its historical
+comments without adopting v1 scripts. The owner permits the login name in SSH hardening;
+addresses, tailnet names, emails, Wi-Fi names, chat IDs, UUIDs and all key or secret values stay
+excluded. README contains the rebuild procedure, and every PR changing `node/` updates it.
+Code is cloned from public GitHub over HTTPS; Brain working notes and the corpus are copied
+from the owner's Mac, excluding Brain's Git metadata. Postgres is derived by re-ingestion,
+models come from upstream and secrets are re-issued. No GitHub credential is provisioned on
+the rebuilt node. The owner authorized removal of the old node GitHub SSH key, its public key
+and its github.com-only SSH config, retaining known_hosts and authorized_keys, and handles
+revocation in GitHub. Identify the Samsung MZ7TY256 system disk by model and 238.5 GiB size;
+leave the deliberately unused 476.9 GiB Micron MTFDDAV512TBN untouched. Kernel disk names are
+not stable identifiers. The runbook is documented without a rehearsal.

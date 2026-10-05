@@ -28,35 +28,22 @@ durable Postgres-backed worker, and Docker Compose defines the loopback-only sta
 
 ## Run it
 
-On the node, unlock `/srv/homelab`, connect with `ssh homelab`, and run this owner setup once.
-Enter the gateway key and a random database password only at their hidden prompts.
+For a fresh node, follow [Rebuilding the node](#rebuilding-the-node). On the running node,
+connect with `ssh homelab` and unlock with `sudo data-volume.sh unlock` after each boot.
 
-```bash
-sudo git clone https://github.com/TelesforoAleix/homelab-v2.git /srv/homelab/homelab-v2
-sudo install -d -m 0700 /srv/homelab/homelab-v2/secrets
-sudo bash -c 'umask 077; read -r -s -p "gateway key: " K; printf "%s" "$K" > /srv/homelab/homelab-v2/secrets/gateway_api_key; echo'
-sudo chown 10001:10001 /srv/homelab/homelab-v2/secrets/gateway_api_key && sudo chmod 0400 /srv/homelab/homelab-v2/secrets/gateway_api_key
-sudo bash -c 'umask 077; read -r -s -p "database password: " P; echo; test -n "$P" && test "$P" != "<RANDOM-PASSWORD>" || exit 1; printf "%s\n" "HOMELAB_DB_PASSWORD=$P" "HOMELAB_BRAIN_PATH=/srv/homelab/brain" "HOMELAB_POSTGRES_PATH=/srv/homelab/postgres" "HOMELAB_MODELS_PATH=/srv/homelab/models" > /srv/homelab/homelab-v2/.env'
-sudo install -d /srv/homelab/postgres /srv/homelab/models
-sudo visudo -cf /srv/homelab/homelab-v2/node/etc/sudoers.d/homelab-agent-v2 && sudo install -m 0440 -o root -g root /srv/homelab/homelab-v2/node/etc/sudoers.d/homelab-agent-v2 /etc/sudoers.d/homelab-agent-v2
-sudo usermod -aG systemd-journal homelab-agent
-sudo install -m 0644 -o root -g root /srv/homelab/homelab-v2/node/etc/systemd/system/homelab.service /etc/systemd/system/homelab.service
-sudo systemctl daemon-reload && sudo systemctl enable --now homelab.service
-```
+Host files live under `node/`: `node/<path>` installs at `/<path>`, owned by `root:root`.
+[AGENTS.md](AGENTS.md#host-file-modes) records directory and file modes. For updates, use the
+node's clone of merged `main`: back up installed files, show each diff, copy changed files with
+`sudo install`, and run `visudo -c`, `sshd -t` and `systemd-analyze --generators=yes verify`
+where applicable. Reload systemd after unit changes. Credential drop-ins name TPM-sealed
+credentials; credential contents are never committed. A PR changing `node/` updates the
+rebuild section in the same PR. The base files preserve their installed bytes, including
+historical v1 comments; those references do not require v1 scripts or a node GitHub key.
 
-Host files live under `node/`: `node/<path>` is installed at `/<path>`, owned by `root:root`.
-Units and drop-ins use mode `0644`, scripts under `usr/local/sbin/` use `0755`, and sudoers
-uses `0440`. Install from the node's clone after it pulls merged `main`: back up the installed
-files, show each diff, copy changed files with `sudo install`, and run their validators
-(`visudo -c` for sudoers and `systemd-analyze verify` for units). Reload systemd after unit
-changes. The unlock, notifier, watchdog and Telegram bot files are recorded here. Bot Python
-files and the polkit rule use `0644` too. Credential drop-ins name TPM-sealed
-credentials already provisioned on the node; credential contents are never committed.
-
-The agent uses `ssh homelab-agent`, which has root through sudo. The owner approves the plan
-and its risks before execution. Deploy with `sudo systemctl restart homelab.service`; it pulls
-`main` and builds the images. Host-file changes also require the explicit installation above;
-restarting the stack does not install them.
+The agent uses `ssh homelab-agent`, which has root through sudo. Proceed within the owner's
+approved task; the exceptions requiring approval are in `AGENTS.md`. Deploy with
+`sudo systemctl restart homelab.service`; it pulls public `main` over HTTPS and builds images.
+Host-file installation is explicit; restarting the stack does not install those files.
 
 The Telegram bot stays a stdlib-only host service running as `homelab-bot`. Its code lives at
 `node/opt/homelab-telegram-bot/`, installed at `/opt/homelab-telegram-bot/`. `/ask <question>`
@@ -120,6 +107,383 @@ uv sync && uv run pytest          # the Python side, no services needed
 docker compose up -d postgres llama-embed   # the services, if Docker is installed
 uv run uvicorn homelab.api.app:app --reload
 ```
+
+## Rebuilding the node
+
+Recovery is a rebuild from sources. No node backup exists or will be made. Host files come
+from `node/`, code from this public GitHub repository, and Brain notes from their own GitHub
+repository through the owner's Mac clone. Brain and the corpus are copied from the Mac;
+Postgres is derived by re-ingesting, models are fetched upstream, and secrets are re-issued.
+The rebuilt node holds no GitHub credential and never clones Brain.
+
+This procedure describes the node verified on 2026-10-05: Ubuntu 26.04.1 LTS, kernel 7.0,
+systemd 259, Docker 29.8 with Compose v5.5, and Tailscale 1.102. Vendor apt repositories supply
+Docker and Tailscale; check the versions available when rebuilding. These commands have not
+been rehearsed. Run them only during an owner-authorized rebuild, stopping on any error.
+Commands run on the node as `aleix` unless marked **on the Mac**. Replace angle-bracket
+placeholders locally; never commit their values. Keep the local console available until both
+SSH accounts work through Tailscale.
+
+1. **Install Ubuntu and choose the system disk.** In the Ubuntu Server 26.04.1 LTS installer,
+   select the **Samsung MZ7TY256, 238.5 GiB**, by model and size. Never identify the target by
+   `sda` or `sdb`: kernel names can swap between boots. Leave the **Micron MTFDDAV512TBN,
+   476.9 GiB**, deliberately unused, untouched. **Choosing the wrong disk in the installer
+   is the one irreversible mistake in this procedure: the installer destroys that disk's
+   data.** Check the model and size again before confirming the partition changes.
+
+   Use three partitions on the Samsung: 1 GiB EFI at `/boot/efi`, 2 GiB at `/boot`, and the
+   remainder as an LVM physical volume in `ubuntu-vg`. Create only `ubuntu-lv`, 64 GiB,
+   mounted at `/`; leave at least 128 GiB free in the VG for step 2. Create the owner's
+   `aleix` login with sudo access and select OpenSSH server. Configure Wi-Fi on `wlp1s0`
+   with the Wi-Fi name and passphrase from the owner's password manager. Ubuntu's installer
+   writes the private netplan; it is never copied into this repository. `eno1` is optional.
+   After boot, verify the target layout and install the host utilities used below:
+
+   ```bash
+   lsblk -o NAME,MODEL,SIZE,TYPE,MOUNTPOINTS
+   sudo vgs ubuntu-vg
+   sudo lvs -o lv_name,lv_size ubuntu-vg
+   sudo apt-get update
+   sudo apt-get install ca-certificates curl git rsync openssh-server lvm2 cryptsetup ufw iw chrony polkitd python3 openssl
+   ```
+
+2. **Create, format and register the encrypted data volume.** These commands apply only to
+   the new, empty `data` LV in the Samsung's `ubuntu-vg`; do not run them on an existing
+   volume. Create a new data-volume passphrase in the owner's password manager and enter
+   it at cryptsetup's hidden prompts. No keyfile or UUID is recorded here.
+
+   ```bash
+   sudo lvcreate -L 128G -n data ubuntu-vg
+   sudo cryptsetup luksFormat --type luks2 /dev/ubuntu-vg/data
+   sudo cryptsetup open --allow-discards /dev/ubuntu-vg/data homelab-data
+   sudo mkfs.ext4 /dev/mapper/homelab-data
+   sudo cryptsetup close homelab-data
+   sudo install -d -m 0755 -o root -g root /srv/homelab
+   sudoedit /etc/crypttab /etc/fstab
+   ```
+
+   Add exactly one entry to each file, leaving Ubuntu's existing entries intact:
+
+   ```text
+   # /etc/crypttab
+   homelab-data  /dev/ubuntu-vg/data  none  luks,noauto,discard
+   # /etc/fstab
+   /dev/mapper/homelab-data  /srv/homelab  ext4  noauto,nofail,x-systemd.device-timeout=10s  0  2
+   ```
+
+3. **Install and join Tailscale.** Use the [vendor's apt repository](https://pkgs.tailscale.com/stable/)
+   for Ubuntu Resolute. Authenticate through the URL printed by `tailscale up`, using the
+   owner's Tailscale account. The access policy lives in the admin console: verify that it
+   permits the owner's Mac to reach this replacement node. Its policy, tailnet name, email
+   and addresses stay outside this repository. Update the Mac's local `homelab` and
+   `homelab-agent` SSH aliases to the replacement node's Tailscale hostname or address.
+
+   ```bash
+   curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/resolute.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+   curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/resolute.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list >/dev/null
+   sudo apt-get update
+   sudo apt-get install tailscale
+   sudo systemctl enable --now tailscaled.service
+   sudo tailscale up
+   tailscale version
+   tailscale status
+   ```
+
+4. **Install Docker and Compose.** Use [Docker's Ubuntu apt instructions](https://docs.docker.com/engine/install/ubuntu/).
+   On this fresh Ubuntu install, omit distro Docker packages. The signed repository below
+   is the installed node's `docker.list` form of the vendor's repository configuration.
+
+   ```bash
+   sudo install -d -m 0755 /etc/apt/keyrings
+   sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+   sudo chmod 0644 /etc/apt/keyrings/docker.asc
+   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+   sudo apt-get update
+   sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+   sudo docker version
+   sudo docker compose version
+   ```
+
+5. **Create the accounts and their restricted SSH keys.** The owner is in `sudo` and
+   `docker`. The agent has an interactive shell and journal access; its root sudo grant
+   is installed in step 6. The bot is a system account with no login and no Docker group.
+
+   ```bash
+   sudo usermod -aG sudo,docker aleix
+   sudo useradd --system --user-group --create-home --home-dir /home/homelab-agent --shell /bin/bash homelab-agent
+   sudo usermod -aG systemd-journal homelab-agent
+   sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin homelab-bot
+   sudo install -d -m 0700 -o aleix -g aleix /home/aleix/.ssh
+   sudo install -d -m 0700 -o homelab-agent -g homelab-agent /home/homelab-agent/.ssh
+   sudo install -m 0600 -o aleix -g aleix /dev/null /home/aleix/.ssh/authorized_keys
+   sudo install -m 0600 -o homelab-agent -g homelab-agent /dev/null /home/homelab-agent/.ssh/authorized_keys
+   sudoedit /home/aleix/.ssh/authorized_keys /home/homelab-agent/.ssh/authorized_keys
+   ```
+
+   Put the owner's public login key from the Mac in the owner's file. In the agent's file,
+   use its public key from the Mac with the restriction shown below, substituting the Mac's
+   Tailscale addresses locally. Keep both `authorized_keys` files and all key material out
+   of git. No outgoing GitHub key or GitHub SSH config is needed on the node.
+
+   ```text
+   from="<MAC-TAILSCALE-IPV4>,<MAC-TAILSCALE-IPV6>" <AGENT-PUBLIC-KEY>
+   ```
+
+   The installer generates new SSH host keys. Check their fingerprint at the node's console:
+
+   ```bash
+   sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+   ```
+
+   **On the Mac**, remove only the old known-host entry for the replacement node, compare
+   the new fingerprint with the console, and test both logins before applying hardening or ufw:
+
+   ```bash
+   ssh-keygen -R '<NODE-TAILSCALE-HOST-OR-ADDRESS>'
+   ```
+
+   ```bash
+   ssh homelab 'id'
+   ssh homelab-agent 'id'
+   ```
+
+6. **Apply `node/` with its recorded modes.** Before the encrypted-volume clone exists,
+   download the public merged `main` source archive to the owner's home. This is a bootstrap
+   copy of committed files, not an installer script. Inspect each difference before copying;
+   for an absent destination compare against `/dev/null`. The diff loop exits on an inspection
+   error; exit status 1 from `diff` means a displayed difference. Keep vendor stock
+   `/etc/ufw/before.rules`. Do not install the stale SSH `.bak-2026-09-12` file.
+
+   ```bash
+   mkdir -p "$HOME/homelab-host"
+   curl -fsSL https://github.com/TelesforoAleix/homelab-v2/archive/refs/heads/main.tar.gz | tar -xz -C "$HOME/homelab-host" --strip-components=1
+   cd "$HOME/homelab-host"
+   while IFS= read -r source; do
+     destination="/${source#node/}"
+     if sudo test -e "$destination"; then
+       sudo diff -u "$destination" "$source" || test "$?" -eq 1 || exit 2
+     else
+       diff -u /dev/null "$source" || test "$?" -eq 1 || exit 2
+     fi
+   done < <(find node -type f | sort)
+   ```
+
+   Run the following only after reviewing all diffs. Directory and file modes are also
+   recorded in `AGENTS.md`. Preserve the vendor's `root:polkitd` ownership and `0750` mode
+   on `/etc/polkit-1/rules.d`; the rule itself is `root:root` `0644`. All other directories
+   below are `root:root` `0755`. The firewall files are `0640`, SSH hardening is `0600`,
+   sudoers is `0440`, operational scripts are `0755`, and the remaining files are `0644`.
+
+   ```bash
+   sudo install -d -m 0755 -o root -g root /etc/ssh /etc/ssh/sshd_config.d /etc/ufw /etc/docker /etc/sysctl.d /etc/profile.d /etc/sudoers.d /usr/local/sbin /opt/homelab-telegram-bot /etc/systemd/system
+   sudo install -d -m 0755 -o root -g root /etc/systemd/system/homelab-notify@.service.d /etc/systemd/system/homelab-watchdog.service.d /etc/systemd/system/homelab-telegram-bot.service.d
+   sudo install -d -m 0750 -o root -g polkitd /etc/polkit-1/rules.d
+   sudo install -m 0600 -o root -g root node/etc/ssh/sshd_config.d/10-homelab-hardening.conf /etc/ssh/sshd_config.d/10-homelab-hardening.conf
+   sudo install -m 0640 -o root -g root node/etc/ufw/after.rules node/etc/ufw/after6.rules node/etc/ufw/user.rules node/etc/ufw/user6.rules /etc/ufw/
+   sudo install -m 0644 -o root -g root node/etc/docker/daemon.json /etc/docker/daemon.json
+   sudo install -m 0644 -o root -g root node/etc/sysctl.d/99-homelab-swappiness.conf /etc/sysctl.d/99-homelab-swappiness.conf
+   sudo install -m 0644 -o root -g root node/etc/profile.d/homelab-console-timeout.sh /etc/profile.d/homelab-console-timeout.sh
+   sudo visudo -cf node/etc/sudoers.d/homelab-agent-v2
+   sudo install -m 0440 -o root -g root node/etc/sudoers.d/homelab-agent-v2 /etc/sudoers.d/homelab-agent-v2
+   sudo install -m 0755 -o root -g root node/usr/local/sbin/*.sh /usr/local/sbin/
+   sudo install -m 0644 -o root -g root node/opt/homelab-telegram-bot/*.py /opt/homelab-telegram-bot/
+   sudo install -m 0644 -o root -g root node/etc/polkit-1/rules.d/50-homelab-bot.rules /etc/polkit-1/rules.d/50-homelab-bot.rules
+   sudo install -m 0644 -o root -g root node/etc/systemd/system/*.service node/etc/systemd/system/*.timer node/etc/systemd/system/*.target /etc/systemd/system/
+   sudo install -m 0644 -o root -g root node/etc/systemd/system/homelab-notify@.service.d/*.conf /etc/systemd/system/homelab-notify@.service.d/
+   sudo install -m 0644 -o root -g root node/etc/systemd/system/homelab-watchdog.service.d/*.conf /etc/systemd/system/homelab-watchdog.service.d/
+   sudo install -m 0644 -o root -g root node/etc/systemd/system/homelab-telegram-bot.service.d/*.conf /etc/systemd/system/homelab-telegram-bot.service.d/
+   sudo visudo -c
+   sudo sshd -t
+   sudo systemd-analyze --generators=yes verify /etc/systemd/system/homelab.service /etc/systemd/system/homelab-data.target /etc/systemd/system/homelab-notify@.service /etc/systemd/system/homelab-watchdog.service /etc/systemd/system/homelab-watchdog.timer /etc/systemd/system/homelab-telegram-bot.service /etc/systemd/system/wifi-powersave-off.service
+   ```
+
+   `--generators=yes` supplies the mount unit from fstab during verification. Vendor units
+   may warn about removed directives; resolve failures in the recorded units before proceeding.
+
+7. **Enable the host units, firewall and sysctl.** Keep a console and an existing SSH session
+   open while reloading SSH and enabling ufw; verify a fresh connection from the Mac afterward.
+   The recorded rules allow `tailscale0` and Wi-Fi 41641/udp, and the `DOCKER-USER` chain
+   drops inbound Docker traffic from `wlp1s0` and `eno1` for IPv4 and IPv6. Leave ufw's stock
+   `IPV6=yes` and `MANAGE_BUILTINS=no` in place.
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl reload ssh.service
+   sudo systemctl enable --now docker.service tailscaled.service chrony.service wifi-powersave-off.service
+   sudo systemctl restart docker.service
+   sudo systemctl enable homelab-telegram-bot.service homelab-watchdog.timer
+   sudo ufw default deny incoming
+   sudo ufw default allow outgoing
+   sudo ufw default deny routed
+   sudo ufw --force enable
+   sudo ufw status verbose
+   sudo iptables -S DOCKER-USER
+   sudo ip6tables -S DOCKER-USER
+   sudo sysctl -p /etc/sysctl.d/99-homelab-swappiness.conf
+   iw dev wlp1s0 get power_save
+   sudo mkdir -p /var/log/journal
+   sudo systemd-tmpfiles --create --prefix /var/log/journal
+   sudo journalctl --flush
+   ```
+
+   Persistent journaling lets the watchdog classify the previous boot. Bot and watchdog are
+   enabled but not started before credentials exist; the watchdog timer first runs on the
+   validation reboot. Defer enabling `homelab.service` until step 12: unlocking starts the
+   data target, and the stack must not start before its clone and secrets exist. Do not enable
+   `homelab-data.target` or `homelab-notify@.service`; the unlock script and failure handlers
+   start them. Console logins now expire after 15 idle minutes; SSH sessions do not.
+   **On the Mac**, verify the hardened logins and agent sudo access:
+
+   ```bash
+   ssh homelab 'id'
+   ssh homelab-agent 'sudo -n true'
+   ```
+
+8. **Unlock the volume.** Enter its new passphrase from the owner's password manager.
+   This is the same manual step required after every boot.
+
+   ```bash
+   sudo data-volume.sh unlock
+   findmnt /srv/homelab
+   ```
+
+9. **Clone this repository and copy Brain from the owner's Mac.** The public code clone is
+   root-owned and uses HTTPS without a GitHub credential. Brain is a copy of the Mac clone's
+   working notes, excluding `.git`; keep the private repository URL and GitHub access on
+   the Mac. Bring the Mac clone up to date before copying. The Brain directory stays
+   owner-owned, and containers mount it read-only. Copy modes let the app UID read the notes.
+
+   ```bash
+   sudo git clone --branch main https://github.com/TelesforoAleix/homelab-v2.git /srv/homelab/homelab-v2
+   sudo install -d -m 0775 -o aleix -g aleix /srv/homelab/brain
+   sudo install -d -m 0755 -o root -g root /srv/homelab/models /srv/homelab/postgres
+   ```
+
+   **On the Mac**, copy notes, including hidden note files but excluding Git metadata:
+
+   ```bash
+   rsync -a --chmod=D755,F644 --exclude='.git' '<MAC-BRAIN-CLONE>/' homelab:/srv/homelab/brain/
+   ```
+
+10. **Re-issue the secrets and provision the private allowlists.** Create a fresh gateway
+    key with the owner's gateway account and budget, a random hexadecimal database password
+    in the password manager, and a new Telegram bot token through BotFather. Enter keys and
+    the password only at hidden prompts; never put them in shell arguments or history.
+    `.env` holds the database password and three volume paths and is `root:root` `0600`.
+    The gateway key is `root:10001` `0440`, readable by the non-root app containers.
+
+    ```bash
+    sudo install -d -m 0700 -o root -g root /srv/homelab/homelab-v2/secrets
+    sudo bash -c 'umask 077; read -r -s -p "new gateway key: " K </dev/tty; echo; test -n "$K" || exit 1; printf "%s" "$K" > /srv/homelab/homelab-v2/secrets/gateway_api_key'
+    sudo chown root:10001 /srv/homelab/homelab-v2/secrets/gateway_api_key
+    sudo chmod 0440 /srv/homelab/homelab-v2/secrets/gateway_api_key
+    sudo bash -c 'umask 077; read -r -s -p "new hexadecimal database password: " P </dev/tty; echo; [[ "$P" =~ ^[[:xdigit:]]{32,}$ ]] || exit 1; printf "%s\n" "HOMELAB_DB_PASSWORD=$P" "HOMELAB_BRAIN_PATH=/srv/homelab/brain" "HOMELAB_POSTGRES_PATH=/srv/homelab/postgres" "HOMELAB_MODELS_PATH=/srv/homelab/models" > /srv/homelab/homelab-v2/.env'
+    sudo chown root:root /srv/homelab/homelab-v2/.env
+    sudo chmod 0600 /srv/homelab/homelab-v2/.env
+    sudo install -d -m 0750 -o root -g homelab-bot /etc/homelab-telegram-bot
+    sudo bash -c 'umask 077; read -r -s -p "new Telegram bot token: " T </dev/tty; echo; test -n "$T" || exit 1; printf "%s" "$T" | systemd-creds encrypt --name=bot-token --with-key=tpm2 --tpm2-pcrs="" - /etc/homelab-telegram-bot/token.cred'
+    sudo chown root:root /etc/homelab-telegram-bot/token.cred
+    sudo chmod 0600 /etc/homelab-telegram-bot/token.cred
+    sudo install -m 0640 -o root -g homelab-bot /dev/null /etc/homelab-telegram-bot/allowlist
+    sudo install -m 0640 -o root -g homelab-bot /dev/null /etc/homelab-telegram-bot/privileged-allowlist
+    sudo install -m 0640 -o root -g homelab-bot /dev/null /etc/homelab-telegram-bot/restart-allowlist
+    sudoedit /etc/homelab-telegram-bot/allowlist /etc/homelab-telegram-bot/privileged-allowlist /etc/homelab-telegram-bot/restart-allowlist
+    sudo chown root:homelab-bot /etc/homelab-telegram-bot/allowlist /etc/homelab-telegram-bot/privileged-allowlist /etc/homelab-telegram-bot/restart-allowlist
+    sudo chmod 0640 /etc/homelab-telegram-bot/allowlist /etc/homelab-telegram-bot/privileged-allowlist /etc/homelab-telegram-bot/restart-allowlist
+    ```
+
+    Enter numeric Telegram user/chat IDs obtained by the owner through Telegram locally,
+    one per line in `allowlist`, with at least one recipient. `privileged-allowlist` may be
+    empty; any IDs entered must also be in `allowlist`. `restart-allowlist` may be empty;
+    `chrony.service` is the only restart permitted by the recorded polkit rule. The three
+    files are private deployment settings, not sources recovered from the node. All secret
+    values, addresses, tailnet names, emails, Wi-Fi names, chat IDs and UUIDs stay outside
+    the repository. Only the owner-approved login name appears in SSH hardening.
+    The token is TPM2-sealed without PCR binding; no plaintext token file is created.
+
+11. **Copy the corpus from the owner's Mac.** Create the destination on the unlocked volume:
+
+    ```bash
+    sudo install -d -m 0755 -o root -g root /srv/homelab/corpus
+    sudo install -d -m 0755 -o aleix -g aleix /srv/homelab/corpus/about-aleix
+    ```
+
+    **On the Mac**, copy `corpus.json` and `eval.json` directly onto the encrypted volume:
+
+    ```bash
+    scp '<MAC-CORPUS-DIRECTORY>/corpus.json' '<MAC-CORPUS-DIRECTORY>/eval.json' homelab:/srv/homelab/corpus/about-aleix/
+    ```
+
+    Back **on the node**, make the installed corpus root-owned and readable by the app.
+    Compose mounts it read-only.
+
+    ```bash
+    sudo chown root:root /srv/homelab/corpus/about-aleix /srv/homelab/corpus/about-aleix/corpus.json /srv/homelab/corpus/about-aleix/eval.json
+    sudo chmod 0644 /srv/homelab/corpus/about-aleix/corpus.json /srv/homelab/corpus/about-aleix/eval.json
+    ```
+
+12. **Start the stack and bot.** Enable the stack under the data target now that its inputs
+    exist. First startup downloads the embedding model upstream into `models` and builds
+    the app image; wait for the model download and Postgres initialization. The worker
+    creates Procrastinate's schema through the library's schema manager. The bot registers
+    its command menu with Telegram; start its private chat from the owner's Telegram client.
+
+    ```bash
+    sudo docker compose -f /srv/homelab/homelab-v2/compose.yaml config --quiet
+    sudo systemctl enable --now homelab.service
+    sudo systemctl start homelab-telegram-bot.service
+    sudo docker compose -f /srv/homelab/homelab-v2/compose.yaml ps
+    sudo systemctl is-active homelab.service homelab-telegram-bot.service
+    ```
+
+13. **Re-ingest both collections.** Postgres starts empty and is derived from these sources;
+    nothing is restored from a database backup. Wait until the local embedding server is
+    ready before running ingestion. The about-Aleix corpus takes under a minute; a full Brain
+    ingest took 92 minutes on 2026-09-23. Allow the Brain command to finish in the SSH session.
+    The per-command environment selects Brain without changing the default serving collection.
+
+    ```bash
+    sudo docker compose -f /srv/homelab/homelab-v2/compose.yaml exec -T api homelab ingest
+    sudo docker compose -f /srv/homelab/homelab-v2/compose.yaml exec -T -e HOMELAB_ACTIVE_COLLECTION=brain api homelab ingest
+    ```
+
+14. **Prove the rebuilt node is back.** Health must return `"status":"ok"`. In Telegram,
+    send `/ask <QUESTION-COVERED-BY-THE-CORPUS>` and verify a grounded answer with numbered
+    sources. Trigger one test alert through the installed notifier and confirm its receipt
+    in the owner's Telegram chat; the label is deliberate and does not fail the stack.
+
+    ```bash
+    curl -fsS http://127.0.0.1:8000/health
+    sudo systemctl start homelab-notify@homelab.service
+    sudo systemctl is-failed homelab-notify@homelab.service
+    ```
+
+    Expect `inactive` and exit status 1 from `is-failed` after a successful oneshot alert.
+    Reboot only now, with the current boot saved in the persistent journal:
+
+    ```bash
+    sudo reboot
+    ```
+
+    Reconnect with `ssh homelab`, wait for the watchdog's 90-second boot delay, and confirm
+    its Telegram notice says the data volume is `LOCKED`. Explicitly start the stack while
+    locked to prove that its mount condition skips it without failure or an additional alert:
+
+    ```bash
+    data-volume.sh status
+    sudo systemctl start homelab.service
+    systemctl show homelab.service -p ActiveState -p Result -p ConditionResult
+    sudo journalctl -b -u homelab.service -u homelab-watchdog.service --no-pager
+    ```
+
+    Expect `ActiveState=inactive`, `Result=success`, `ConditionResult=no` and a journal entry
+    showing the condition skip. Confirm `/status` still works and `/ask` reports the knowledge
+    service down in Telegram. Finish by unlocking and checking health again:
+
+    ```bash
+    sudo data-volume.sh unlock
+    curl -fsS http://127.0.0.1:8000/health
+    ```
 
 ## Layout
 

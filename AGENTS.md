@@ -25,3 +25,27 @@ Read `README.md` and `ARCHITECTURE.md` first; `DECISIONS.md` when a choice looks
 - Files under `node/` are installed at the same path on the node, from the committed tree. Show
   the `diff` against what is installed before copying, and run the validator a change has:
   `visudo -c`, `sshd -t`, `systemd-analyze verify`.
+- A PR changing `node/` updates README's "Rebuilding the node" section in the same PR.
+
+## Host-file modes
+
+These are installed modes, not Git's executable bit. Files are `root:root`. Directories are
+`root:root` too, except the vendor-managed `polkit-1/rules.d`, which stays `root:polkitd`.
+The `.d` rows cover each unit's drop-in directory.
+
+| Repository directory | Directory mode | File mode |
+|---|---|---|
+| `node/etc/ssh/` | `0755` | — |
+| `node/etc/ssh/sshd_config.d/` | `0755` | `0600` |
+| `node/etc/ufw/` | `0755` | `0640` |
+| `node/etc/docker/` | `0755` | `0644` |
+| `node/etc/sysctl.d/` | `0755` | `0644` |
+| `node/etc/profile.d/` | `0755` | `0644` |
+| `node/etc/systemd/system/` | `0755` | `0644` |
+| `node/etc/systemd/system/homelab-notify@.service.d/` | `0755` | `0644` |
+| `node/etc/systemd/system/homelab-watchdog.service.d/` | `0755` | `0644` |
+| `node/etc/systemd/system/homelab-telegram-bot.service.d/` | `0755` | `0644` |
+| `node/etc/sudoers.d/` | `0755` | `0440` |
+| `node/etc/polkit-1/rules.d/` | `0750` | `0644` |
+| `node/opt/homelab-telegram-bot/` | `0755` | `0644` |
+| `node/usr/local/sbin/` | `0755` | `0755` |
