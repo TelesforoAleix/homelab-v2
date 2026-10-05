@@ -47,6 +47,13 @@ and risks. The service restart pulls `main` and rebuilds containers, while host-
 is explicit. Bot code, its unit, credential and failure drop-ins, and the narrow polkit grant
 are recorded here. Private allowlists and secret credential contents stay outside this tree.
 
+Base SSH, ufw, Docker, sysctl, console timeout and Wi-Fi configuration also live in `node/`;
+their installed modes are recorded in `AGENTS.md`. Recovery is the
+[Rebuilding the node](README.md#rebuilding-the-node) procedure: no node backup, a public code
+clone, Brain and corpus copies from the owner's Mac, re-ingestion and re-issued secrets.
+The rebuilt node needs no GitHub credential. Only the Samsung system disk is rebuilt; the
+deliberately unused Micron disk stays untouched.
+
 The Telegram client remains a stdlib-only host service, running as `homelab-bot` with its
 existing sandbox and TPM-sealed token. It long-polls Telegram with no listening port. The main
 allowlist gates dispatch; the privileged allowlist is a subset and gates `/restart`, which also
