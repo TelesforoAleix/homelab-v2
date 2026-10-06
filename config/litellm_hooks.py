@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from contextvars import ContextVar
 from pathlib import Path
 from time import monotonic
@@ -21,7 +22,11 @@ from starlette.responses import JSONResponse
 # Read the single config, rather than duplicating its aliases or real model names in code.
 config = yaml.safe_load(Path(os.environ["CONFIG_FILE_PATH"]).read_text())
 model_specs = {row["model_name"]: row["litellm_params"] for row in config["model_list"]}
-audit: ContextVar[dict | None] = ContextVar("model_call_audit", default=None)
+# LiteLLM executes this file again when loading callbacks. Reuse the context
+# installed by the middleware instead of creating an isolated copy.
+audit: ContextVar[dict | None] = getattr(sys.modules.get(__name__), "audit", None) or ContextVar(
+    "model_call_audit", default=None
+)
 logger = logging.getLogger("homelab.models")
 
 

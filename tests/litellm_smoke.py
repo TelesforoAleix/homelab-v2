@@ -311,6 +311,11 @@ def run():
                     for line in lines
                 )
                 assert all("upstream=false" in line for line in lines if "purpose=unknown" in line)
+                assert all(
+                    "upstream=true" in line
+                    for line in lines
+                    if "status=200" in line and "purpose=models" not in line
+                )
                 assert not external_attempts
         finally:
             upstream.shutdown()
