@@ -44,21 +44,18 @@ def test_application_logging_is_configured_at_startup(monkeypatch):
         assert len(application_logger.handlers) == 1
 
 
-def test_health_reports_routes_and_no_key(tmp_path, monkeypatch):
-    routes = tmp_path / "routes.yaml"
-    routes.write_text(
-        "providers: {gateway: {}, local: {}}\nroutes: {chat: {provider: gateway, model: m}}\n"
-    )
+def test_health_reports_model_endpoint_and_purposes(monkeypatch):
     get_settings.cache_clear()
     app.dependency_overrides.clear()
-    monkeypatch.setenv("HOMELAB_ROUTES_FILE", str(routes))
-    monkeypatch.delenv("HOMELAB_GATEWAY_API_KEY", raising=False)
     monkeypatch.setattr("homelab.api.app.get_settings", lambda: Settings(_env_file=None))
+    purposes = ["chat", "chat:high", "chat:xhigh", "embed"]
+    monkeypatch.setattr("homelab.models.routes.RouteTable.purposes", lambda self: purposes)
 
     body = TestClient(app).get("/health").json()
     assert body["status"] == "ok"
-    assert body["routes"] == ["chat"]
-    assert body["gateway_key_present"] is False
+    assert body["routes"] == purposes
+    assert body["models_base_url"] == "http://litellm:4000/v1"
+    assert "gateway_key_present" not in body
 
 
 def test_ingest_trigger_returns_job_id(monkeypatch):

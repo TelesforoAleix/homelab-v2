@@ -3,27 +3,30 @@
 ## Boundary
 
 ```
-                              │  HTTP, 127.0.0.1:8000
-┌─────────────────────────────▼───────────────────────────────────────────────┐
-│  HOME LAB API                                                                │
-│  models/     purpose → provider+model; the only holder of provider keys      │
-│  knowledge/  JSON/Markdown → chunks → embeddings → pgvector                     │
-│  jobs/       durable tasks (Procrastinate)                                   │
-└──────┬──────────────────────────┬─────────────────────────┬──────────────────┘
-       │ OpenAI-compatible        │                          │
-  Vercel AI Gateway         llama-server (this node;      Postgres + pgvector
-  (hosted models)           local embeddings)             (jobs)
+                 Loopback API (127.0.0.1:8000)
+                     │ knowledge and jobs
+                api / worker / CLI
+                     │ OpenAI-compatible HTTP, purpose names
+Other Compose clients ── homelab-models ── LiteLLM (no published port)
+                                            │ default network
+                              ┌─────────────┴──────────────┐
+                       Vercel AI Gateway            llama-embed
+                         (hosted chat)           (local embeddings)
+
+api / worker ── Postgres + pgvector (private default network)
 ```
 
 Home Lab owns provider keys, the route table, knowledge provenance, job durability and the API
-contract. LlamaIndex owns parsing, chunking, embedding, storage and retrieval; Procrastinate owns
-the job machinery.
+contract. LiteLLM owns purpose routing and the OpenAI-compatible model endpoint; only its
+container holds the gateway key. LlamaIndex owns parsing, chunking, embedding, storage and
+retrieval; Procrastinate owns the job machinery.
 
 ## Deployment
 
 One `compose.yaml`: `api`, `worker`, `postgres` (pgvector image), `llama-embed` (llama.cpp
-server). Only `api` publishes a port, on loopback. `node/etc/systemd/system/homelab.service`
-wraps the stack so it starts after the encrypted volume is unlocked (`homelab-data.target`) and
+server) and `litellm`. Only `api` publishes a port, on loopback.
+`node/etc/systemd/system/homelab.service` wraps the stack so it starts after the encrypted
+volume is unlocked (`homelab-data.target`) and
 stops with it. Brain and the corpus are bind-mounted read-only; Postgres data and model files
 live on the volume.
 
@@ -70,8 +73,48 @@ The embedding model is the only resident local model. The `local` queue has conc
 
 ## Routes
 
-`config/routes.yaml` binds the `chat` and `embed` purposes to providers and models. Unknown
-purposes are refused, never defaulted. Both providers expose OpenAI-compatible APIs.
+`config/litellm.yaml` is the single route table. It offers `chat`, `chat:high` and `chat:xhigh`
+through Vercel AI Gateway's `deepseek/deepseek-v4.1-flash`, at low, medium and high reasoning
+effort respectively, and `embed` through the unchanged local `llama-nemotron-embed-1b-v2`.
+Names are `purpose:tier`; a bare purpose is standard, and embeddings have no tiers. Clients
+choose tiers themselves. There is no wildcard, pass-through, default model or fallback.
+Unknown names, deployment model ids and unavailable tiers receive LiteLLM's default
+OpenAI-shaped 4xx and never reach a provider. The pre-call hook checks against the same config
+and enforces each alias's configured effort; middleware blocks provider/routing overrides.
+
+Every application, including this repository's API, worker, CLI and eval, knows only
+`HOMELAB_MODELS_BASE_URL` (default `http://litellm:4000/v1`), a client key from the environment,
+and purposes discovered from `GET /v1/models`. LlamaIndex's OpenAI-compatible clients send
+those purposes as `model`. Chat responses report the alias. A post-call hook sets embedding
+responses' `model` to the configured real model; clients record it at ingest. The pinned
+release's raw-model metadata switch prevents LiteLLM overwriting that value with `embed`.
+Moving embeddings through this proxy does not change the embedding model or indexed data.
+
+Other Compose projects attach trusted clients to `homelab-models`. Only LiteLLM joins that
+named network, alongside the private default network it uses to reach `llama-embed`.
+Postgres, API and `llama-embed` do not join the client network. LiteLLM publishes no host port.
+The key sent by a client is accepted and ignored; there is no master key, database, UI or
+virtual key configuration. HTTP middleware exposes only the three `/v1` model endpoints and
+liveness; management endpoints and LiteLLM-specific request fields are refused. Provider
+headers are removed and upstream errors are reduced to status and a generic message. `/v1`
+only grows through new purposes and optional fields; incompatible changes go under `/v2`.
+
+The official BerriAI image is pinned by digest, runs as `10001:10001`, drops all capabilities
+and uses `no-new-privileges`. Only LiteLLM mounts `/run/secrets/gateway_api_key`, still
+`root:10001` `0440`. Its entrypoint reads the file into the process environment at startup;
+no gateway key appears in Compose, env files or config. Telemetry, third-party callbacks,
+admin UI and remote model-price fetching are disabled; tokenizer assets are bundled and
+remote image URLs are refused. The only external model destination is the gateway; the local
+embedding destination is unchanged. Tests run the real pinned image without external
+networking, synthetic credentials and loopback upstreams, checking for attempted external
+connections as well as the endpoint contract.
+
+The journald audit line contains purpose, configured real model, HTTP status, total elapsed
+seconds (through the end of a stream) and upstream-attempt status. Unknown aliases are logged
+as `unknown` so arbitrary client strings cannot become content in the journal. Default vendor
+and access logging is disabled because errors can contain bodies, prompts or credentials.
+No hosted observability callbacks are configured. `/health` keeps `status`, `version` and
+`routes`, and replaces `gateway_key_present` with `models_base_url`.
 
 ## Jobs
 

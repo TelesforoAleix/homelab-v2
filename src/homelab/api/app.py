@@ -143,7 +143,7 @@ def health() -> dict:
         "status": "ok",
         "version": __version__,
         "routes": routes.purposes(),
-        "gateway_key_present": settings.resolve_gateway_api_key() is not None,
+        "models_base_url": settings.models_base_url,
     }
 
 

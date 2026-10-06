@@ -8,19 +8,19 @@ x-app: &app
   build: .
   environment: &app-env
     HOMELAB_DATABASE_URL: postgresql://homelab:${HOMELAB_DB_PASSWORD}@postgres:5432/homelab
-    HOMELAB_GATEWAY_API_KEY_FILE: /run/secrets/gateway_api_key
-    HOMELAB_LOCAL_BASE_URL: http://llama-embed:8080/v1
+    HOMELAB_MODELS_BASE_URL: ${HOMELAB_MODELS_BASE_URL:-http://litellm:4000/v1}
+    HOMELAB_MODELS_API_KEY: ${HOMELAB_MODELS_API_KEY:-homelab}
     HOMELAB_BRAIN_DIR: /data/brain
     HOMELAB_ACTIVE_COLLECTION: ${HOMELAB_ACTIVE_COLLECTION:-about_aleix}
     HOMELAB_CORPUS_FILE: ${HOMELAB_CORPUS_FILE:-/data/corpus/about-aleix/corpus.json}
     HOMELAB_EVAL_FILE: ${HOMELAB_EVAL_FILE:-/data/corpus/about-aleix/eval.json}
-  secrets:
-    - gateway_api_key
   volumes:
     - ${HOMELAB_BRAIN_PATH:-/srv/homelab/brain}:/data/brain:ro
     - ${HOMELAB_CORPUS_PATH:-/srv/homelab/corpus}:/data/corpus:ro
   depends_on:
     postgres:
+      condition: service_healthy
+    litellm:
       condition: service_healthy
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
@@ -29,6 +29,40 @@ x-app: &app
     driver: journald
 
 services:
+  litellm:
+    # Official release 2026-10-03. Deliberate digest updates only; never PyPI or latest.
+    image: ghcr.io/berriai/litellm:v1.103.3@sha256:e6e1c46cec92ab58b7ff95c790420aba9f05269b662a66c0dd11714171b9c64b
+    user: "10001:10001"
+    entrypoint: ["python", "/etc/litellm/litellm_entrypoint.py"]
+    environment:
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      LITELLM_MODE: PRODUCTION
+      DISABLE_ADMIN_UI: "True"
+      DO_NOT_TRACK: "1"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    secrets:
+      - gateway_api_key
+    volumes:
+      - ./config:/etc/litellm:ro
+    networks:
+      - default
+      - models
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    logging:
+      driver: journald
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+    depends_on:
+      llama-embed:
+        condition: service_started
+
   api:
     <<: *app
     ports:
@@ -70,7 +104,7 @@ services:
   llama-embed:
     # llama.cpp server, CPU only, serving the `embed` route. The model is fetched from Hugging
     # Face on first start into the models directory on the volume. The name must match the
-    # `embed` route in config/routes.yaml in spirit; llama-server serves one model per instance.
+    # `embed` route in config/litellm.yaml in spirit; llama-server serves one model per instance.
     image: ghcr.io/ggml-org/llama.cpp:server
     command: >
       -hf ${HOMELAB_EMBED_MODEL:-mradermacher/llama-nemotron-embed-1b-v2-GGUF:Q8_0}
@@ -88,3 +122,7 @@ services:
 secrets:
   gateway_api_key:
     file: ./secrets/gateway_api_key
+
+networks:
+  models:
+    name: homelab-models

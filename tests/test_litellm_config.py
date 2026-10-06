@@ -1,0 +1,60 @@
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
+    config = yaml.safe_load((ROOT / "config/litellm.yaml").read_text())
+    rows = {row["model_name"]: row["litellm_params"] for row in config["model_list"]}
+    assert set(rows) == {"chat", "chat:high", "chat:xhigh", "embed"}
+    for purpose, effort in [("chat", "low"), ("chat:high", "medium"), ("chat:xhigh", "high")]:
+        assert rows[purpose] == {
+            "model": "openai/deepseek/deepseek-v4.1-flash",
+            "api_base": "https://ai-gateway.vercel.sh/v1",
+            "api_key": "os.environ/HOMELAB_GATEWAY_API_KEY",
+            "reasoning_effort": effort,
+        }
+    assert rows["embed"] == {
+        "model": "openai/llama-nemotron-embed-1b-v2",
+        "api_base": "http://llama-embed:8080/v1",
+        "api_key": "none",
+    }
+    router = config["router_settings"]
+    assert router["num_retries"] == 0
+    assert all(
+        router[name] == []
+        for name in ["fallbacks", "context_window_fallbacks", "content_policy_fallbacks"]
+    )
+    assert "default_model" not in config and "master_key" not in config["general_settings"]
+    assert not (ROOT / "config/routes.yaml").exists()
+
+
+def test_proxy_is_the_only_network_member_and_gateway_secret_holder():
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
+    services = compose["services"]
+    proxy = services["litellm"]
+    assert proxy["image"].startswith("ghcr.io/berriai/litellm:v1.103.3@sha256:")
+    assert len(proxy["image"].rsplit(":", 1)[-1]) == 64
+    assert proxy["user"] == "10001:10001"
+    assert proxy["cap_drop"] == ["ALL"]
+    assert proxy["security_opt"] == ["no-new-privileges:true"]
+    assert proxy["restart"] == "unless-stopped"
+    assert proxy["logging"] == {"driver": "journald"}
+    assert "ports" not in proxy
+    assert proxy["networks"] == ["default", "models"]
+    assert compose["networks"]["models"] == {"name": "homelab-models"}
+    assert proxy["secrets"] == ["gateway_api_key"]
+    assert "HOMELAB_GATEWAY_API_KEY" not in proxy["environment"]
+    assert proxy["environment"]["LITELLM_LOCAL_MODEL_COST_MAP"] == "True"
+    assert proxy["environment"]["DISABLE_ADMIN_UI"] == "True"
+    for name, service in services.items():
+        if name != "litellm":
+            assert "models" not in service.get("networks", [])
+            assert "gateway_api_key" not in service.get("secrets", [])
+    for name in ["api", "worker"]:
+        assert not any(
+            "GATEWAY" in key or "LOCAL_BASE" in key for key in services[name]["environment"]
+        )
+        assert services[name]["depends_on"]["litellm"] == {"condition": "service_healthy"}
