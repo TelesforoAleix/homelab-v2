@@ -224,3 +224,17 @@ and its github.com-only SSH config, retaining known_hosts and authorized_keys, a
 revocation in GitHub. Identify the Samsung MZ7TY256 system disk by model and 238.5 GiB size;
 leave the deliberately unused 476.9 GiB Micron MTFDDAV512TBN untouched. Kernel disk names are
 not stable identifiers. The runbook is documented without a rehearsal.
+
+
+**2026-10-06 — LiteLLM is the single purpose route table.** Replace `config/routes.yaml` with
+`config/litellm.yaml`; all callers use purpose names through the same OpenAI-compatible proxy.
+Only LiteLLM holds the gateway key and joins `homelab-models`, without a host port or proxy
+authentication database. Pin official BerriAI release `v1.103.3` (2026-10-03) to
+`sha256:e6e1c46cec92ab58b7ff95c790420aba9f05269b662a66c0dd11714171b9c64b` rather than pulling
+mutable tags or the PyPI releases compromised on 2026-03-24. Release 1.104.0 requires a master
+key, so it cannot serve this slice's accepted-and-ignored client-key contract. Disable telemetry
+and remote price-map fetching, use bundled tokenizers and run non-root with the existing secret
+group. Hooks enforce exact aliases and their reasoning efforts, preserve the real embedding
+model in responses, and redact upstream errors; middleware limits the HTTP surface and rejects
+routing overrides. A single HTTP audit line replaces vendor/access logs that can expose content.
+The app discovers purposes from `/v1/models`, preserving one route table and the existing index.

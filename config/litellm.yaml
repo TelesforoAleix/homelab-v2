@@ -1,0 +1,47 @@
+# This is the only route table. Applications send model_name, never litellm_params.model.
+model_list:
+  - model_name: chat
+    litellm_params:
+      model: openai/deepseek/deepseek-v4.1-flash
+      api_base: https://ai-gateway.vercel.sh/v1
+      api_key: os.environ/HOMELAB_GATEWAY_API_KEY
+      reasoning_effort: low
+  - model_name: chat:high
+    litellm_params:
+      model: openai/deepseek/deepseek-v4.1-flash
+      api_base: https://ai-gateway.vercel.sh/v1
+      api_key: os.environ/HOMELAB_GATEWAY_API_KEY
+      reasoning_effort: medium
+  - model_name: chat:xhigh
+    litellm_params:
+      model: openai/deepseek/deepseek-v4.1-flash
+      api_base: https://ai-gateway.vercel.sh/v1
+      api_key: os.environ/HOMELAB_GATEWAY_API_KEY
+      reasoning_effort: high
+  - model_name: embed
+    litellm_params:
+      model: openai/llama-nemotron-embed-1b-v2
+      api_base: http://llama-embed:8080/v1
+      api_key: none
+    model_info:
+      mode: embedding
+
+router_settings:
+  num_retries: 0
+  fallbacks: []
+  context_window_fallbacks: []
+  content_policy_fallbacks: []
+  disable_cooldowns: true
+
+litellm_settings:
+  callbacks: litellm_hooks.hooks
+  telemetry: false
+  set_verbose: false
+  suppress_debug_info: true
+  turn_off_message_logging: true
+  drop_params: false
+
+general_settings:
+  disable_spend_logs: true
+  forward_client_headers_to_llm_api: false
+  forward_llm_provider_auth_headers: false

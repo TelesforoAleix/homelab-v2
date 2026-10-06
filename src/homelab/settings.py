@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -14,21 +14,15 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="HOMELAB_", env_file=".env", extra="ignore")
 
     database_url: str = "postgresql://homelab:homelab@localhost:5432/homelab"
-    routes_file: Path = Path("config/routes.yaml")
     active_collection: Literal["brain", "about_aleix"] = "about_aleix"
     corpus_file: Path = Path("/data/corpus/about-aleix/corpus.json")
     eval_file: Path = Path("/data/corpus/about-aleix/eval.json")
     brain_dir: Path = Path("/data/brain")
     brain_include: Annotated[list[str], NoDecode] = ["01-knowledge", "02-ideas", "05-logs"]
 
-    # The gateway key is read from a file (a Compose secret) when one is given,
-    # otherwise from HOMELAB_GATEWAY_API_KEY. It never appears in config files.
-    gateway_api_key: str | None = None
-    gateway_api_key_file: Path | None = None
-    gateway_base_url: str = "https://ai-gateway.vercel.sh/v1"
-
-    # llama-server on the node (OpenAI-compatible). No key.
-    local_base_url: str = "http://localhost:8080/v1"
+    models_base_url: str = "http://litellm:4000/v1"
+    # Accepted and ignored by the proxy today; kept in the client contract.
+    models_api_key: SecretStr = SecretStr("homelab")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
     log_content: bool = Field(
@@ -43,11 +37,6 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
-
-    def resolve_gateway_api_key(self) -> str | None:
-        if self.gateway_api_key_file and self.gateway_api_key_file.exists():
-            return self.gateway_api_key_file.read_text().strip()
-        return self.gateway_api_key
 
 
 @lru_cache

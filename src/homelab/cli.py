@@ -15,8 +15,7 @@ from homelab.settings import get_settings
 def _routes() -> int:
     routes = load_routes()
     for purpose in routes.purposes():
-        route = routes.resolve(purpose)
-        print(f"{purpose}\t{route.provider}\t{route.model}\t{route.base_url}")
+        print(f"{purpose}\t{routes.base_url}")
     return 0
 
 

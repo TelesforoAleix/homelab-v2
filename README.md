@@ -100,12 +100,64 @@ The baseline fields stay at the JSON root, independent scores are under `sets`, 
 have zero rates. No question or answer text is printed. Run it inside the app container on the
 node after ingestion.
 
-On a laptop, for development:
+Models are served by LiteLLM using `config/litellm.yaml`, the single route table. The API,
+worker, ingestion CLI and eval discover purposes from its `/v1/models` endpoint and use those
+names through the existing LlamaIndex clients. They hold only `HOMELAB_MODELS_BASE_URL`
+(default `http://litellm:4000/v1`) and `HOMELAB_MODELS_API_KEY` (default `homelab`, accepted
+and ignored today). The gateway secret is mounted only into LiteLLM, which reads it at startup;
+its existing `root:10001` ownership and `0440` mode stay unchanged.
+
+On the Mac, development needs no services:
 
 ```bash
-uv sync && uv run pytest          # the Python side, no services needed
-docker compose up -d postgres llama-embed   # the services, if Docker is installed
-uv run uvicorn homelab.api.app:app --reload
+uv sync
+uv run pytest
+```
+
+On a Docker host, provision `.env` and the secret as described in step 10, then run:
+
+```bash
+docker compose up -d --build
+docker compose exec api homelab routes
+docker compose exec api homelab eval
+```
+
+`/health` returns `status`, `version`, `routes` and `models_base_url`; the former
+`gateway_key_present` field retires because the API no longer holds the gateway key. No host
+port is published for LiteLLM. Its official image is pinned by digest in Compose and updated
+deliberately. Telemetry, remote model-price updates, hosted callbacks and the admin UI are off;
+tokenizers are bundled. Its external model calls go only to Vercel AI Gateway; embeddings go
+to the existing `llama-embed` service. The journal records one line per endpoint call with
+purpose, real model, HTTP status, elapsed seconds and whether an upstream call was attempted.
+Content, embeddings and keys are excluded, including on errors and streaming calls.
+
+### Use the model endpoint
+
+Attach a client container from another Compose project to the external Docker network
+`homelab-models`, created by this stack. Only LiteLLM joins it; Postgres, API and `llama-embed`
+remain on the stack's private network. Give the client its base URL `http://litellm:4000/v1`
+and an arbitrary API key through its environment, then use OpenAI-shaped `GET /v1/models`,
+`POST /v1/chat/completions` and `POST /v1/embeddings`. There are exactly four names: `chat`
+(standard), `chat:high`, `chat:xhigh` and `embed`. The client chooses a tier; no escalation
+or fallback happens automatically. Chat responses report the purpose; embedding responses
+report the real embedding model, which clients must record at ingest. An embedding model
+change requires a new index. Unknown names, provider model ids and unavailable tiers receive
+a 4xx without an upstream call. The accepted client key provides no access control today:
+attach only trusted clients to this network. Provider/routing overrides and remote image URLs
+are refused; configuration and management endpoints are not exposed. New purposes and optional
+OpenAI fields can be added to `/v1`; breaking changes require `/v2`.
+
+A client project's network declaration is:
+
+```yaml
+services:
+  client:
+    # image, environment and command belong to the client project
+    networks: [models]
+networks:
+  models:
+    external: true
+    name: homelab-models
 ```
 
 ## Rebuilding the node
@@ -370,7 +422,7 @@ SSH accounts work through Tailscale.
     in the password manager, and a new Telegram bot token through BotFather. Enter keys and
     the password only at hidden prompts; never put them in shell arguments or history.
     `.env` holds the database password and three volume paths and is `root:root` `0600`.
-    The gateway key is `root:10001` `0440`, readable by the non-root app containers.
+    The gateway key is `root:10001` `0440`, readable only by the non-root LiteLLM container.
 
     ```bash
     sudo install -d -m 0700 -o root -g root /srv/homelab/homelab-v2/secrets
@@ -490,10 +542,10 @@ SSH accounts work through Tailscale.
 | Path | What |
 |---|---|
 | `src/homelab/api/` | FastAPI — the one published port |
-| `src/homelab/models/` | the route table: purpose → provider + model, and framework clients built from it |
+| `src/homelab/models/` | purpose discovery and framework clients for the LiteLLM endpoint |
 | `src/homelab/knowledge/` | JSON/Markdown ingestion and retrieval with provenance through LlamaIndex |
 | `src/homelab/jobs/` | Procrastinate tasks and the worker |
-| `config/routes.yaml` | which model serves which purpose |
+| `config/litellm.yaml` | LiteLLM’s purposes, models and reasoning efforts |
 | `node/` | host operational files, mirroring their installed paths |
 
 [ARCHITECTURE.md](ARCHITECTURE.md) has the boundaries and the rules. [DECISIONS.md](DECISIONS.md)
