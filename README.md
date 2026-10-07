@@ -164,7 +164,9 @@ networks:
 
 `mac/vision_bench.py` benchmarks native Metal llama.cpp on macOS. It starts each supplied
 GGUF with its projector on `127.0.0.1`, measures launch-to-health readiness and Darwin's
-lifetime peak physical footprint, then stops it, including on interruption. No service is
+lifetime peak physical footprint plus the GGUF and projector file sizes, then stops it,
+including on interruption. This sum estimates memory including mapped weights; it may
+double-count resident mappings and is not a direct resident-set measurement. No service is
 installed and no node or model route is changed. Install `brew install llama.cpp`, then run:
 
 ```bash
@@ -180,13 +182,26 @@ Repeat `--model` and `--sample` for identical samples across sequential candidat
 Languages are `en`/`es`; kinds are `prose`/`table`/`figure`/`scan`; modes are `score`/`judge`.
 Defaults: 150 DPI, 16384 context tokens, 4096 completion tokens, temperature/seed zero,
 no prompt cache. Page timings cover HTTP image prefill and generation; rendering is separate.
-Every figure page also gets a fixed description prompt. The prompts are constants in the script.
-Normalisation applies Unicode NFC, removes soft hyphens, joins word hyphenation at line breaks
-and collapses whitespace, preserving case and punctuation. CER/WER use Levenshtein distance;
-summary rates divide total errors by total reference units, excluding failed/truncated calls.
-Empty text layers fail scoring. Judgement pages have no accuracy score. Failure codes are
-0 success, 1 request/render error, 2 empty reference, 3 truncated/non-stop completion.
-Latency includes failures; token means include successful transcription calls only.
+The default prompt and figure descriptions remain available. Use `--prompt exact` for the
+verbatim transcription prompt and `--no-figures` to omit figure descriptions. Reconciliation
+uses `--reconcile '<OUTPUT-A-DIRECTORY>' '<OUTPUT-B-DIRECTORY>' --dpi 300`: each indexed
+`NNN.text.txt` pair and one image go into one chat request with the fixed reconciliation prompt.
+Missing/empty inputs record a page failure. Supply identical ordered samples for both inputs.
+Use `--run-name v2-r1` (one model per invocation) to name both the output subdirectory and
+numeric JSON file; existing result files or output directories are refused.
+
+Normalisation applies Unicode NFKC, removes soft hyphens, joins words hyphenated at line ends,
+casefolds and collapses whitespace. Word bags use whitespace tokens, retaining punctuation
+and repeated-word counts. Primary recall, precision and F1 aggregate matched token counts over
+all valid reference/output tokens, independent of reading order. CER/WER remain secondary
+Levenshtein scores after the same normalisation. References are `invalid_reference` when
+fewer than 80% of whitespace tokens are alphabetic after stripping Unicode punctuation
+(an empty reference is invalid). Invalid references are reported and excluded from accuracy
+aggregates; transcription still runs for visual review. Judgement pages have no accuracy score.
+Failure codes: 0 success, 1 request/render/input error, 3 truncated/non-stop completion,
+4 server startup failure. Startup failures record every sample. Latency includes failures;
+token means include successful calls only. Results report total invocation duration, cold load,
+file-size bytes, peak footprint bytes and their sum as `peak_memory_bytes`.
 
 Results contain numeric measurements only (language codes: en=0/es=1; kind codes:
 prose=0/table=1/figure=2/scan=3), with sample indices instead of paths or page numbers.
