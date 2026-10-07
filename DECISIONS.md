@@ -249,3 +249,16 @@ peak physical footprint including Metal. Numbers contain sample indices and nume
 kind codes, never source names, text or page numbers. Private inputs and optional review outputs
 are rejected inside Git repositories. PyMuPDF and RapidFuzz are benchmark-only dependencies;
 no node service, route or final model choice changes.
+
+
+**2026-10-07 — Remeasure vision with order-insensitive scoring and fixed prompts.** Use
+NFKC, soft-hyphen removal, line-end word joining and casefolding before whitespace word-bag
+recall, precision and F1. Count duplicate tokens and aggregate corpus counts; retain punctuation
+in metric tokens. Mark references invalid below 80% alphabetic whitespace tokens after stripping
+Unicode punctuation, including empty references, and exclude them from accuracy aggregates while
+still transcribing. Retain CER/WER as secondary measures. Report GGUF plus projector file sizes
+and Darwin lifetime peak footprint as an explicit estimate including mapped weights, which can
+double-count resident mappings. Add the fixed exact and reconciliation prompts, pairing two
+prior output directories by sample index with one image per request; require 300 DPI for
+reconciliation. Named runs refuse existing output directories, and figure descriptions can be
+omitted. All samples, images, text and results remain outside Git; no route or model is chosen.
