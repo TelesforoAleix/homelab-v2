@@ -238,3 +238,14 @@ group. Hooks enforce exact aliases and their reasoning efforts, preserve the rea
 model in responses, and redact upstream errors; middleware limits the HTTP surface and rejects
 routing overrides. A single HTTP audit line replaces vendor/access logs that can expose content.
 The app discovers purposes from `/v1/models`, preserving one route table and the existing index.
+
+
+**2026-10-07 — Measure local vision before choosing routes.** A generic Mac-only benchmark
+renders externally supplied PDFs at 150 DPI, transcribes with one fixed prompt and compares
+normalised text using character/word Levenshtein error rates. Figure descriptions use a second
+fixed prompt and remain local for human judgement. Sequential fresh llama.cpp processes bind
+only to loopback, disable prompt caching and report launch-to-ready time and Darwin lifetime
+peak physical footprint including Metal. Numbers contain sample indices and numeric language/
+kind codes, never source names, text or page numbers. Private inputs and optional review outputs
+are rejected inside Git repositories. PyMuPDF and RapidFuzz are benchmark-only dependencies;
+no node service, route or final model choice changes.

@@ -160,6 +160,42 @@ networks:
     name: homelab-models
 ```
 
+## Mac vision measurements
+
+`mac/vision_bench.py` benchmarks native Metal llama.cpp on macOS. It starts each supplied
+GGUF with its projector on `127.0.0.1`, measures launch-to-health readiness and Darwin's
+lifetime peak physical footprint, then stops it, including on interruption. No service is
+installed and no node or model route is changed. Install `brew install llama.cpp`, then run:
+
+```bash
+uv run --group benchmark python mac/vision_bench.py --help
+uv run --group benchmark python mac/vision_bench.py \
+  --model '<NAME>' '<WEIGHTS-GGUF>' '<MMPROJ-GGUF>' \
+  --sample '<PDF-OUTSIDE-GIT>' '<ONE-BASED-PAGE>' en prose score \
+  --results-dir "$HOME/vision-bench-outputs/numbers" \
+  --outputs-dir "$HOME/vision-bench-outputs"
+```
+
+Repeat `--model` and `--sample` for identical samples across sequential candidates.
+Languages are `en`/`es`; kinds are `prose`/`table`/`figure`/`scan`; modes are `score`/`judge`.
+Defaults: 150 DPI, 16384 context tokens, 4096 completion tokens, temperature/seed zero,
+no prompt cache. Page timings cover HTTP image prefill and generation; rendering is separate.
+Every figure page also gets a fixed description prompt. The prompts are constants in the script.
+Normalisation applies Unicode NFC, removes soft hyphens, joins word hyphenation at line breaks
+and collapses whitespace, preserving case and punctuation. CER/WER use Levenshtein distance;
+summary rates divide total errors by total reference units, excluding failed/truncated calls.
+Empty text layers fail scoring. Judgement pages have no accuracy score. Failure codes are
+0 success, 1 request/render error, 2 empty reference, 3 truncated/non-stop completion.
+Latency includes failures; token means include successful transcription calls only.
+
+Results contain numeric measurements only (language codes: en=0/es=1; kind codes:
+prose=0/table=1/figure=2/scan=3), with sample indices instead of paths or page numbers.
+Optional outputs retain images, reference text, transcriptions and figure descriptions for
+local review. All inputs and output directories must be outside every Git repository;
+nothing the benchmark reads or writes is committed. Keep private sample arguments locally.
+PDF rendering and scoring dependencies live only in the `benchmark` group, outside app images.
+Cold load means a fresh process, without evicting the operating system's file cache.
+
 ## Rebuilding the node
 
 Recovery is a rebuild from sources. No node backup exists or will be made. Host files come
@@ -547,6 +583,7 @@ SSH accounts work through Tailscale.
 | `src/homelab/jobs/` | Procrastinate tasks and the worker |
 | `config/litellm.yaml` | LiteLLM’s purposes, models and reasoning efforts |
 | `node/` | host operational files, mirroring their installed paths |
+| `mac/` | local measurement tools; no installed Mac service yet |
 
 [ARCHITECTURE.md](ARCHITECTURE.md) has the boundaries and the rules. [DECISIONS.md](DECISIONS.md)
 records choices that weren't obvious. MIT licence.
