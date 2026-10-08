@@ -313,3 +313,16 @@ count before a separate confirmation atomically records the time and bytes. A da
 reminds after strictly seven days (or no copy), using the existing TPM credential and notifier.
 The private identity stays in the password manager; restore is an owner-run memory-only
 identity pipeline. Folder sizes and encrypted byte counts are metadata, never content logs.
+
+
+**2026-10-08 — Telegram starts a fixed Mac backup action over Tailscale.** The first node-to-Mac
+control channel is a stdlib launchd user agent binding only the runtime Tailscale IPv4 on TCP
+8091. The node-only tailnet rule is the gate, with no listener key. Exactly one argument-free
+`POST /backup` invokes the existing SD Card copy; a nonblocking lock refuses concurrent work.
+Parse the existing final confirmation line rather than changing the copy CLI; return only
+status, file name and encrypted bytes, with fixed short failure reasons. A 180-second timeout
+kills the copy process group, including SSH, before releasing the action lock. The bot's
+privileged router gate applies; it reads a private URL file and uses one direct HTTP call with
+a longer 210-second timeout, without redirects or retries. Its sandbox, sudo and polkit remain
+unchanged. Missing card and unreachable Mac have actionable Telegram replies, and the weekly
+reminder now points to `/backup`. Addresses remain private and logs contain only metadata.

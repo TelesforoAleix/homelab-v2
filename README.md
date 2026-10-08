@@ -50,7 +50,7 @@ The Telegram bot stays a stdlib-only host service running as `homelab-bot`. Its 
 calls the loopback answer endpoint and replies with the answer and numbered source titles;
 refusals have no sources. Long replies are split into Telegram-sized messages. When the volume
 is locked or the API is unavailable, `/ask` reports that the knowledge service is down.
-`/status`, `/disk`, `/uptime`, `/restart`, `/help` and `/start` keep working independently.
+`/status`, `/disk`, `/uptime`, `/restart`, `/backup`, `/help` and `/start` keep working independently.
 `/spend` and `/model` are no longer commands. Startup registers the router's command list and
 description with Telegram; registration failure is logged and polling continues.
 
@@ -210,6 +210,49 @@ Tailscale HTTP URL on port 8090 ending in `/v1`. Never put the address or tailne
 Compose supplies a closed loopback endpoint when the variable is empty or unset: LiteLLM
 still starts, and local vision fails. Before deployment, check med-ask processes and recent
 `embed` audit calls; wait for any ingest to finish before restarting `homelab.service`.
+
+## Mac action listener
+
+The owner's launchd user agent accepts only `POST /backup` with an empty body on TCP 8091,
+bound to the Mac's runtime Tailscale IPv4. Extend the tailnet grant so only the node can reach
+this port before installing it. There is no listener key; the tailnet rule is the gate.
+The agent runs as the logged-in owner, using the same SSH key and `homelab-agent` configuration
+as the manual copy. Keep this checkout and its Python interpreter at their installed paths.
+From this checkout, using a persistent Python 3 installation:
+
+```bash
+python3 mac/homelab-listener install
+mac/homelab-listener status
+mac/homelab-listener stop
+mac/homelab-listener start
+mac/homelab-listener uninstall
+```
+
+Install writes `~/Library/LaunchAgents/org.homelab.listener.plist` with mode `0600`. launchd
+starts it at login and restarts it after exit; `stop` unloads it until `start` or the next login.
+Uninstall removes the plist and unloads the agent, retaining private logs in
+`~/.local/state/homelab-listener/listener.log` (directory `0700`, creation umask `0077`).
+`status` reports the launchd process state; confirm its actual binding with
+`lsof -nP -iTCP:8091 -sTCP:LISTEN`. Only the Tailscale address must appear. Tailscale being down
+prevents binding; launchd retries. The agent does not keep the Mac awake.
+Click Allow if macOS asks about removable-volume access or incoming connections. If an Allow
+click cannot resolve volume access, stop and investigate before changing the security setup.
+
+Requests carry no arguments, paths or commands; other actions or request bodies receive 404.
+One copy runs at a time; concurrent requests receive 409 (`busy`). The listener checks for
+`/Volumes/SD Card`, runs the existing copy command with a 180-second timeout, and returns JSON
+status `no-card`, `done` (file name and bytes only), or `failed` (fixed short reason).
+A timeout kills the copy and its SSH child; partial files remain and are never overwritten.
+Default HTTP access logging is disabled; the private log contains result and byte metadata.
+No copy content passes through this channel.
+
+After merging, install the changed bot files and reminder from the node clone after showing
+`sudo diff`, using the modes in AGENTS.md. Configure the private listener URL as described in
+[Rebuilding the node](#rebuilding-the-node), then restart only
+`homelab-telegram-bot.service`. Validate `/backup` with the card ejected, inserted, and the
+agent stopped; restart the agent afterwards. Verify the card file and
+`sudo homelab-copy status` timestamp/bytes on the node. From the node, an empty POST to an
+unknown listener path must return 404. The privileged router gate also applies to `/backup`.
 
 ## Mac vision measurements
 
@@ -563,6 +606,25 @@ SSH accounts work through Tailscale.
     the repository. Only the owner-approved login name appears in SSH hardening.
     The token is TPM2-sealed without PCR binding; no plaintext token file is created.
 
+    For Telegram `/backup`, provision `/etc/homelab-telegram-bot/mac-listener-url` with the
+    owner-confirmed `http://<MAC-TAILSCALE-IP>:8091` base URL (no action path). The address is
+    private deployment data; never put it in Git, a PR, or logs. With the existing `homelab-bot`
+    account/group provisioned, create the file, enter the URL using `sudoedit`, and set its mode:
+
+    ```bash
+    sudo touch /etc/homelab-telegram-bot/mac-listener-url
+    sudo chown root:homelab-bot /etc/homelab-telegram-bot/mac-listener-url
+    sudo chmod 0640 /etc/homelab-telegram-bot/mac-listener-url
+    sudoedit /etc/homelab-telegram-bot/mac-listener-url
+    ```
+
+    The bot reads the file on each `/backup`; an absent file means not configured. Include the
+    owner's ID in both bot allowlists to permit this privileged command. It makes one direct
+    HTTP call with a 210-second timeout, without proxy, redirect or retry. No sudo/polkit grant
+    or copy-file access is added. Install the Mac agent from the Mac section, after allowing
+    only the node to reach TCP 8091 in the tailnet policy. Restart only the bot after updating
+    its installed Python files; `homelab.service` needs no restart for this channel.
+
 11. **Copy the corpus from the owner's Mac.** Create the destination on the unlocked volume:
 
     ```bash
@@ -660,8 +722,15 @@ SSH accounts work through Tailscale.
 
 ## Weekly originals copy
 
-Plug an SD card into the Mac and run `mac/homelab-copy '<VOLUME-NAME>'` from this
-checkout (or pass `/Volumes/<NAME>`). Python 3 is required on the Mac. The command
+With the Mac listener installed and its private URL configured on the node, plug the volume
+**SD Card** into the Mac and send `/backup` to the Telegram bot as a privileged user. No mounted
+card replies “Connect the SD card and send /backup again.” Success replies
+“Copy done: N KB, <file name>.” Failure replies “Copy failed: <short reason>.” If the Mac is
+asleep, away or off, it replies “The Mac is not reachable; wake it and send /backup again.”
+The Mac must be awake and on Tailscale; see [Mac action listener](#mac-action-listener).
+
+The manual command remains `mac/homelab-copy '<VOLUME-NAME>'` from this checkout (or pass
+`/Volumes/<NAME>`). Python 3 is required on the Mac. The command
 accepts mounted removable or ejectable volumes, including cards in a built-in SD reader.
 It refuses the startup volume, every APFS volume in its boot container, fixed internal disks,
 and existing `homelab-originals-YYYY-MM-DD.tar.age`
@@ -681,7 +750,8 @@ last successful timestamp (Unix seconds) and encrypted byte count, or `null` bef
 copy. Root-owned state lives in `/var/lib/homelab-copy/` with mode `0700` (record `0600`).
 The daily persistent `homelab-copy-reminder.timer` sends one Telegram message per check
 when the copy is strictly more than seven days old or missing, including while the data
-volume is locked; fresh copies produce no message. The service uses the existing TPM-sealed
+volume is locked; the reminder says to plug the SD card into the Mac and send `/backup`.
+Fresh copies produce no message. The service uses the existing TPM-sealed
 Telegram credential and allowlist through `homelab-notify.sh "message text"`.
 
 ## Restoring originals from a copy
@@ -724,7 +794,7 @@ the source before relying on the weekly copies. Rebuild code and derived stores 
 | `src/homelab/jobs/` | Procrastinate tasks and the worker |
 | `config/litellm.yaml` | LiteLLM’s purposes, models and reasoning efforts |
 | `node/` | host operational files, mirroring their installed paths |
-| `mac/` | local measurement tools and on-demand vision serving |
+| `mac/` | local measurements, on-demand vision and the Mac action listener |
 
 [ARCHITECTURE.md](ARCHITECTURE.md) has the boundaries and the rules. [DECISIONS.md](DECISIONS.md)
 records choices that weren't obvious. MIT licence.

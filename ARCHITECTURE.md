@@ -71,8 +71,8 @@ No archive is staged, and the private identity remains in the owner's password m
 
 The Telegram client remains a stdlib-only host service, running as `homelab-bot` with its
 existing sandbox and TPM-sealed token. It long-polls Telegram with no listening port. The main
-allowlist gates dispatch; the privileged allowlist is a subset and gates `/restart`, which also
-checks its unit allowlist. Polkit independently permits only restarting `chrony.service`.
+allowlist gates dispatch; the privileged allowlist is a subset and gates `/backup` and
+`/restart`, which also checks its unit allowlist. Polkit independently permits only restarting `chrony.service`.
 `/ask` posts to the loopback answer API, returns only text and never dispatches model output.
 Host metrics, restart and help do not depend on the knowledge service or unlocked volume.
 Answers include numbered source titles, refusals omit sources, and replies are split within
@@ -80,6 +80,21 @@ Telegram's length limit. The router also supplies startup `setMyCommands` and `s
 registration failures are nonfatal.
 User IDs remain audit metadata in the node's journal; `/ask` logs its argument length only.
 Handler errors log the registered command and exception type, never exception text.
+
+The first node-to-Mac action channel is the owner's launchd user agent on TCP 8091, binding
+only the runtime Tailscale IPv4. The tailnet grant permits only the node; there is no key.
+The bot reads its base URL from private `root:homelab-bot` `0640`
+`/etc/homelab-telegram-bot/mac-listener-url`, and makes one empty `POST /backup` with a
+210-second timeout, no proxy, redirect or retry. Missing configuration, no card, busy, failure
+and unreachable Mac each produce text replies. Only metadata (requester, result, bytes) is
+logged. The bot gains no privilege or access to copies, and its existing sandbox is retained.
+The listener's fixed action list has exactly `backup`, with no caller arguments; everything
+else receives 404. A nonblocking lock refuses concurrent actions as busy. If SD Card is mounted,
+it invokes the existing Mac copy command and waits at most 180 seconds, killing the process
+group on timeout. It parses only the final confirmation report for file name and encrypted
+bytes; no content passes through the listener. launchd runs it at login and restarts it after
+exit; private state/logs remain in the owner's home. This host channel publishes no container
+port and does not change the loopback API boundary or the on-demand vision lifecycle.
 
 The two embedding models are the only resident local models. The `local` queue has concurrency 1.
 
