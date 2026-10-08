@@ -302,3 +302,14 @@ per candidate passage and `translate` for passage translation on request. Both u
 purpose can later move to a smaller or local model without a client change. No tiers, wildcard
 or fallback; prompts and parallel-call scheduling belong to clients. Existing purposes,
 request fields, audit lines and real-model handling stay unchanged.
+
+
+**2026-10-08 — Copy only originals, encrypted directly to removable media.** Each project
+keeps irreplaceable inputs under `*-data/originals`; discovery has no maintained list.
+Move v2's corpus into that convention, retaining its layout and read-only mount. Tar streams
+through age with the owner's public recipient on the node and directly onto an external Mac
+volume; neither machine stages an archive. The Mac flushes and checks the encrypted byte
+count before a separate confirmation atomically records the time and bytes. A daily timer
+reminds after strictly seven days (or no copy), using the existing TPM credential and notifier.
+The private identity stays in the password manager; restore is an owner-run memory-only
+identity pipeline. Folder sizes and encrypted byte counts are metadata, never content logs.

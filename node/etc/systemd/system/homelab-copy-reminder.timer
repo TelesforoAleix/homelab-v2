@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily check of Home Lab originals copy age
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+Unit=homelab-copy-reminder.service
+
+[Install]
+WantedBy=timers.target

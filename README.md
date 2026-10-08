@@ -76,8 +76,8 @@ without question, chunk or answer content.
 
 Knowledge operations share `HOMELAB_ACTIVE_COLLECTION` (`about_aleix` by default, or `brain`).
 Each collection has separate chunk and document tables; switching does not rebuild Brain.
-The corpus is mounted read-only from `${HOMELAB_CORPUS_PATH:-/srv/homelab/corpus}` at
-`/data/corpus`. `HOMELAB_CORPUS_FILE` defaults to `/data/corpus/about-aleix/corpus.json`.
+The corpus is mounted read-only at `/data/corpus` from `HOMELAB_CORPUS_PATH`, defaulting to
+`/srv/homelab/homelab-v2-data/originals/corpus`. `HOMELAB_CORPUS_FILE` defaults to `/data/corpus/about-aleix/corpus.json`.
 Public JSON entries become documents whose titles are their questions and whose provenance
 paths are stable entry ids. Other visibility values are skipped. Invalid individual entries
 are skipped with position-only warnings; invalid JSON, a non-list root or duplicate public ids
@@ -266,7 +266,9 @@ Cold load means a fresh process, without evicting the operating system's file ca
 
 Recovery is a rebuild from sources. No node backup exists or will be made. Host files come
 from `node/`, code from this public GitHub repository, and Brain notes from their own GitHub
-repository through the owner's Mac clone. Brain and the corpus are copied from the Mac;
+repository through the owner's Mac clone. Brain is copied from the Mac; originals can be restored from the encrypted weekly copy
+(see [Restoring originals from a copy](#restoring-originals-from-a-copy)). The corpus can
+also be copied from the owner’s Mac;
 Postgres is derived by re-ingesting, models are fetched upstream, and secrets are re-issued.
 The rebuilt node holds no GitHub credential and never clones Brain.
 
@@ -298,7 +300,7 @@ SSH accounts work through Tailscale.
    sudo vgs ubuntu-vg
    sudo lvs -o lv_name,lv_size ubuntu-vg
    sudo apt-get update
-   sudo apt-get install ca-certificates curl git rsync openssh-server lvm2 cryptsetup ufw iw chrony polkitd python3 openssl
+   sudo apt-get install ca-certificates curl git rsync openssh-server lvm2 cryptsetup ufw iw chrony polkitd python3 openssl age
    ```
 
 2. **Create, format and register the encrypted data volume.** These commands apply only to
@@ -439,6 +441,9 @@ SSH accounts work through Tailscale.
    sudo install -m 0644 -o root -g root node/etc/profile.d/homelab-console-timeout.sh /etc/profile.d/homelab-console-timeout.sh
    sudo visudo -cf node/etc/sudoers.d/homelab-agent-v2
    sudo install -m 0440 -o root -g root node/etc/sudoers.d/homelab-agent-v2 /etc/sudoers.d/homelab-agent-v2
+   sudo install -m 0644 -o root -g root node/etc/homelab-copy.recipient /etc/homelab-copy.recipient
+   sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-copy /usr/local/sbin/homelab-copy
+   sudo install -d -m 0700 -o root -g root /var/lib/homelab-copy
    sudo install -m 0755 -o root -g root node/usr/local/sbin/*.sh /usr/local/sbin/
    sudo install -m 0644 -o root -g root node/opt/homelab-telegram-bot/*.py /opt/homelab-telegram-bot/
    sudo install -m 0644 -o root -g root node/etc/polkit-1/rules.d/50-homelab-bot.rules /etc/polkit-1/rules.d/50-homelab-bot.rules
@@ -448,7 +453,7 @@ SSH accounts work through Tailscale.
    sudo install -m 0644 -o root -g root node/etc/systemd/system/homelab-telegram-bot.service.d/*.conf /etc/systemd/system/homelab-telegram-bot.service.d/
    sudo visudo -c
    sudo sshd -t
-   sudo systemd-analyze --generators=yes verify /etc/systemd/system/homelab.service /etc/systemd/system/homelab-data.target /etc/systemd/system/homelab-notify@.service /etc/systemd/system/homelab-watchdog.service /etc/systemd/system/homelab-watchdog.timer /etc/systemd/system/homelab-telegram-bot.service /etc/systemd/system/wifi-powersave-off.service
+   sudo systemd-analyze --generators=yes verify /etc/systemd/system/homelab.service /etc/systemd/system/homelab-data.target /etc/systemd/system/homelab-notify@.service /etc/systemd/system/homelab-watchdog.service /etc/systemd/system/homelab-watchdog.timer /etc/systemd/system/homelab-telegram-bot.service /etc/systemd/system/wifi-powersave-off.service /etc/systemd/system/homelab-copy-reminder.service /etc/systemd/system/homelab-copy-reminder.timer
    ```
 
    `--generators=yes` supplies the mount unit from fstab during verification. Vendor units
@@ -465,7 +470,7 @@ SSH accounts work through Tailscale.
    sudo systemctl reload ssh.service
    sudo systemctl enable --now docker.service tailscaled.service chrony.service wifi-powersave-off.service
    sudo systemctl restart docker.service
-   sudo systemctl enable homelab-telegram-bot.service homelab-watchdog.timer
+   sudo systemctl enable homelab-telegram-bot.service homelab-watchdog.timer homelab-copy-reminder.timer
    sudo ufw default deny incoming
    sudo ufw default allow outgoing
    sudo ufw default deny routed
@@ -526,7 +531,7 @@ SSH accounts work through Tailscale.
     key with the owner's gateway account and budget, a random hexadecimal database password
     in the password manager, and a new Telegram bot token through BotFather. Enter keys and
     the password only at hidden prompts; never put them in shell arguments or history.
-    `.env` holds the database password and three volume paths and is `root:root` `0600`.
+    `.env` holds the database password and four volume paths and is `root:root` `0600`.
     The gateway key is `root:10001` `0440`, readable only by the non-root LiteLLM container.
 
     ```bash
@@ -534,7 +539,7 @@ SSH accounts work through Tailscale.
     sudo bash -c 'umask 077; read -r -s -p "new gateway key: " K </dev/tty; echo; test -n "$K" || exit 1; printf "%s" "$K" > /srv/homelab/homelab-v2/secrets/gateway_api_key'
     sudo chown root:10001 /srv/homelab/homelab-v2/secrets/gateway_api_key
     sudo chmod 0440 /srv/homelab/homelab-v2/secrets/gateway_api_key
-    sudo bash -c 'umask 077; read -r -s -p "new hexadecimal database password: " P </dev/tty; echo; [[ "$P" =~ ^[[:xdigit:]]{32,}$ ]] || exit 1; printf "%s\n" "HOMELAB_DB_PASSWORD=$P" "HOMELAB_BRAIN_PATH=/srv/homelab/brain" "HOMELAB_POSTGRES_PATH=/srv/homelab/postgres" "HOMELAB_MODELS_PATH=/srv/homelab/models" > /srv/homelab/homelab-v2/.env'
+    sudo bash -c 'umask 077; read -r -s -p "new hexadecimal database password: " P </dev/tty; echo; [[ "$P" =~ ^[[:xdigit:]]{32,}$ ]] || exit 1; printf "%s\n" "HOMELAB_DB_PASSWORD=$P" "HOMELAB_BRAIN_PATH=/srv/homelab/brain" "HOMELAB_CORPUS_PATH=/srv/homelab/homelab-v2-data/originals/corpus" "HOMELAB_POSTGRES_PATH=/srv/homelab/postgres" "HOMELAB_MODELS_PATH=/srv/homelab/models" > /srv/homelab/homelab-v2/.env'
     sudo chown root:root /srv/homelab/homelab-v2/.env
     sudo chmod 0600 /srv/homelab/homelab-v2/.env
     sudo install -d -m 0750 -o root -g homelab-bot /etc/homelab-telegram-bot
@@ -561,22 +566,29 @@ SSH accounts work through Tailscale.
 11. **Copy the corpus from the owner's Mac.** Create the destination on the unlocked volume:
 
     ```bash
-    sudo install -d -m 0755 -o root -g root /srv/homelab/corpus
-    sudo install -d -m 0755 -o aleix -g aleix /srv/homelab/corpus/about-aleix
+    sudo mkdir -p /srv/homelab/homelab-v2-data/originals
+    sudo chown 0:0 /srv/homelab/homelab-v2-data /srv/homelab/homelab-v2-data/originals
+    sudo chmod 0755 /srv/homelab/homelab-v2-data /srv/homelab/homelab-v2-data/originals
+    sudo install -d -m 0755 -o root -g root /srv/homelab/homelab-v2-data/originals/corpus
+    sudo install -d -m 0755 -o aleix -g aleix /srv/homelab/homelab-v2-data/originals/corpus/about-aleix
     ```
 
     **On the Mac**, copy `corpus.json` and `eval.json` directly onto the encrypted volume:
 
     ```bash
-    scp '<MAC-CORPUS-DIRECTORY>/corpus.json' '<MAC-CORPUS-DIRECTORY>/eval.json' homelab:/srv/homelab/corpus/about-aleix/
+    scp '<MAC-CORPUS-DIRECTORY>/corpus.json' '<MAC-CORPUS-DIRECTORY>/eval.json' homelab:/srv/homelab/homelab-v2-data/originals/corpus/about-aleix/
     ```
 
     Back **on the node**, make the installed corpus root-owned and readable by the app.
-    Compose mounts it read-only.
+    Compose mounts it read-only. Set `HOMELAB_CORPUS_PATH` in the private `.env` to
+    `/srv/homelab/homelab-v2-data/originals/corpus`. On an existing node, copy with
+    `sudo cp -a /srv/homelab/corpus /srv/homelab/homelab-v2-data/originals/`,
+    verify contents and modes, then set the path. Check no med-ask ingest is running
+    before restarting the stack. Verify the mount and eval before removing the old copy.
 
     ```bash
-    sudo chown root:root /srv/homelab/corpus/about-aleix /srv/homelab/corpus/about-aleix/corpus.json /srv/homelab/corpus/about-aleix/eval.json
-    sudo chmod 0644 /srv/homelab/corpus/about-aleix/corpus.json /srv/homelab/corpus/about-aleix/eval.json
+    sudo chown root:root /srv/homelab/homelab-v2-data/originals/corpus/about-aleix /srv/homelab/homelab-v2-data/originals/corpus/about-aleix/corpus.json /srv/homelab/homelab-v2-data/originals/corpus/about-aleix/eval.json
+    sudo chmod 0644 /srv/homelab/homelab-v2-data/originals/corpus/about-aleix/corpus.json /srv/homelab/homelab-v2-data/originals/corpus/about-aleix/eval.json
     ```
 
 12. **Start the stack and bot.** Enable the stack under the data target now that its inputs
@@ -592,6 +604,7 @@ SSH accounts work through Tailscale.
     sudo docker compose -f /srv/homelab/homelab-v2/compose.yaml config --quiet
     sudo systemctl enable --now homelab.service
     sudo systemctl start homelab-telegram-bot.service
+    sudo systemctl start homelab-copy-reminder.timer
     sudo docker compose -f /srv/homelab/homelab-v2/compose.yaml ps
     sudo systemctl is-active homelab.service homelab-telegram-bot.service
     ```
@@ -644,6 +657,60 @@ SSH accounts work through Tailscale.
     sudo data-volume.sh unlock
     curl -fsS http://127.0.0.1:8000/health
     ```
+
+## Weekly originals copy
+
+Plug an SD card into the Mac and run `mac/homelab-copy '<VOLUME-NAME>'` from this
+checkout (or pass `/Volumes/<NAME>`). Python 3 is required on the Mac. The command
+refuses unmounted/internal volumes and existing `homelab-originals-YYYY-MM-DD.tar.age`
+files. Use a different card or explicitly move an existing file before another copy that day.
+It prints every `*-data/originals` folder and its size, streams one tar archive through
+age on the node directly onto the card, flushes the card, compares encrypted byte counts,
+then records the successful copy on the node. Folder sizes are allocated bytes (`du -sk`
+multiplied by 1024); the archive count is its exact encrypted length. Failed/partial files remain on the card for
+inspection; they are never confirmed or overwritten. No archive is staged on either disk.
+The archive contains paths relative to `/srv/homelab`, with numeric owners and modes.
+Do this while originals are idle: tar is not a transactional snapshot of changing files.
+Sources such as med-ask's book PDFs, databases, models and code are excluded.
+
+The committed recipient is public; the node cannot decrypt these copies. The private age
+key remains only in the owner's password manager. `sudo homelab-copy status` reports the
+last successful timestamp (Unix seconds) and encrypted byte count, or `null` before the first
+copy. Root-owned state lives in `/var/lib/homelab-copy/` with mode `0700` (record `0600`).
+The daily persistent `homelab-copy-reminder.timer` sends one Telegram message per check
+when the copy is strictly more than seven days old or missing, including while the data
+volume is locked; fresh copies produce no message. The service uses the existing TPM-sealed
+Telegram credential and allowlist through `homelab-notify.sh "message text"`.
+
+## Restoring originals from a copy
+
+The owner performs the restore, first into an empty external volume directory. Obtain the
+private age identity from the password manager and enter it at the hidden prompt below.
+Do not put it in shell history, an argument, a file or this repository. On the Mac, with
+Homebrew `age` installed, use Bash process substitution to keep the identity in memory:
+
+```bash
+bash
+set -o pipefail
+mkdir '/Volumes/<RESTORE-VOLUME>/restored-originals'
+read -r -s -p 'age private identity: ' COPY_IDENTITY; printf '\n'
+age --decrypt --identity <(printf '%s\n' "$COPY_IDENTITY") \
+  '/Volumes/<COPY-VOLUME>/homelab-originals-YYYY-MM-DD.tar.age' | \
+  tar -xpf - -C '/Volumes/<RESTORE-VOLUME>/restored-originals'
+COPY_RESTORE_STATUS=$?
+unset COPY_IDENTITY
+printf 'restore exit status: %s\n' "$COPY_RESTORE_STATUS"
+```
+
+Check the pipeline exit status and inspect the restored files. Each `<project>-data/originals/`
+goes back to `/srv/homelab/<project>-data/originals/` on the unlocked rebuilt node.
+`homelab-v2-data/originals/corpus/about-aleix/` contains `corpus.json` and `eval.json`;
+use it instead of the Mac corpus copy in rebuild step 11. Copy directories without changing
+their inner layout; as root on Linux restore numeric ownership and modes from the archive
+(`tar --numeric-owner -xpf -`) or apply each project's known ownership after a Mac restore.
+med-ask's originals directory is `root:10001` `2770`; preserve its file modes and do not
+replace an active application's originals. The owner should compare the first restore with
+the source before relying on the weekly copies. Rebuild code and derived stores separately.
 
 ## Layout
 

@@ -16,7 +16,7 @@ x-app: &app
     HOMELAB_EVAL_FILE: ${HOMELAB_EVAL_FILE:-/data/corpus/about-aleix/eval.json}
   volumes:
     - ${HOMELAB_BRAIN_PATH:-/srv/homelab/brain}:/data/brain:ro
-    - ${HOMELAB_CORPUS_PATH:-/srv/homelab/corpus}:/data/corpus:ro
+    - ${HOMELAB_CORPUS_PATH:-/srv/homelab/homelab-v2-data/originals/corpus}:/data/corpus:ro
   depends_on:
     postgres:
       condition: service_healthy

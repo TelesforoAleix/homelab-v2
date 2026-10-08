@@ -35,6 +35,7 @@ The `.d` rows cover each unit's drop-in directory.
 
 | Repository directory | Directory mode | File mode |
 |---|---|---|
+| `node/etc/` | `0755` | `0644` |
 | `node/etc/ssh/` | `0755` | — |
 | `node/etc/ssh/sshd_config.d/` | `0755` | `0600` |
 | `node/etc/ufw/` | `0755` | `0640` |
