@@ -21,8 +21,30 @@ def volume_path(value):
     if not os.path.ismount(path):
         raise ValueError("target is not mounted")
     info = plistlib.loads(subprocess.check_output(["diskutil", "info", "-plist", str(path)]))
-    if info.get("Internal") is not False or info.get("MountPoint") != str(path):
-        raise ValueError("target must be external, not the startup disk")
+    boot = plistlib.loads(subprocess.check_output(["diskutil", "info", "-plist", "/"]))
+    same_volume = any(
+        boot.get(key) and info.get(key) == boot[key]
+        for key in ("DeviceIdentifier", "VolumeUUID")
+    )
+    boot_container = boot.get("APFSContainerReference")
+    same_container = boot_container and info.get("APFSContainerReference") == boot_container
+    if (
+        info.get("MountPoint") != str(path)
+        or same_volume
+        or same_container
+        or (info.get("FilesystemType") == "apfs" and not boot_container)
+    ):
+        raise ValueError("target must not be the startup volume or its APFS container")
+    if not any(
+        info.get(key) is True
+        for key in (
+            "Removable",
+            "RemovableMedia",
+            "RemovableMediaOrExternalDevice",
+            "Ejectable",
+        )
+    ):
+        raise ValueError("target must be removable or ejectable")
     return path
 
 
@@ -61,7 +83,7 @@ def main():
         copy(volume_path(args.volume))
     except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError):
         print(
-            "homelab-copy: failed; check the mounted external volume and SSH connection; "
+            "homelab-copy: failed; check the mounted removable volume and SSH connection; "
             "an existing or partial copy is never overwritten",
             file=sys.stderr,
         )

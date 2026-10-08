@@ -662,7 +662,9 @@ SSH accounts work through Tailscale.
 
 Plug an SD card into the Mac and run `mac/homelab-copy '<VOLUME-NAME>'` from this
 checkout (or pass `/Volumes/<NAME>`). Python 3 is required on the Mac. The command
-refuses unmounted/internal volumes and existing `homelab-originals-YYYY-MM-DD.tar.age`
+accepts mounted removable or ejectable volumes, including cards in a built-in SD reader.
+It refuses the startup volume, every APFS volume in its boot container, fixed internal disks,
+and existing `homelab-originals-YYYY-MM-DD.tar.age`
 files. Use a different card or explicitly move an existing file before another copy that day.
 It prints every `*-data/originals` folder and its size, streams one tar archive through
 age on the node directly onto the card, flushes the card, compares encrypted byte counts,

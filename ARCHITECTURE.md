@@ -62,7 +62,8 @@ deliberately unused Micron disk stays untouched.
 Every project's irreplaceable inputs live in `/srv/homelab/<project>-data/originals/`.
 The corpus lives at `/srv/homelab/homelab-v2-data/originals/corpus/`, mounted read-only.
 `homelab-copy stream` pipes all originals directories through tar and age to SSH stdout;
-only a public recipient is installed. The Mac writes directly to a mounted external volume,
+only a public recipient is installed. The Mac writes directly to a mounted removable or
+ejectable volume, excluding the startup volume and every APFS volume in its boot container,
 checks the reported encrypted byte count, then calls `confirm` to atomically record the
 last-good time and bytes outside the encrypted volume. A daily persistent timer uses that
 record and the existing notifier to remind the owner after seven days, or before any copy.
