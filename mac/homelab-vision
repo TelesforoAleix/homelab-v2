@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""On-demand Metal vision server; state and content stay in the owner's home."""
+
+import argparse
+import fcntl
+import ipaddress
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+STATE = Path.home() / ".local/state/homelab-vision"
+MODELS = Path.home() / "vision-bench-outputs/models/Qwen3-VL-8B-Instruct-GGUF"
+BINARY = "/opt/homebrew/bin/llama-server"
+PORT = 8090
+
+
+def check_address(value):
+    address = ipaddress.IPv4Address(value.strip())
+    # Construct the network numerically so public sources contain no tailnet address.
+    if address not in ipaddress.IPv4Network((0x64400000, 10)):
+        raise ValueError("Tailscale IPv4 required")
+    return str(address)
+
+
+def tailscale_address():
+    cli = shutil.which("tailscale") or "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+    try:
+        result = subprocess.run([cli, "ip", "-4"], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            return check_address(result.stdout)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    result = subprocess.run(["/sbin/ifconfig"], capture_output=True, text=True, timeout=5)
+    addresses = set()
+    interface = ""
+    for line in result.stdout.splitlines():
+        if line and not line[0].isspace():
+            interface = line.split(":", 1)[0]
+        match = re.search(r"\binet (\S+)", line)
+        if interface.startswith("utun") and match:
+            try:
+                addresses.add(check_address(match[1]))
+            except ValueError:
+                pass
+    if len(addresses) != 1:
+        raise ValueError("Tailscale is down or its IPv4 is ambiguous")
+    return addresses.pop()
+
+
+def identity(pid):
+    result = subprocess.run(
+        ["/bin/ps", "-p", str(pid), "-o", "stat=", "-o", "lstart="],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    fields = result.stdout.strip().split(maxsplit=1)
+    return fields[1] if result.returncode == 0 and len(fields) == 2 and "Z" not in fields[0] else ""
+
+
+def running(record):
+    return bool(record and record["identity"] and identity(record["pid"]) == record["identity"])
+
+
+def healthy(address):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://{address}:{PORT}/health", timeout=1) as response:
+            return response.status == 200
+    except (OSError, urllib.error.URLError):
+        return False
+
+
+def stop(record):
+    if running(record):
+        os.kill(record["pid"], signal.SIGTERM)
+        deadline = time.monotonic() + 30
+        while running(record):
+            if time.monotonic() >= deadline:
+                raise ValueError("server has not stopped; PID file retained")
+            time.sleep(0.2)
+    (STATE / "server.json").unlink(missing_ok=True)
+
+
+def start(record):
+    if running(record):
+        raise ValueError("server already running")
+    address = tailscale_address()
+    with socket.socket() as probe:
+        try:
+            probe.bind((address, PORT))
+        except OSError as exc:
+            raise ValueError("Tailscale address unavailable or port 8090 taken") from exc
+    weights = MODELS / "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
+    projector = MODELS / "mmproj-F16.gguf"
+    if not weights.is_file() or not projector.is_file():
+        raise ValueError("model or projector missing; no download is attempted")
+    env = {key: value for key, value in os.environ.items() if not key.startswith("LLAMA_ARG_")}
+    with (STATE / "server.log").open("ab") as log:
+        process = subprocess.Popen(
+            [
+                BINARY,
+                "-m",
+                str(weights),
+                "--mmproj",
+                str(projector),
+                "--alias",
+                "vision",
+                "--host",
+                address,
+                "--port",
+                str(PORT),
+                "-ngl",
+                "99",
+                "-c",
+                "16384",
+                "-np",
+                "1",
+                "--cache-ram",
+                "0",
+                "--flash-attn",
+                "on",
+                "--log-disable",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            env=env,
+            start_new_session=True,
+        )
+    record = {"pid": process.pid, "identity": identity(process.pid), "address": address}
+    (STATE / "server.json").write_text(json.dumps(record))
+    try:
+        deadline = time.monotonic() + 120
+        while process.poll() is None:
+            if healthy(address):
+                print("vision serving on Tailscale port 8090")
+                return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.2)
+        raise ValueError("server did not become healthy; see private server.log")
+    except BaseException:
+        stop(record)
+        raise
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=["start", "stop", "status"])
+    args = parser.parse_args()
+    os.umask(0o077)
+    STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        with (STATE / "command.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            path = STATE / "server.json"
+            record = json.loads(path.read_text()) if path.exists() else None
+            if args.command == "start":
+                start(record)
+            elif args.command == "stop":
+                stop(record)
+                print("vision stopped")
+            else:
+                serving = running(record) and healthy(record["address"])
+                print("vision serving" if serving else "vision not serving")
+                return 0 if serving else 1
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        parser.exit(1, f"{exc}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

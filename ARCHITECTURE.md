@@ -76,6 +76,19 @@ The embedding model is the only resident local model. The `local` queue has conc
 `config/litellm.yaml` is the single route table. It offers `chat`, `chat:high` and `chat:xhigh`
 through Vercel AI Gateway's `deepseek/deepseek-v4.1-flash`, at low, medium and high reasoning
 effort respectively, and `embed` through the unchanged local `llama-nemotron-embed-1b-v2`.
+`vision` reaches the owner’s on-demand Metal llama.cpp server over Tailscale, serving
+Qwen3-VL-8B-Instruct Q4_K_M with mmproj-F16 and context 16,384. `vision:xhigh` reaches the
+same gateway model as chat, without a configured reasoning effort. There is no `vision:high`.
+The Mac binds only its runtime Tailscale IPv4 on TCP 8090; the tailnet policy allows only the
+node. Its private URL comes from `HOMELAB_MAC_VISION_URL` in the node’s root-owned `.env`,
+read by the route table with `os.environ/`. An unset URL leaves the proxy running and makes
+local vision fail; Compose uses a closed loopback endpoint. The deployment hook supplies an
+HTTPX timeout with a 3-second connect limit and 300-second page request limit. Stopped serving
+is normal: errors are generic OpenAI-shaped 4xx/5xx, without retries, fallback or alerts.
+Clients keep pages queued and supply prompts, DPI, temperature and completion limits.
+No Mac login/boot service or wake lock is installed. PID and content-disabled log stay private
+in the owner’s home. Image inputs must be `data:` URLs.
+
 Names are `purpose:tier`; a bare purpose is standard, and embeddings have no tiers. Clients
 choose tiers themselves. There is no wildcard, pass-through, default model or fallback.
 Unknown names, deployment model ids and unavailable tiers receive LiteLLM's default
@@ -104,8 +117,8 @@ and uses `no-new-privileges`. Only LiteLLM mounts `/run/secrets/gateway_api_key`
 `root:10001` `0440`. Its entrypoint reads the file into the process environment at startup;
 no gateway key appears in Compose, env files or config. Telemetry, third-party callbacks,
 admin UI and remote model-price fetching are disabled; tokenizer assets are bundled and
-remote image URLs are refused. The only external model destination is the gateway; the local
-embedding destination is unchanged. Tests run the real pinned image without external
+remote image URLs are refused. External model destinations are the gateway and the on-demand
+Mac; the local embedding destination is unchanged. Tests run the real pinned image without external
 networking, synthetic credentials and loopback upstreams, checking for attempted external
 connections as well as the endpoint contract.
 
@@ -177,4 +190,5 @@ including quotes). Only counts are exposed, without text or match details.
 5. Content is not logged by default; ids, sizes, timings and costs are.
 6. Spend control is the gateway key's budget and dashboard.
 7. Jobs: persist before ack; idempotent or non-retryable.
-8. Indexing is local; only the question and retrieved chunks leave the node.
+8. Indexing is local; knowledge answering sends only the question and retrieved chunks off-node.
+   Explicit vision calls send page images to the owner’s Mac or the selected hosted vision rung.

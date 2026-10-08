@@ -18,6 +18,20 @@ model_list:
       api_base: https://ai-gateway.vercel.sh/v1
       api_key: os.environ/HOMELAB_GATEWAY_API_KEY
       reasoning_effort: high
+  - model_name: vision
+    litellm_params:
+      model: openai/vision
+      api_base: os.environ/HOMELAB_MAC_VISION_URL
+      api_key: none
+      timeout: 300.0
+    model_info:
+      # The deployment hook applies this separately from the page request timeout.
+      connect_timeout: 3.0
+  - model_name: vision:xhigh
+    litellm_params:
+      model: openai/deepseek/deepseek-v4.1-flash
+      api_base: https://ai-gateway.vercel.sh/v1
+      api_key: os.environ/HOMELAB_GATEWAY_API_KEY
   - model_name: embed
     litellm_params:
       model: openai/llama-nemotron-embed-1b-v2

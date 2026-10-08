@@ -137,8 +137,13 @@ Attach a client container from another Compose project to the external Docker ne
 `homelab-models`, created by this stack. Only LiteLLM joins it; Postgres, API and `llama-embed`
 remain on the stack's private network. Give the client its base URL `http://litellm:4000/v1`
 and an arbitrary API key through its environment, then use OpenAI-shaped `GET /v1/models`,
-`POST /v1/chat/completions` and `POST /v1/embeddings`. There are exactly four names: `chat`
-(standard), `chat:high`, `chat:xhigh` and `embed`. The client chooses a tier; no escalation
+`POST /v1/chat/completions` and `POST /v1/embeddings`. There are exactly six names: `chat`
+(standard), `chat:high`, `chat:xhigh`, `embed`, `vision` and `vision:xhigh`.
+`vision` reads page images with Qwen3-VL-8B on the owner’s Mac while it serves;
+`vision:xhigh` uses the gateway for pages that need the hosted rung. There is no `vision:high`.
+Send images as `data:` URLs. When the Mac is stopped, `vision` returns a generic OpenAI-shaped
+4xx or 5xx with a 3-second connection timeout; clients keep their pages queued. Requests allow
+300 seconds for transcription, with no retries, fallback or incident alert. The client chooses a tier; no escalation
 or fallback happens automatically. Chat responses report the purpose; embedding responses
 report the real embedding model, which clients must record at ingest. An embedding model
 change requires a new index. Unknown names, provider model ids and unavailable tiers receive
@@ -159,6 +164,36 @@ networks:
     external: true
     name: homelab-models
 ```
+
+## Mac vision serving
+
+The owner starts and stops native Homebrew llama.cpp on demand; nothing runs at login or boot
+and the script does not keep the Mac awake. From this checkout:
+
+```bash
+mac/homelab-vision start
+mac/homelab-vision status
+mac/homelab-vision stop
+```
+
+`start` reads the Tailscale IPv4 at runtime using the CLI (or a `utun` address), refuses a
+missing address or occupied port, then waits up to 120 seconds for `/health`. The server binds
+only that address on TCP 8090. The owner’s tailnet policy permits only the node to reach it;
+there is no server API key. On first start, allow incoming connections for `llama-server` if
+macOS asks. `status` exits 0 only while the managed process is healthy; `stop` sends SIGTERM
+and waits up to 30 seconds. Commands serialize through a lock and check PID start time before
+signalling. PID, lock and content-disabled server log live in `~/.local/state/homelab-vision/`.
+
+The existing files under `~/vision-bench-outputs/models/Qwen3-VL-8B-Instruct-GGUF/` must contain
+`Qwen3-VL-8B-Instruct-Q4_K_M.gguf` and `mmproj-F16.gguf`. No download is attempted. Serving uses
+Metal, context 16,384, one slot, flash attention and no prompt cache, matching the benchmark.
+Temperature, completion limit, transcription prompt and page DPI belong to the client.
+
+Set `HOMELAB_MAC_VISION_URL` only in the node clone’s private, root-owned `.env`, to the Mac’s
+Tailscale HTTP URL on port 8090 ending in `/v1`. Never put the address or tailnet name in git.
+Compose supplies a closed loopback endpoint when the variable is empty or unset: LiteLLM
+still starts, and local vision fails. Before deployment, check med-ask processes and recent
+`embed` audit calls; wait for any ingest to finish before restarting `homelab.service`.
 
 ## Mac vision measurements
 
@@ -598,7 +633,7 @@ SSH accounts work through Tailscale.
 | `src/homelab/jobs/` | Procrastinate tasks and the worker |
 | `config/litellm.yaml` | LiteLLM’s purposes, models and reasoning efforts |
 | `node/` | host operational files, mirroring their installed paths |
-| `mac/` | local measurement tools; no installed Mac service yet |
+| `mac/` | local measurement tools and on-demand vision serving |
 
 [ARCHITECTURE.md](ARCHITECTURE.md) has the boundaries and the rules. [DECISIONS.md](DECISIONS.md)
 records choices that weren't obvious. MIT licence.
