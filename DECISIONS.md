@@ -262,3 +262,17 @@ double-count resident mappings. Add the fixed exact and reconciliation prompts, 
 prior output directories by sample index with one image per request; require 300 DPI for
 reconciliation. Named runs refuse existing output directories, and figure descriptions can be
 omitted. All samples, images, text and results remain outside Git; no route or model is chosen.
+
+
+**2026-10-08 — Serve vision on demand from the owner’s Mac.** Add exactly `vision` and
+`vision:xhigh` to the single LiteLLM route table. Local vision uses the measured Qwen3-VL-8B
+Q4_K_M, F16 projector, Metal and context 16,384; the hosted rung uses gateway
+`deepseek/deepseek-v4.1-flash` without configured reasoning effort. The Mac binds only its
+runtime Tailscale IPv4 on port 8090, with the owner’s node-only tailnet policy as its gate.
+The address stays in the node’s private `.env`, passed only to LiteLLM; an empty setting uses
+a closed loopback endpoint so proxy startup does not depend on the Mac. The pinned proxy
+accepts numeric YAML timeouts; a deployment hook converts this route’s 300-second timeout to
+HTTPX with a separate 3-second connection limit. No retries, fallback or stopped-Mac alert.
+The owner starts/stops a PID-managed native process; no login/boot job or wake lock. Keep the
+existing model files in place, and private state/log under `~/.local/state/homelab-vision/`.
+Clients own page prompts, DPI and generation settings, and retain queued pages on failure.

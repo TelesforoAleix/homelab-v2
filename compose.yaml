@@ -35,6 +35,7 @@ services:
     user: "10001:10001"
     entrypoint: ["python", "/etc/litellm/litellm_entrypoint.py"]
     environment:
+      HOMELAB_MAC_VISION_URL: ${HOMELAB_MAC_VISION_URL:-http://127.0.0.1:9/v1}
       LITELLM_LOCAL_MODEL_COST_MAP: "True"
       LITELLM_MODE: PRODUCTION
       DISABLE_ADMIN_UI: "True"

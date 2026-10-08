@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
     config = yaml.safe_load((ROOT / "config/litellm.yaml").read_text())
     rows = {row["model_name"]: row["litellm_params"] for row in config["model_list"]}
-    assert set(rows) == {"chat", "chat:high", "chat:xhigh", "embed"}
+    assert set(rows) == {"chat", "chat:high", "chat:xhigh", "embed", "vision", "vision:xhigh"}
     for purpose, effort in [("chat", "low"), ("chat:high", "medium"), ("chat:xhigh", "high")]:
         assert rows[purpose] == {
             "model": "openai/deepseek/deepseek-v4.1-flash",
@@ -20,6 +20,23 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
         "model": "openai/llama-nemotron-embed-1b-v2",
         "api_base": "http://llama-embed:8080/v1",
         "api_key": "none",
+    }
+    assert rows["vision"] == {
+        "model": "openai/vision",
+        "api_base": "os.environ/HOMELAB_MAC_VISION_URL",
+        "api_key": "none",
+        "timeout": 300.0,
+    }
+    assert (
+        next(row for row in config["model_list"] if row["model_name"] == "vision")["model_info"][
+            "connect_timeout"
+        ]
+        == 3.0
+    )
+    assert rows["vision:xhigh"] == {
+        "model": "openai/deepseek/deepseek-v4.1-flash",
+        "api_base": "https://ai-gateway.vercel.sh/v1",
+        "api_key": "os.environ/HOMELAB_GATEWAY_API_KEY",
     }
     router = config["router_settings"]
     assert router["num_retries"] == 0
@@ -58,3 +75,25 @@ def test_proxy_is_the_only_network_member_and_gateway_secret_holder():
             "GATEWAY" in key or "LOCAL_BASE" in key for key in services[name]["environment"]
         )
         assert services[name]["depends_on"]["litellm"] == {"condition": "service_healthy"}
+
+
+def test_private_mac_url_only_reaches_proxy_and_has_safe_unset_default():
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
+    assert compose["services"]["litellm"]["environment"]["HOMELAB_MAC_VISION_URL"] == (
+        "${HOMELAB_MAC_VISION_URL:-http://127.0.0.1:9/v1}"
+    )
+    assert "HOMELAB_MAC_VISION_URL=\n" in (ROOT / ".env.example").read_text()
+    for name, service in compose["services"].items():
+        if name != "litellm":
+            assert "HOMELAB_MAC_VISION_URL" not in service.get("environment", {})
+    import re
+
+    for path in [
+        ROOT / "config/litellm.yaml",
+        ROOT / "compose.yaml",
+        ROOT / ".env.example",
+        ROOT / "mac/homelab-vision",
+        ROOT / "README.md",
+        ROOT / "ARCHITECTURE.md",
+    ]:
+        assert not re.search(r"\b100\.\d+\.\d+\.\d+\b|[\w-]+\.ts\.net\b", path.read_text())

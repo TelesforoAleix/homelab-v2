@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from time import monotonic
 
+import httpx
 import yaml
 from fastapi import HTTPException
 from litellm.constants import RETURN_RAW_MODEL_NAME_METADATA_KEY
@@ -21,6 +22,7 @@ from starlette.responses import JSONResponse
 
 # Read the single config, rather than duplicating its aliases or real model names in code.
 config = yaml.safe_load(Path(os.environ["CONFIG_FILE_PATH"]).read_text())
+model_info = {row["model_name"]: row.get("model_info", {}) for row in config["model_list"]}
 model_specs = {row["model_name"]: row["litellm_params"] for row in config["model_list"]}
 # LiteLLM executes this file again when loading callbacks. Reuse the context
 # installed by the middleware instead of creating an isolated copy.
@@ -174,6 +176,15 @@ class PurposeHooks(CustomLogger):
 
     async def async_pre_call_deployment_hook(self, kwargs, call_type):
         event = audit.get()
+        if event is not None and "connect_timeout" in model_info.get(event["purpose"], {}):
+            # The pinned proxy accepts numeric YAML timeouts; OpenAI's SDK needs an
+            # httpx.Timeout for a separate connect limit on this on-demand image route.
+            purpose = event["purpose"]
+            if not os.environ.get("HOMELAB_MAC_VISION_URL"):
+                raise HTTPException(503, "Model call failed")
+            kwargs["timeout"] = httpx.Timeout(
+                model_specs[purpose]["timeout"], connect=model_info[purpose]["connect_timeout"]
+            )
         if event is not None:
             event["upstream"] = True
         return kwargs
