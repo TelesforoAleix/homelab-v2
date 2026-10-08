@@ -25,7 +25,7 @@ Read `README.md` and `ARCHITECTURE.md` first; `DECISIONS.md` when a choice looks
 - Files under `node/` are installed at the same path on the node, from the committed tree. Show
   the `diff` against what is installed before copying, and run the validator a change has:
   `visudo -c`, `sshd -t`, `systemd-analyze verify`.
-- A PR changing `node/` updates README's "Rebuilding the node" section in the same PR.
+- A PR changing `node/` updates the ["Rebuilding the node" section](docs/operations.md#rebuilding-the-node) in the same PR.
 
 ## Host-file modes
 

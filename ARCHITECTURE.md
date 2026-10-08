@@ -53,7 +53,7 @@ are recorded here. Private allowlists and secret credential contents stay outsid
 
 Base SSH, ufw, Docker, sysctl, console timeout and Wi-Fi configuration also live in `node/`;
 their installed modes are recorded in `AGENTS.md`. Recovery is the
-[Rebuilding the node](README.md#rebuilding-the-node) procedure: no node backup, a public code
+[Rebuilding the node](docs/operations.md#rebuilding-the-node) procedure: no node backup, a public code
 clone, Brain from the owner's Mac, originals restored from an encrypted copy (or the
 owner's Mac corpus), re-ingestion and re-issued secrets.
 The rebuilt node needs no GitHub credential. Only the Samsung system disk is rebuilt; the
