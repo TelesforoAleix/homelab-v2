@@ -54,9 +54,19 @@ are recorded here. Private allowlists and secret credential contents stay outsid
 Base SSH, ufw, Docker, sysctl, console timeout and Wi-Fi configuration also live in `node/`;
 their installed modes are recorded in `AGENTS.md`. Recovery is the
 [Rebuilding the node](README.md#rebuilding-the-node) procedure: no node backup, a public code
-clone, Brain and corpus copies from the owner's Mac, re-ingestion and re-issued secrets.
+clone, Brain from the owner's Mac, originals restored from an encrypted copy (or the
+owner's Mac corpus), re-ingestion and re-issued secrets.
 The rebuilt node needs no GitHub credential. Only the Samsung system disk is rebuilt; the
 deliberately unused Micron disk stays untouched.
+
+Every project's irreplaceable inputs live in `/srv/homelab/<project>-data/originals/`.
+The corpus lives at `/srv/homelab/homelab-v2-data/originals/corpus/`, mounted read-only.
+`homelab-copy stream` pipes all originals directories through tar and age to SSH stdout;
+only a public recipient is installed. The Mac writes directly to a mounted external volume,
+checks the reported encrypted byte count, then calls `confirm` to atomically record the
+last-good time and bytes outside the encrypted volume. A daily persistent timer uses that
+record and the existing notifier to remind the owner after seven days, or before any copy.
+No archive is staged, and the private identity remains in the owner's password manager.
 
 The Telegram client remains a stdlib-only host service, running as `homelab-bot` with its
 existing sandbox and TPM-sealed token. It long-polls Telegram with no listening port. The main

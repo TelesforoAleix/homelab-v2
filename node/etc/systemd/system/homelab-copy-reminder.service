@@ -1,0 +1,21 @@
+[Unit]
+Description=Home Lab weekly originals copy reminder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/homelab-copy status --remind
+LoadCredentialEncrypted=bot-token:/etc/homelab-telegram-bot/token.cred
+StateDirectory=homelab-copy
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
