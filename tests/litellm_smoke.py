@@ -159,6 +159,8 @@ def run(unset=False):
                         "chat:xhigh",
                         "embed",
                         "embed-large",
+                        "grade",
+                        "translate",
                         "vision",
                         "vision:xhigh",
                     ]
@@ -168,6 +170,8 @@ def run(unset=False):
                         ("chat", "low"),
                         ("chat:high", "medium"),
                         ("chat:xhigh", "high"),
+                        ("grade", "low"),
+                        ("translate", "low"),
                     ]:
                         response = client.post(
                             "/v1/chat/completions",
@@ -181,6 +185,7 @@ def run(unset=False):
                         calls += 1
                         assert response.status_code == 200
                         assert response.json()["model"] == purpose
+                        assert response.json()["choices"][0]["message"]["content"] == CONTENT
                         assert (
                             response.json()["usage"]["completion_tokens_details"][
                                 "reasoning_tokens"
@@ -493,6 +498,14 @@ def run(unset=False):
                     f"purpose=embed-large real_model={REAL_LARGE} status=200" in line
                     for line in lines
                 )
+                for purpose in ["grade", "translate"]:
+                    assert (
+                        sum(
+                            f"purpose={purpose} real_model={REAL_CHAT} status=200" in line
+                            for line in lines
+                        )
+                        == 1
+                    )
                 vision_lines = [
                     line for line in lines if "purpose=vision " in line and "status=200" in line
                 ]

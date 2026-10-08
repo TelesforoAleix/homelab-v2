@@ -137,8 +137,10 @@ Attach a client container from another Compose project to the external Docker ne
 `homelab-models`, created by this stack. Only LiteLLM joins it; Postgres, API and both
 embedding servers remain on the stack's private network. Give the client its base URL `http://litellm:4000/v1`
 and an arbitrary API key through its environment, then use OpenAI-shaped `GET /v1/models`,
-`POST /v1/chat/completions` and `POST /v1/embeddings`. There are exactly seven names: `chat`
-(standard), `chat:high`, `chat:xhigh`, `embed`, `embed-large`, `vision` and `vision:xhigh`.
+`POST /v1/chat/completions` and `POST /v1/embeddings`. There are exactly nine names: `chat`
+(standard), `chat:high`, `chat:xhigh`, `embed`, `embed-large`, `grade`, `translate`, `vision` and `vision:xhigh`.
+`grade` makes yes/no relevance judgements per candidate passage, using the same model and low effort as `chat`.
+`translate` translates passages on request, using the same model and low effort as `chat`.
 `vision` reads page images with Qwen3-VL-8B on the owner’s Mac while it serves;
 `vision:xhigh` uses the gateway for pages that need the hosted rung. There is no `vision:high`.
 Send images as `data:` URLs. When the Mac is stopped, `vision` returns a generic OpenAI-shaped

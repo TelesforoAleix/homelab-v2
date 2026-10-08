@@ -91,6 +91,8 @@ own callers, index and answer endpoint retain plain embeddings.
 The route table also offers `chat`, `chat:high` and `chat:xhigh`
 through Vercel AI Gateway's `deepseek/deepseek-v4.1-flash`, at low, medium and high reasoning
 effort respectively, and `embed` through the unchanged local `llama-nemotron-embed-1b-v2`.
+`grade` makes yes/no relevance judgements per candidate passage, with exactly `chat`'s model and low-effort settings.
+`translate` translates passages on request, with exactly `chat`'s model and low-effort settings.
 `vision` reaches the owner’s on-demand Metal llama.cpp server over Tailscale, serving
 Qwen3-VL-8B-Instruct Q4_K_M with mmproj-F16 and context 16,384. `vision:xhigh` reaches the
 same gateway model as chat, without a configured reasoning effort. There is no `vision:high`.
