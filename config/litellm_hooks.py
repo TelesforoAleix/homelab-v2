@@ -32,6 +32,20 @@ audit: ContextVar[dict | None] = getattr(sys.modules.get(__name__), "audit", Non
 logger = logging.getLogger("homelab.models")
 
 
+def input_type_error(data):
+    if "input_type" not in data:
+        return None
+    role = data["input_type"]
+    if not isinstance(role, str) or role not in {"query", "passage"}:
+        return "input_type must be query or passage"
+    text = data.get("input")
+    if not isinstance(text, str) and not (
+        isinstance(text, list) and text and all(isinstance(item, str) for item in text)
+    ):
+        return "input_type requires string or list-of-string input"
+    return None
+
+
 def error_response(status: int, message: str):
     return JSONResponse(
         {
@@ -76,7 +90,7 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
             elif path == "/v1/chat/completions" and request.method == "POST":
                 fields = set(CompletionCreateParamsBase.__annotations__) | {"stream"}
             elif path == "/v1/embeddings" and request.method == "POST":
-                fields = EmbeddingCreateParams.__annotations__
+                fields = set(EmbeddingCreateParams.__annotations__) | {"input_type"}
             else:
                 response = error_response(404, "Endpoint not offered")
                 status = response.status_code
@@ -101,6 +115,9 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                     # overrides must never reach the library, even before its pre-call hook.
                     if set(body) - set(fields):
                         response = error_response(400, "Only OpenAI request fields are offered")
+                    elif path == "/v1/embeddings" and (error := input_type_error(body)):
+                        # The proxy decodes some token arrays before its pre-call hook.
+                        response = error_response(400, error)
                     else:
                         # Client keys are accepted but never forwarded upstream. Drop custom
                         # headers, including LiteLLM routing and debug controls.
@@ -160,7 +177,19 @@ class PurposeHooks(CustomLogger):
             )
         spec = model_specs[purpose]
         metadata = data.setdefault("metadata", {})
-        metadata[RETURN_RAW_MODEL_NAME_METADATA_KEY] = purpose == "embed"
+        embedding = model_info[purpose].get("mode") == "embedding"
+        metadata[RETURN_RAW_MODEL_NAME_METADATA_KEY] = embedding or purpose == "vision"
+        if call_type in {"embeddings", "aembedding"} and "input_type" in data:
+            if not embedding:
+                raise HTTPException(400, "input_type requires an embedding purpose")
+            if error := input_type_error(data):
+                raise HTTPException(400, error)
+            role = data.pop("input_type")
+            text = data.get("input")
+            prefix = model_info[purpose]["input_prefixes"][role]
+            data["input"] = (
+                prefix + text if isinstance(text, str) else [prefix + item for item in text]
+            )
         if "reasoning_effort" in spec:
             data["reasoning_effort"] = spec["reasoning_effort"]
         # Token accounting can fetch image URLs. Data images require no remote fetch.
@@ -190,9 +219,33 @@ class PurposeHooks(CustomLogger):
         return kwargs
 
     async def async_post_call_success_hook(self, data, user_api_key_dict, response):
-        if data.get("model") == "embed":
-            response.model = model_specs["embed"]["model"].split("/", 1)[1]
+        purpose = data.get("model")
+        if model_info.get(purpose, {}).get("mode") == "embedding":
+            response.model = model_specs[purpose]["model"].split("/", 1)[1]
+        elif purpose == "vision":
+            self.record_vision_model(response)
+            response.model = purpose
         return response
+
+    @staticmethod
+    def record_vision_model(response):
+        event = audit.get()
+        # The pinned streaming wrapper puts the upstream name in hidden metadata.
+        served = getattr(response, "_hidden_params", {}).get("provider_response_model") or getattr(
+            response, "model", None
+        )
+        # LiteLLM can append a synthetic final chunk carrying the purpose alias.
+        if event is not None and isinstance(served, str) and served and served != event["purpose"]:
+            event["real_model"] = served
+
+    async def async_post_call_streaming_iterator_hook(
+        self, user_api_key_dict, response, request_data
+    ):
+        async for chunk in response:
+            if request_data.get("model") == "vision":
+                self.record_vision_model(chunk)
+                chunk.model = "vision"
+            yield chunk
 
     async def async_post_call_failure_hook(
         self, request_data, original_exception, user_api_key_dict, traceback_str=None

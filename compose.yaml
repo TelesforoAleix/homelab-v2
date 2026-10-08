@@ -63,6 +63,8 @@ services:
     depends_on:
       llama-embed:
         condition: service_started
+      llama-embed-large:
+        condition: service_started
 
   api:
     <<: *app
@@ -116,6 +118,28 @@ services:
       LLAMA_CACHE: /models
     volumes:
       - ${HOMELAB_MODELS_PATH:-/srv/homelab/models}:/models
+    restart: unless-stopped
+    logging:
+      driver: journald
+
+  llama-embed-large:
+    # Official Q8_0 GGUF at an immutable revision; prepare models/embed-large as 10001:10001.
+    image: ghcr.io/ggml-org/llama.cpp:server
+    user: "10001:10001"
+    command: >
+      -mu https://huggingface.co/Qwen/Qwen3-Embedding-4B-GGUF/resolve/f4602530db1d980e16da9d7d3a70294cf5c190be/Qwen3-Embedding-4B-Q8_0.gguf
+      -m /models/Qwen3-Embedding-4B-Q8_0.gguf
+      --alias Qwen3-Embedding-4B
+      --embeddings --pooling last --embd-normalize 2
+      -c 8192 -b 2048 -ub 2048 -t 4 -ngl 0
+      --host 0.0.0.0 --port 8080
+    environment:
+      LLAMA_CACHE: /models
+    volumes:
+      - ${HOMELAB_MODELS_PATH:-/srv/homelab/models}/embed-large:/models
+    networks: [default]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
     logging:
       driver: journald
