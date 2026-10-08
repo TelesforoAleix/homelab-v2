@@ -127,18 +127,18 @@ docker compose exec api homelab eval
 port is published for LiteLLM. Its official image is pinned by digest in Compose and updated
 deliberately. Telemetry, remote model-price updates, hosted callbacks and the admin UI are off;
 tokenizers are bundled. Its external model calls go only to Vercel AI Gateway; embeddings go
-to the existing `llama-embed` service. The journal records one line per endpoint call with
-purpose, real model, HTTP status, elapsed seconds and whether an upstream call was attempted.
+to `llama-embed` or `llama-embed-large` on the private network. The journal records one line
+per endpoint call with purpose, real model, HTTP status, elapsed seconds and whether an upstream call was attempted.
 Content, embeddings and keys are excluded, including on errors and streaming calls.
 
 ### Use the model endpoint
 
 Attach a client container from another Compose project to the external Docker network
-`homelab-models`, created by this stack. Only LiteLLM joins it; Postgres, API and `llama-embed`
-remain on the stack's private network. Give the client its base URL `http://litellm:4000/v1`
+`homelab-models`, created by this stack. Only LiteLLM joins it; Postgres, API and both
+embedding servers remain on the stack's private network. Give the client its base URL `http://litellm:4000/v1`
 and an arbitrary API key through its environment, then use OpenAI-shaped `GET /v1/models`,
-`POST /v1/chat/completions` and `POST /v1/embeddings`. There are exactly six names: `chat`
-(standard), `chat:high`, `chat:xhigh`, `embed`, `vision` and `vision:xhigh`.
+`POST /v1/chat/completions` and `POST /v1/embeddings`. There are exactly seven names: `chat`
+(standard), `chat:high`, `chat:xhigh`, `embed`, `embed-large`, `vision` and `vision:xhigh`.
 `vision` reads page images with Qwen3-VL-8B on the owner’s Mac while it serves;
 `vision:xhigh` uses the gateway for pages that need the hosted rung. There is no `vision:high`.
 Send images as `data:` URLs. When the Mac is stopped, `vision` returns a generic OpenAI-shaped
@@ -150,7 +150,21 @@ change requires a new index. Unknown names, provider model ids and unavailable t
 a 4xx without an upstream call. The accepted client key provides no access control today:
 attach only trusted clients to this network. Provider/routing overrides and remote image URLs
 are refused; configuration and management endpoints are not exposed. New purposes and optional
-OpenAI fields can be added to `/v1`; breaking changes require `/v2`.
+request fields can be added to `/v1`; breaking changes require `/v2`.
+
+`embed` uses Nemotron 1B; `embed-large` uses Qwen3-Embedding-4B Q8_0 on the node's CPU,
+always on. Both embedding purposes accept optional `input_type: "query"` or `"passage"`
+on `/v1/embeddings`, for a string or list of strings. LiteLLM applies the model's configured
+question/document wording and removes the field before forwarding. Other values and token
+arrays with `input_type` receive 400. Without it, input is forwarded unchanged, preserving
+existing indexes. Switching an existing index to roles requires re-embedding its passages
+with `passage`, then querying with `query`; this repository's index and `/answer` keep plain
+input. Changing embedding models requires a separate index.
+
+`embed-large` returns 2,560 dimensions. Clients using HNSW should account for
+[pgvector's limits](https://github.com/pgvector/pgvector#hnsw): `vector` supports at most
+2,000 indexed dimensions, while `halfvec` supports 4,000. The proxy passes through the
+model's vectors and does not implement dimension reduction.
 
 A client project's network declaration is:
 
@@ -495,6 +509,7 @@ SSH accounts work through Tailscale.
    sudo git clone --branch main https://github.com/TelesforoAleix/homelab-v2.git /srv/homelab/homelab-v2
    sudo install -d -m 0775 -o aleix -g aleix /srv/homelab/brain
    sudo install -d -m 0755 -o root -g root /srv/homelab/models /srv/homelab/postgres
+   sudo install -d -m 0755 -o 10001 -g 10001 /srv/homelab/models/embed-large
    ```
 
    **On the Mac**, copy notes, including hidden note files but excluding Git metadata:
@@ -561,8 +576,11 @@ SSH accounts work through Tailscale.
     ```
 
 12. **Start the stack and bot.** Enable the stack under the data target now that its inputs
-    exist. First startup downloads the embedding model upstream into `models` and builds
-    the app image; wait for the model download and Postgres initialization. The worker
+    exist. First startup downloads Nemotron into `models` and the official Qwen3-Embedding-4B
+    Q8_0 into `models/embed-large` (owned by `10001:10001` for its non-root server), and builds
+    the app image. Both embedding servers are always on; wait for both model downloads and
+    Postgres initialization. On an existing node, prepare that same subdirectory before deploy;
+    if `HOMELAB_MODELS_PATH` is overridden, create it beneath that path. The worker
     creates Procrastinate's schema through the library's schema manager. The bot registers
     its command menu with Telegram; start its private chat from the owner's Telegram client.
 

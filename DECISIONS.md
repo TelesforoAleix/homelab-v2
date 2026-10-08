@@ -276,3 +276,21 @@ HTTPX with a separate 3-second connection limit. No retries, fallback or stopped
 The owner starts/stops a PID-managed native process; no login/boot job or wake lock. Keep the
 existing model files in place, and private state/log under `~/.local/state/homelab-vision/`.
 Clients own page prompts, DPI and generation settings, and retain queued pages on failure.
+
+
+**2026-10-08 — Add a larger local embedding purpose and opt-in text roles.** Keep `embed`
+and its plain-text vectors unchanged; add exactly `embed-large`, without tiers or fallback.
+Use the official `Qwen/Qwen3-Embedding-4B-GGUF` file `Qwen3-Embedding-4B-Q8_0.gguf` at
+revision `f4602530db1d980e16da9d7d3a70294cf5c190be`, fetched by llama.cpp from an immutable
+URL into `models/embed-large`. A dedicated cache owned by `10001:10001` permits a non-root
+server without changing Nemotron's cache or service. Use the same llama.cpp image, CPU only,
+four threads, context 8192, batch/microbatch 2048, last-token pooling and explicit L2
+normalisation, as required by the official model cards. No client network or published port.
+Optional `input_type` accepts only `query`/`passage` on string or list-of-string input;
+`model_info.input_prefixes` holds each purpose's wording. Remove the field upstream; absence
+leaves input unchanged. Nemotron gets its question/document prefixes, Qwen gets a generic
+English retrieval instruction for questions and plain passages. Both embedding responses
+report their real models. Mac vision audit lines take the served name from the response,
+while client responses retain the purpose. Existing callers and indexes do not use roles;
+clients adopting roles must re-embed passages, and Qwen's 2560 dimensions require accounting
+for pgvector HNSW's 2000-dimensional `vector` limit (4000 for `halfvec`). No dimension handling.

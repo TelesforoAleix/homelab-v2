@@ -8,7 +8,15 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
     config = yaml.safe_load((ROOT / "config/litellm.yaml").read_text())
     rows = {row["model_name"]: row["litellm_params"] for row in config["model_list"]}
-    assert set(rows) == {"chat", "chat:high", "chat:xhigh", "embed", "vision", "vision:xhigh"}
+    assert set(rows) == {
+        "chat",
+        "chat:high",
+        "chat:xhigh",
+        "embed",
+        "embed-large",
+        "vision",
+        "vision:xhigh",
+    }
     for purpose, effort in [("chat", "low"), ("chat:high", "medium"), ("chat:xhigh", "high")]:
         assert rows[purpose] == {
             "model": "openai/deepseek/deepseek-v4.1-flash",
@@ -20,6 +28,25 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
         "model": "openai/llama-nemotron-embed-1b-v2",
         "api_base": "http://llama-embed:8080/v1",
         "api_key": "none",
+    }
+    assert rows["embed-large"] == {
+        "model": "openai/Qwen3-Embedding-4B",
+        "api_base": "http://llama-embed-large:8080/v1",
+        "api_key": "none",
+    }
+    info = {row["model_name"]: row.get("model_info", {}) for row in config["model_list"]}
+    assert info["embed"] == {
+        "mode": "embedding",
+        "input_prefixes": {"query": "query: ", "passage": "passage: "},
+    }
+    assert info["embed-large"] == {
+        "mode": "embedding",
+        "input_prefixes": {
+            "query": (
+                "Instruct: Given a question, retrieve passages that answer the question\nQuery:"
+            ),
+            "passage": "",
+        },
     }
     assert rows["vision"] == {
         "model": "openai/vision",
@@ -97,3 +124,35 @@ def test_private_mac_url_only_reaches_proxy_and_has_safe_unset_default():
         ROOT / "ARCHITECTURE.md",
     ]:
         assert not re.search(r"\b100\.\d+\.\d+\.\d+\b|[\w-]+\.ts\.net\b", path.read_text())
+
+
+def test_large_embeddings_are_private_cpu_only_and_hardened():
+    import shlex
+
+    services = yaml.safe_load((ROOT / "compose.yaml").read_text())["services"]
+    large = services["llama-embed-large"]
+    assert large["image"] == services["llama-embed"]["image"]
+    assert large["user"] == "10001:10001"
+    assert large["cap_drop"] == ["ALL"]
+    assert large["security_opt"] == ["no-new-privileges:true"]
+    assert large["logging"] == {"driver": "journald"}
+    assert large["restart"] == "unless-stopped"
+    assert large["networks"] == ["default"] and "ports" not in large
+    assert large["environment"]["LLAMA_CACHE"] == "/models"
+    assert large["volumes"] == ["${HOMELAB_MODELS_PATH:-/srv/homelab/models}/embed-large:/models"]
+    command = shlex.split(large["command"])
+    for flag, value in [
+        ("--pooling", "last"),
+        ("--embd-normalize", "2"),
+        ("-t", "4"),
+        ("-ngl", "0"),
+    ]:
+        assert command[command.index(flag) + 1] == value
+    assert "--embeddings" in command
+    assert command[command.index("-mu") + 1] == (
+        "https://huggingface.co/Qwen/Qwen3-Embedding-4B-GGUF/resolve/"
+        "f4602530db1d980e16da9d7d3a70294cf5c190be/Qwen3-Embedding-4B-Q8_0.gguf"
+    )
+    assert services["litellm"]["depends_on"]["llama-embed-large"] == {
+        "condition": "service_started"
+    }

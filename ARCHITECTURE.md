@@ -10,7 +10,7 @@
 Other Compose clients ── homelab-models ── LiteLLM (no published port)
                                             │ default network
                               ┌─────────────┴──────────────┐
-                       Vercel AI Gateway            llama-embed
+                       Vercel AI Gateway       llama-embed / llama-embed-large
                          (hosted chat)           (local embeddings)
 
 api / worker ── Postgres + pgvector (private default network)
@@ -24,7 +24,8 @@ retrieval; Procrastinate owns the job machinery.
 ## Deployment
 
 One `compose.yaml`: `api`, `worker`, `postgres` (pgvector image), `llama-embed` (llama.cpp
-server) and `litellm`. Only `api` publishes a port, on loopback.
+server), `llama-embed-large` (CPU Qwen3-Embedding-4B) and `litellm`. Only `api` publishes a
+port, on loopback.
 `node/etc/systemd/system/homelab.service` wraps the stack so it starts after the encrypted
 volume is unlocked (`homelab-data.target`) and
 stops with it. Brain and the corpus are bind-mounted read-only; Postgres data and model files
@@ -69,11 +70,25 @@ registration failures are nonfatal.
 User IDs remain audit metadata in the node's journal; `/ask` logs its argument length only.
 Handler errors log the registered command and exception type, never exception text.
 
-The embedding model is the only resident local model. The `local` queue has concurrency 1.
+The two embedding models are the only resident local models. The `local` queue has concurrency 1.
 
 ## Routes
 
-`config/litellm.yaml` is the single route table. It offers `chat`, `chat:high` and `chat:xhigh`
+`config/litellm.yaml` is the single route table. `embed-large` is an additional embedding
+purpose, served by always-on `llama-embed-large` on the node's CPU with the official
+Qwen3-Embedding-4B Q8_0 GGUF, last-token pooling, L2 normalisation and four threads.
+It runs as `10001:10001`, drops all capabilities and uses `no-new-privileges`; its writable
+cache is `models/embed-large` on the encrypted volume. It joins only the default network
+and publishes no port. LiteLLM depends on both embedding containers being started.
+
+Embedding requests optionally accept `input_type` (`query` or `passage`). Prefixes live in
+`model_info.input_prefixes` per purpose: Nemotron uses `query: ` / `passage: `; Qwen uses a
+generic retrieval instruction before questions and leaves passages plain. The pre-call hook
+transforms string/list-of-string input and removes the field. Invalid roles and token-array
+input with roles receive 400. Without the field the input is unchanged. The repository's
+own callers, index and answer endpoint retain plain embeddings.
+
+The route table also offers `chat`, `chat:high` and `chat:xhigh`
 through Vercel AI Gateway's `deepseek/deepseek-v4.1-flash`, at low, medium and high reasoning
 effort respectively, and `embed` through the unchanged local `llama-nemotron-embed-1b-v2`.
 `vision` reaches the owner’s on-demand Metal llama.cpp server over Tailscale, serving
@@ -100,12 +115,14 @@ Every application, including this repository's API, worker, CLI and eval, knows 
 and purposes discovered from `GET /v1/models`. LlamaIndex's OpenAI-compatible clients send
 those purposes as `model`. Chat responses report the alias. A post-call hook sets embedding
 responses' `model` to the configured real model; clients record it at ingest. The pinned
-release's raw-model metadata switch prevents LiteLLM overwriting that value with `embed`.
+release's raw-model metadata switch prevents LiteLLM overwriting that value with either
+embedding alias.
 Moving embeddings through this proxy does not change the embedding model or indexed data.
 
 Other Compose projects attach trusted clients to `homelab-models`. Only LiteLLM joins that
-named network, alongside the private default network it uses to reach `llama-embed`.
-Postgres, API and `llama-embed` do not join the client network. LiteLLM publishes no host port.
+named network, alongside the private default network it uses to reach both embedding servers.
+Postgres, API and both embedding servers do not join the client network. LiteLLM publishes
+no host port.
 The key sent by a client is accepted and ignored; there is no master key, database, UI or
 virtual key configuration. HTTP middleware exposes only the three `/v1` model endpoints and
 liveness; management endpoints and LiteLLM-specific request fields are refused. Provider
@@ -118,13 +135,13 @@ and uses `no-new-privileges`. Only LiteLLM mounts `/run/secrets/gateway_api_key`
 no gateway key appears in Compose, env files or config. Telemetry, third-party callbacks,
 admin UI and remote model-price fetching are disabled; tokenizer assets are bundled and
 remote image URLs are refused. External model destinations are the gateway and the on-demand
-Mac; the local embedding destination is unchanged. Tests run the real pinned image without external
-networking, synthetic credentials and loopback upstreams, checking for attempted external
-connections as well as the endpoint contract.
+Mac; the local embedding destinations stay on the private network. Tests run the real pinned
+image without external networking, synthetic credentials and loopback upstreams, checking
+for attempted external connections as well as the endpoint contract.
 
-The journald audit line contains purpose, configured real model, HTTP status, total elapsed
-seconds (through the end of a stream) and upstream-attempt status. Unknown aliases are logged
-as `unknown` so arbitrary client strings cannot become content in the journal. Default vendor
+The journald audit line contains purpose, real model (the served model from the Mac's response
+for `vision`), HTTP status, total elapsed seconds (through the end of a stream) and upstream-attempt
+status. Unknown aliases are logged as `unknown` so arbitrary client strings cannot become content in the journal. Default vendor
 and access logging is disabled because errors can contain bodies, prompts or credentials.
 No hosted observability callbacks are configured. `/health` keeps `status`, `version` and
 `routes`, and replaces `gateway_key_present` with `models_base_url`.

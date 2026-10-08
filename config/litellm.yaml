@@ -39,6 +39,19 @@ model_list:
       api_key: none
     model_info:
       mode: embedding
+      input_prefixes:
+        query: "query: "
+        passage: "passage: "
+  - model_name: embed-large
+    litellm_params:
+      model: openai/Qwen3-Embedding-4B
+      api_base: http://llama-embed-large:8080/v1
+      api_key: none
+    model_info:
+      mode: embedding
+      input_prefixes:
+        query: "Instruct: Given a question, retrieve passages that answer the question\nQuery:"
+        passage: ""
 
 router_settings:
   num_retries: 0

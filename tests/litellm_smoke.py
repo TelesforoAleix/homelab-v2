@@ -41,6 +41,7 @@ CONTENT = "private-fixture-content-9876"
 KEY = token_hex(24)
 REAL_CHAT = "deepseek/deepseek-v4.1-flash"
 REAL_EMBED = "llama-nemotron-embed-1b-v2"
+REAL_LARGE = "Qwen3-Embedding-4B"
 
 
 class Upstream(BaseHTTPRequestHandler):
@@ -65,7 +66,7 @@ class Upstream(BaseHTTPRequestHandler):
                 json.dumps(
                     {
                         "object": "list",
-                        "model": REAL_EMBED,
+                        "model": body["model"],
                         "data": [
                             {"object": "embedding", "index": 0, "embedding": [0.125, -0.5, 0.25]}
                         ],
@@ -157,6 +158,7 @@ def run(unset=False):
                         "chat:high",
                         "chat:xhigh",
                         "embed",
+                        "embed-large",
                         "vision",
                         "vision:xhigh",
                     ]
@@ -208,6 +210,66 @@ def run(unset=False):
                     assert requests[-1][1]["model"] == REAL_EMBED
                     assert requests[-1][1]["input"] == [CONTENT]
                     assert requests[-1][2] == "Bearer none"
+
+                    for purpose, real, prefixes in [
+                        ("embed", REAL_EMBED, {"query": "query: ", "passage": "passage: "}),
+                        (
+                            "embed-large",
+                            REAL_LARGE,
+                            {
+                                "query": (
+                                    "Instruct: Given a question, retrieve passages that answer "
+                                    "the question\nQuery:"
+                                ),
+                                "passage": "",
+                            },
+                        ),
+                    ]:
+                        for text in [CONTENT, [CONTENT, CONTENT + " second"]]:
+                            for role in [None, "query", "passage"]:
+                                body = {"model": purpose, "input": text, "encoding_format": "float"}
+                                if role is not None:
+                                    body["input_type"] = role
+                                response = client.post("/v1/embeddings", headers=headers, json=body)
+                                calls += 1
+                                assert response.status_code == 200, response.text
+                                assert response.json()["model"] == real
+                                forwarded = requests[-1][1]
+                                prefix = prefixes[role] if role is not None else ""
+                                assert forwarded["input"] == (
+                                    prefix + text
+                                    if isinstance(text, str)
+                                    else [prefix + item for item in text]
+                                )
+                                assert forwarded["model"] == real
+                                assert "input_type" not in forwarded
+                        for tokens in [[1, 2]]:
+                            response = client.post(
+                                "/v1/embeddings",
+                                headers=headers,
+                                json={"model": purpose, "input": tokens},
+                            )
+                            calls += 1
+                            assert response.status_code == 200
+                            assert requests[-1][1]["input"] == tokens
+                        before_invalid = len(requests)
+                        for role, text in [
+                            ("document", CONTENT),
+                            (None, CONTENT),
+                            ([], CONTENT),
+                            ("query", [1, 2]),
+                            ("passage", [[1, 2], [3]]),
+                            ("query", [CONTENT, 1]),
+                            ("passage", []),
+                        ]:
+                            response = client.post(
+                                "/v1/embeddings",
+                                headers=headers,
+                                json={"model": purpose, "input": text, "input_type": role},
+                            )
+                            calls += 1
+                            assert response.status_code == 400
+                        assert len(requests) == before_invalid
 
                     response = client.post(
                         "/v1/chat/completions",
@@ -274,6 +336,23 @@ def run(unset=False):
                             )
 
                     if not unset:
+                        response = client.post(
+                            "/v1/chat/completions",
+                            headers=headers,
+                            json={
+                                "model": "vision",
+                                "messages": [{"role": "user", "content": CONTENT}],
+                                "stream": True,
+                            },
+                        )
+                        calls += 1
+                        assert response.status_code == 200
+                        events = [
+                            json.loads(line[6:])
+                            for line in response.text.splitlines()
+                            if line.startswith("data: ") and line != "data: [DONE]"
+                        ]
+                        assert events and all(event["model"] == "vision" for event in events)
                         assert any(
                             isinstance(timeout, httpx.Timeout)
                             and timeout.connect == 3
@@ -305,10 +384,12 @@ def run(unset=False):
                     for purpose in [
                         "openai/gpt-5.6-luna",
                         "embed:high",
+                        "embed-large:high",
                         "vision:high",
                         "openai/" + REAL_CHAT,
                         REAL_CHAT,
                         REAL_EMBED,
+                        REAL_LARGE,
                         "chat,chat:high",
                     ]:
                         response = client.post(
@@ -408,6 +489,17 @@ def run(unset=False):
                     "elapsed_seconds=" in line and "real_model=" in line and "status=" in line
                     for line in lines
                 )
+                assert any(
+                    f"purpose=embed-large real_model={REAL_LARGE} status=200" in line
+                    for line in lines
+                )
+                vision_lines = [
+                    line for line in lines if "purpose=vision " in line and "status=200" in line
+                ]
+                if not unset:
+                    assert vision_lines and all(
+                        f"real_model={REAL_CHAT}" in line for line in vision_lines
+                    ), vision_lines
                 assert all("upstream=false" in line for line in lines if "purpose=unknown" in line)
                 assert all(
                     "upstream=true" in line
