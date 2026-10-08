@@ -94,7 +94,7 @@ def status(remind=False):
             subprocess.run(
                 [
                     NOTIFY,
-                    f"weekly copy is {days} days old; plug in the card and run `mac/homelab-copy`",
+                    f"weekly copy is {days} days old; plug the SD card into the Mac and send /backup",
                 ],
                 check=True,
             )

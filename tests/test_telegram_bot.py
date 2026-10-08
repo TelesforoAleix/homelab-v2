@@ -141,6 +141,7 @@ def test_startup_registers_profile_from_router_and_failure_continues(
         "disk",
         "uptime",
         "restart",
+        "backup",
         "ask",
         "help",
         "start",
@@ -195,3 +196,167 @@ def test_long_replies_sent_in_order_within_telegram_limit(bot_modules, monkeypat
         method == "sendMessage" and params["chat_id"] == 0 and timeout == 30
         for method, params, timeout in calls
     )
+
+
+@pytest.mark.parametrize("code", [302, 404, 500])
+def test_backup_http_errors_are_failed_without_second_call(bot_modules, backup_listener, code):
+    backup_listener.code = code
+    backup_listener.reply = {"status": "done", "private": "must not appear"}
+    logs = []
+    assert bot_modules.executors.make_backup(logs.append).handler([], 0) == (
+        "Copy failed: listener request failed."
+    )
+    assert backup_listener.calls == [("/backup", b"")]
+    assert "must not appear" not in "\n".join(logs)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "",
+        "https://localhost:8091",
+        "http://localhost:8091/backup",
+        "http://localhost:8091?args=x",
+        "http://localhost:8090",
+    ],
+)
+def test_backup_invalid_configuration_never_calls(bot_modules, monkeypatch, tmp_path, url):
+    config = tmp_path / "url"
+    config.write_text(url)
+    monkeypatch.setattr(bot_modules.executors, "MAC_LISTENER_URL", config)
+    monkeypatch.setattr(
+        bot_modules.executors.urllib.request,
+        "build_opener",
+        lambda *a: pytest.fail("invalid configuration reached HTTP"),
+    )
+    assert bot_modules.executors.make_backup(lambda s: None).handler([], 0) == (
+        "Copy failed: invalid listener response or configuration."
+    )
+
+
+@pytest.fixture
+def backup_listener(bot_modules, monkeypatch, tmp_path):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    state = SimpleNamespace(reply={"status": "no-card"}, code=200, calls=[])
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            state.calls.append((self.path, body))
+            self.send_response(state.code)
+            self.end_headers()
+            self.wfile.write(json.dumps(state.reply).encode())
+
+    server = ThreadingHTTPServer(("127.0.0.1", 8091), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    config = tmp_path / "mac-listener-url"
+    config.write_text("http://127.0.0.1:8091\n")
+    monkeypatch.setattr(bot_modules.executors, "MAC_LISTENER_URL", config)
+    yield state
+    server.shutdown()
+    server.server_close()
+    thread.join()
+
+
+@pytest.mark.parametrize(
+    "response,code,expected,result,count",
+    [
+        ({"status": "no-card"}, 200, "Connect the SD card and send /backup again.", "no-card", 0),
+        (
+            {"status": "done", "file": "homelab-originals-2026-10-08.tar.age", "bytes": 307200},
+            200,
+            "Copy done: 300 KB, homelab-originals-2026-10-08.tar.age.",
+            "done",
+            307200,
+        ),
+        (
+            {"status": "failed", "reason": "copy timed out"},
+            200,
+            "Copy failed: copy timed out.",
+            "failed",
+            0,
+        ),
+        ({"status": "busy"}, 409, "Copy failed: a copy is already running.", "busy", 0),
+    ],
+)
+def test_backup_replies_from_stub_listener(
+    bot_modules, backup_listener, response, code, expected, result, count
+):
+    backup_listener.reply, backup_listener.code = response, code
+    logs = []
+    router = bot_modules.router.Router(privileged_users={0}, log=logs.append)
+    bot_modules.executors.register_all(router, allowed_units=set(), log=logs.append)
+    assert router.dispatch(0, "/backup") == expected
+    assert backup_listener.calls == [("/backup", b"")]
+    assert logs[-1] == f"backup requester=0 result={result} bytes={count}"
+    assert "homelab-originals" not in "\n".join(logs)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {},
+        [],
+        {"status": "arbitrary"},
+        {"status": "failed", "reason": "Private fixture content"},
+        {"status": "done", "bytes": True, "file": "homelab-originals-2026-10-08.tar.age"},
+        {"status": "done", "bytes": 12, "file": "../../private"},
+        {"status": "done", "bytes": -1, "file": "homelab-originals-2026-10-08.tar.age"},
+    ],
+)
+def test_backup_invalid_responses_do_not_echo_content(bot_modules, backup_listener, response):
+    backup_listener.reply = response
+    logs = []
+    executor = bot_modules.executors.make_backup(logs.append)
+    assert executor.handler([], 0) == "Copy failed: invalid listener response or configuration."
+    assert "Private fixture content" not in "\n".join(logs)
+
+
+@pytest.mark.parametrize(
+    "failure", [ConnectionRefusedError(), TimeoutError(), urllib.error.URLError("private")]
+)
+def test_backup_unreachable_and_timeout(bot_modules, tmp_path, monkeypatch, failure):
+    config = tmp_path / "url"
+    config.write_text("http://127.0.0.1:8091")
+    monkeypatch.setattr(bot_modules.executors, "MAC_LISTENER_URL", config)
+    calls = []
+
+    class Opener:
+        def open(self, req, timeout):
+            calls.append((req, timeout))
+            raise failure
+
+    monkeypatch.setattr(bot_modules.executors.urllib.request, "build_opener", lambda *a: Opener())
+    logs = []
+    assert bot_modules.executors.make_backup(logs.append).handler([], 0) == (
+        "The Mac is not reachable; wake it and send /backup again."
+    )
+    assert len(calls) == 1
+    assert calls[0][1] == 210
+    assert "private" not in "\n".join(logs)
+
+
+def test_backup_missing_config_and_argument_refusal(bot_modules, tmp_path, monkeypatch):
+    monkeypatch.setattr(bot_modules.executors, "MAC_LISTENER_URL", tmp_path / "absent")
+    executor = bot_modules.executors.make_backup(lambda s: None)
+    assert executor.handler([], 0) == "Backup is not configured."
+    assert executor.handler(["private argument"], 0) == "Usage: /backup"
+
+
+def test_backup_privilege_gate_prevents_call_and_argument_logging(bot_modules, monkeypatch):
+    def must_not_call(*args, **kwargs):
+        pytest.fail("non-privileged request reached listener")
+
+    monkeypatch.setattr(bot_modules.executors.urllib.request, "build_opener", must_not_call)
+    logs = []
+    router = make_router(bot_modules, logs)
+    assert "not authorised" in router.dispatch(0, "/backup private argument")
+    assert "private argument" not in "\n".join(logs)
+    assert router.executors["/backup"].capability is bot_modules.router.Capability.PRIVILEGED
+    assert "/backup" in router.dispatch(0, "/help")

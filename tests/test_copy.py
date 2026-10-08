@@ -104,7 +104,7 @@ def test_confirm_status_and_reminder_boundary(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(node.time, "time", lambda: 1_000_000 + 8 * 86400)
     node.status(True)
     assert messages[-1][1] == (
-        "weekly copy is 8 days old; plug in the card and run `mac/homelab-copy`"
+        "weekly copy is 8 days old; plug the SD card into the Mac and send /backup"
     )
     before = node.STATE.read_bytes()
     with pytest.raises(ValueError):

@@ -8,12 +8,16 @@ and verb outside this process, while the restart allowlist is a second gate.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import re
 import socket
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
+from pathlib import Path
 
 from router import Capability, Executor
 
@@ -191,6 +195,107 @@ def make_restart(allowed_units: set[str], log) -> Executor:
     )
 
 
+# The address is private deployment data, read afresh for each invocation.
+MAC_LISTENER_URL = Path("/etc/homelab-telegram-bot/mac-listener-url")
+BACKUP_TIMEOUT = 210  # Longer than the listener's 180-second copy timeout.
+BACKUP_REASONS = {
+    "copy stopped",
+    "copy timed out",
+    "check card and SSH; existing copies remain",
+    "invalid copy report",
+    "could not run copy",
+}
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def make_backup(log) -> Executor:
+    def handler(args: list[str], user_id: int) -> str:
+        def finish(result, text, count=0):
+            log(f"backup requester={user_id} result={result} bytes={count}")
+            return text
+
+        if args:
+            return finish("usage", "Usage: /backup")
+        try:
+            url = MAC_LISTENER_URL.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return finish("not-configured", "Backup is not configured.")
+        except (OSError, UnicodeError):
+            return finish("failed", "Copy failed: could not read listener configuration.")
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            if (
+                parsed.scheme != "http"
+                or not parsed.hostname
+                or parsed.port != 8091
+                or parsed.path not in ("", "/")
+                or parsed.query
+                or parsed.fragment
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise ValueError("invalid URL")
+            request = urllib.request.Request(url.rstrip("/") + "/backup", data=b"", method="POST")
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+            try:
+                response = opener.open(request, timeout=BACKUP_TIMEOUT)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 409:
+                    exc.close()
+                    return finish("failed", "Copy failed: listener request failed.")
+                response = exc
+            with response:
+                data = response.read(4097)
+                if len(data) > 4096:
+                    raise ValueError("oversized response")
+                reply = json.loads(data.decode("utf-8"))
+            status = reply["status"]
+            if status == "no-card":
+                return finish("no-card", "Connect the SD card and send /backup again.")
+            if status == "busy":
+                return finish("busy", "Copy failed: a copy is already running.")
+            if status == "failed" and reply.get("reason") in BACKUP_REASONS:
+                return finish("failed", f"Copy failed: {reply['reason']}.")
+            if status == "done":
+                count, filename = reply["bytes"], reply["file"]
+                if (
+                    type(count) is int
+                    and count > 0
+                    and isinstance(filename, str)
+                    and re.fullmatch(r"homelab-originals-\d{4}-\d{2}-\d{2}\.tar\.age", filename)
+                ):
+                    return finish(
+                        "done", f"Copy done: {(count + 512) // 1024} KB, {filename}.", count
+                    )
+        except (OSError, urllib.error.URLError):
+            return finish(
+                "unreachable", "The Mac is not reachable; wake it and send /backup again."
+            )
+        except (
+            ValueError,
+            UnicodeError,
+            KeyError,
+            TypeError,
+            AttributeError,
+            http.client.HTTPException,
+        ):
+            pass
+        return finish("failed", "Copy failed: invalid listener response or configuration.")
+
+    return Executor(
+        "/backup",
+        Capability.PRIVILEGED,
+        handler,
+        "copy originals to the Mac's SD card",
+        wants_user=True,
+        log_args=False,
+    )
+
+
 # --------------------------------------------------------------------------
 # Knowledge answers
 # --------------------------------------------------------------------------
@@ -298,6 +403,7 @@ def register_all(router, *, allowed_units: set[str], log) -> None:
     router.register(Executor("/disk", Capability.READ, _disk, "root filesystem usage"))
     router.register(Executor("/uptime", Capability.READ, _uptime, "uptime and load average"))
     router.register(make_restart(allowed_units, log))
+    router.register(make_backup(log))
     # /ask changes no host state, and its prose must stay out of the journal.
     router.register(
         Executor(
