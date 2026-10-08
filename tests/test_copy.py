@@ -124,13 +124,93 @@ def test_mac_checks_mount_and_disk_info(monkeypatch, mounted, internal):
     monkeypatch.setattr(
         mac.subprocess,
         "check_output",
-        lambda args: mac.plistlib.dumps({"Internal": internal, "MountPoint": "/Volumes/Card"}),
+        lambda args: mac.plistlib.dumps(
+            {"DeviceIdentifier": "disk0s1", "APFSContainerReference": "disk0"}
+            if args[-1] == "/"
+            else {
+                "Internal": internal,
+                "RemovableMediaOrExternalDevice": not internal,
+                "MountPoint": "/Volumes/Card",
+            }
+        ),
     )
     if mounted and not internal:
         assert mac.volume_path("Card") == Path("/Volumes/Card")
     else:
         with pytest.raises(ValueError):
             mac.volume_path("Card")
+
+
+@pytest.mark.parametrize(
+    "flag", ["Removable", "RemovableMedia", "RemovableMediaOrExternalDevice", "Ejectable"]
+)
+def test_mac_accepts_builtin_sd_reader(monkeypatch, flag):
+    monkeypatch.setattr(mac.os.path, "ismount", lambda path: True)
+    monkeypatch.setattr(
+        mac.subprocess,
+        "check_output",
+        lambda args: mac.plistlib.dumps(
+            {"DeviceIdentifier": "disk3s1s1", "APFSContainerReference": "disk3"}
+            if args[-1] == "/"
+            else {
+                "Internal": True,
+                flag: True,
+                "MountPoint": "/Volumes/Card",
+                "DeviceIdentifier": "disk7s1",
+                "FilesystemType": "exfat",
+            }
+        ),
+    )
+    assert mac.volume_path("Card") == Path("/Volumes/Card")
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"DeviceIdentifier": "disk3s1s1"},
+        {"VolumeUUID": "startup-uuid"},
+        {"APFSContainerReference": "disk3", "FilesystemType": "apfs"},
+    ],
+)
+def test_mac_refuses_startup_volume_and_boot_container(monkeypatch, identity):
+    monkeypatch.setattr(mac.os.path, "ismount", lambda path: True)
+    monkeypatch.setattr(
+        mac.subprocess,
+        "check_output",
+        lambda args: mac.plistlib.dumps(
+            {
+                "DeviceIdentifier": "disk3s1s1",
+                "VolumeUUID": "startup-uuid",
+                "APFSContainerReference": "disk3",
+            }
+            if args[-1] == "/"
+            else {"MountPoint": "/Volumes/Card", "Ejectable": True, **identity}
+        ),
+    )
+    with pytest.raises(ValueError, match="startup volume"):
+        mac.volume_path("Card")
+
+
+def test_mac_refuses_fixed_internal_disk(monkeypatch):
+    monkeypatch.setattr(mac.os.path, "ismount", lambda path: True)
+    monkeypatch.setattr(
+        mac.subprocess,
+        "check_output",
+        lambda args: mac.plistlib.dumps(
+            {"DeviceIdentifier": "disk3s1s1", "APFSContainerReference": "disk3"}
+            if args[-1] == "/"
+            else {
+                "Internal": True,
+                "Ejectable": False,
+                "RemovableMedia": False,
+                "RemovableMediaOrExternalDevice": False,
+                "DeviceIdentifier": "disk8s1",
+                "MountPoint": "/Volumes/Card",
+            }
+        ),
+    )
+    with pytest.raises(ValueError, match="removable or ejectable"):
+        mac.volume_path("Card")
 
 
 @pytest.mark.parametrize(
