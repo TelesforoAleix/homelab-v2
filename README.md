@@ -509,7 +509,9 @@ SSH accounts work through Tailscale.
    sudo git clone --branch main https://github.com/TelesforoAleix/homelab-v2.git /srv/homelab/homelab-v2
    sudo install -d -m 0775 -o aleix -g aleix /srv/homelab/brain
    sudo install -d -m 0755 -o root -g root /srv/homelab/models /srv/homelab/postgres
-   sudo install -d -m 0755 -o 10001 -g 10001 /srv/homelab/models/embed-large
+   sudo mkdir -p /srv/homelab/models/embed-large
+   sudo chown 10001:10001 /srv/homelab/models/embed-large
+   sudo chmod 0755 /srv/homelab/models/embed-large
    ```
 
    **On the Mac**, copy notes, including hidden note files but excluding Git metadata:
