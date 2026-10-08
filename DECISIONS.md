@@ -294,3 +294,11 @@ report their real models. Mac vision audit lines take the served name from the r
 while client responses retain the purpose. Existing callers and indexes do not use roles;
 clients adopting roles must re-embed passages, and Qwen's 2560 dimensions require accounting
 for pgvector HNSW's 2000-dimensional `vector` limit (4000 for `halfvec`). No dimension handling.
+
+
+**2026-10-08 — One purpose per kind of work.** Add `grade` for yes/no relevance judgements
+per candidate passage and `translate` for passage translation on request. Both use exactly
+`chat`'s gateway model, API base, key reference and low reasoning effort for now, so either
+purpose can later move to a smaller or local model without a client change. No tiers, wildcard
+or fallback; prompts and parallel-call scheduling belong to clients. Existing purposes,
+request fields, audit lines and real-model handling stay unchanged.

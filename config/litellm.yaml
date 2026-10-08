@@ -6,6 +6,18 @@ model_list:
       api_base: https://ai-gateway.vercel.sh/v1
       api_key: os.environ/HOMELAB_GATEWAY_API_KEY
       reasoning_effort: low
+  - model_name: grade
+    litellm_params:
+      model: openai/deepseek/deepseek-v4.1-flash
+      api_base: https://ai-gateway.vercel.sh/v1
+      api_key: os.environ/HOMELAB_GATEWAY_API_KEY
+      reasoning_effort: low
+  - model_name: translate
+    litellm_params:
+      model: openai/deepseek/deepseek-v4.1-flash
+      api_base: https://ai-gateway.vercel.sh/v1
+      api_key: os.environ/HOMELAB_GATEWAY_API_KEY
+      reasoning_effort: low
   - model_name: chat:high
     litellm_params:
       model: openai/deepseek/deepseek-v4.1-flash

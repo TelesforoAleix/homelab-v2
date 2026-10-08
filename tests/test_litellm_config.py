@@ -14,10 +14,18 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
         "chat:xhigh",
         "embed",
         "embed-large",
+        "grade",
+        "translate",
         "vision",
         "vision:xhigh",
     }
-    for purpose, effort in [("chat", "low"), ("chat:high", "medium"), ("chat:xhigh", "high")]:
+    for purpose, effort in [
+        ("chat", "low"),
+        ("chat:high", "medium"),
+        ("chat:xhigh", "high"),
+        ("grade", "low"),
+        ("translate", "low"),
+    ]:
         assert rows[purpose] == {
             "model": "openai/deepseek/deepseek-v4.1-flash",
             "api_base": "https://ai-gateway.vercel.sh/v1",
