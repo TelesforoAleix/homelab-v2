@@ -14,25 +14,12 @@ This second version keeps the lessons from the learning-first v1 and leans on ma
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    telegram["Telegram bot"] --> api["FastAPI api"]
-    cli["homelab CLI"] --> ingest
-    api --> worker["Procrastinate worker"]
-    api --> db["Postgres + pgvector"]
-    worker --> db
-    sources["Notes and JSON corpus"] --> ingest["LlamaIndex ingest"]
-    ingest --> db
-    api --> router["LiteLLM purpose router"]
-    worker --> router
-    medask --> router
-    ingest --> router
-    router --> gateway["Vercel AI Gateway<br>hosted chat"]
-    router --> embeddings["llama.cpp embeddings<br>local"]
-    router --> vision["Mac vision<br>on demand"]
-```
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/architecture-dark.svg"><img alt="HomeLab architecture: built clients, API, Models, Knowledge, Jobs, Sources, Providers and Postgres; planned Second Brain UI, Coding agents, Tools, Job API and local batch jobs." src="docs/diagrams/architecture-light.svg"></picture>
 
-- The Telegram bot calls the API; med-ask reaches only LiteLLM over the `homelab-models` network.
+Solid parts are built; dashed parts are planned.
+
+- The diagram shows where HomeLab is heading: one API for every client. Today med-ask reaches
+  only LiteLLM, over the `homelab-models` network.
 - Knowledge endpoints: `POST /v1/knowledge/query` and `/v1/knowledge/answer`; jobs persist in Postgres.
 - [ARCHITECTURE.md](ARCHITECTURE.md) explains the boundaries and rules;
   [DECISIONS.md](DECISIONS.md) records the choices behind them.
