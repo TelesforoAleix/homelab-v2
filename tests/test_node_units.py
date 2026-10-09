@@ -36,7 +36,7 @@ def host_modes() -> dict[str, tuple[int, int | None]]:
 
 def rebuild_section() -> str:
     return (
-        (ROOT / "README.md")
+        (ROOT / "docs/operations.md")
         .read_text()
         .split("## Rebuilding the node\n", 1)[1]
         .split("\n## ", 1)[0]

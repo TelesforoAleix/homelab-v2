@@ -326,3 +326,6 @@ privileged router gate applies; it reads a private URL file and uses one direct 
 a longer 210-second timeout, without redirects or retries. Its sandbox, sudo and polkit remain
 unchanged. Missing card and unreachable Mac have actionable Telegram replies, and the weekly
 reminder now points to `/backup`. Addresses remain private and logs contain only metadata.
+
+
+**2026-10-08 — Runbook moved to docs/operations.md.** README stays a short overview.

@@ -129,6 +129,7 @@ def test_private_mac_url_only_reaches_proxy_and_has_safe_unset_default():
         ROOT / ".env.example",
         ROOT / "mac/homelab-vision",
         ROOT / "README.md",
+        ROOT / "docs/operations.md",
         ROOT / "ARCHITECTURE.md",
     ]:
         assert not re.search(r"\b100\.\d+\.\d+\.\d+\b|[\w-]+\.ts\.net\b", path.read_text())
