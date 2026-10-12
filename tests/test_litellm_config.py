@@ -14,6 +14,7 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
         "chat:xhigh",
         "embed",
         "embed-large",
+        "embed-large-bulk",
         "grade",
         "translate",
         "vision",
@@ -42,6 +43,12 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
         "api_base": "http://llama-embed-large:8080/v1",
         "api_key": "none",
     }
+    assert rows["embed-large-bulk"] == {
+        "model": "openai/Qwen3-Embedding-4B",
+        "api_base": "os.environ/HOMELAB_MAC_EMBED_URL",
+        "api_key": "none",
+        "timeout": 300.0,
+    }
     info = {row["model_name"]: row.get("model_info", {}) for row in config["model_list"]}
     assert info["embed"] == {
         "mode": "embedding",
@@ -56,6 +63,7 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
             "passage": "",
         },
     }
+    assert info["embed-large-bulk"] == {**info["embed-large"], "connect_timeout": 3.0}
     assert rows["vision"] == {
         "model": "openai/vision",
         "api_base": "os.environ/HOMELAB_MAC_VISION_URL",
@@ -121,6 +129,13 @@ def test_private_mac_url_only_reaches_proxy_and_has_safe_unset_default():
     for name, service in compose["services"].items():
         if name != "litellm":
             assert "HOMELAB_MAC_VISION_URL" not in service.get("environment", {})
+    assert compose["services"]["litellm"]["environment"]["HOMELAB_MAC_EMBED_URL"] == (
+        "${HOMELAB_MAC_EMBED_URL:-http://127.0.0.1:9/v1}"
+    )
+    assert "HOMELAB_MAC_EMBED_URL=\n" in (ROOT / ".env.example").read_text()
+    for name, service in compose["services"].items():
+        if name != "litellm":
+            assert "HOMELAB_MAC_EMBED_URL" not in service.get("environment", {})
     import re
 
     for path in [
@@ -128,6 +143,8 @@ def test_private_mac_url_only_reaches_proxy_and_has_safe_unset_default():
         ROOT / "compose.yaml",
         ROOT / ".env.example",
         ROOT / "mac/homelab-vision",
+        ROOT / "mac/homelab-embed",
+        ROOT / "DECISIONS.md",
         ROOT / "README.md",
         ROOT / "docs/operations.md",
         ROOT / "ARCHITECTURE.md",

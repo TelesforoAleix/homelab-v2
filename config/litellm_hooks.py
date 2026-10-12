@@ -207,9 +207,10 @@ class PurposeHooks(CustomLogger):
         event = audit.get()
         if event is not None and "connect_timeout" in model_info.get(event["purpose"], {}):
             # The pinned proxy accepts numeric YAML timeouts; OpenAI's SDK needs an
-            # httpx.Timeout for a separate connect limit on this on-demand image route.
+            # httpx.Timeout for a separate connect limit on an on-demand Mac route.
             purpose = event["purpose"]
-            if not os.environ.get("HOMELAB_MAC_VISION_URL"):
+            url_variable = model_specs[purpose]["api_base"].removeprefix("os.environ/")
+            if not os.environ.get(url_variable):
                 raise HTTPException(503, "Model call failed")
             kwargs["timeout"] = httpx.Timeout(
                 model_specs[purpose]["timeout"], connect=model_info[purpose]["connect_timeout"]

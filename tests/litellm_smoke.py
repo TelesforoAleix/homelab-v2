@@ -136,10 +136,12 @@ def run(unset=False):
                 os.environ["HOMELAB_MAC_VISION_URL"] = (
                     f"http://127.0.0.1:{vision_upstream.server_port}/v1"
                 )
+                os.environ["HOMELAB_MAC_EMBED_URL"] = os.environ["HOMELAB_MAC_VISION_URL"]
                 if unset:
                     os.environ.pop("HOMELAB_MAC_VISION_URL")
+                    os.environ.pop("HOMELAB_MAC_EMBED_URL")
                 for row in config["model_list"]:
-                    if row["model_name"] != "vision":
+                    if row["model_name"] not in {"vision", "embed-large-bulk"}:
                         row["litellm_params"]["api_base"] = stub_url
                 path = Path(directory) / "litellm.yaml"
                 path.write_text(yaml.safe_dump(config))
@@ -159,6 +161,7 @@ def run(unset=False):
                         "chat:xhigh",
                         "embed",
                         "embed-large",
+                        "embed-large-bulk",
                         "grade",
                         "translate",
                         "vision",
@@ -229,7 +232,34 @@ def run(unset=False):
                                 "passage": "",
                             },
                         ),
+                        (
+                            "embed-large-bulk",
+                            REAL_LARGE,
+                            {
+                                "query": (
+                                    "Instruct: Given a question, retrieve passages that answer "
+                                    "the question\nQuery:"
+                                ),
+                                "passage": "",
+                            },
+                        ),
                     ]:
+                        if unset and purpose == "embed-large-bulk":
+                            before_bulk = len(requests)
+                            started = time.monotonic()
+                            response = client.post(
+                                "/v1/embeddings",
+                                headers=headers,
+                                json={"model": purpose, "input": CONTENT},
+                            )
+                            calls += 1
+                            assert 400 <= response.status_code <= 599
+                            assert "error" in response.json()
+                            assert CONTENT not in response.text and KEY not in response.text
+                            assert len(requests) == before_bulk
+                            assert time.monotonic() - started < 4
+                            continue
+                        timeout_count = len(sdk_timeouts)
                         for text in [CONTENT, [CONTENT, CONTENT + " second"]]:
                             for role in [None, "query", "passage"]:
                                 body = {"model": purpose, "input": text, "encoding_format": "float"}
@@ -257,6 +287,13 @@ def run(unset=False):
                             calls += 1
                             assert response.status_code == 200
                             assert requests[-1][1]["input"] == tokens
+                        if purpose == "embed-large-bulk":
+                            assert any(
+                                isinstance(timeout, httpx.Timeout)
+                                and timeout.connect == 3
+                                and timeout.read == 300
+                                for timeout in sdk_timeouts[timeout_count:]
+                            ), "SDK did not receive the bulk connect timeout"
                         before_invalid = len(requests)
                         for role, text in [
                             ("document", CONTENT),
@@ -384,12 +421,26 @@ def run(unset=False):
                         assert CONTENT not in response.text and KEY not in response.text
                         assert REAL_CHAT not in response.text and "127.0.0.1" not in response.text
                         assert len(requests) == before_stopped
+                        started = time.monotonic()
+                        response = client.post(
+                            "/v1/embeddings",
+                            headers=headers,
+                            json={"model": "embed-large-bulk", "input": CONTENT},
+                        )
+                        calls += 1
+                        assert time.monotonic() - started < 3
+                        assert 400 <= response.status_code <= 599
+                        assert "error" in response.json()
+                        assert CONTENT not in response.text and KEY not in response.text
+                        assert "127.0.0.1" not in response.text
+                        assert len(requests) == before_stopped
 
                     before = len(requests)
                     for purpose in [
                         "openai/gpt-5.6-luna",
                         "embed:high",
                         "embed-large:high",
+                        "embed-large-bulk:high",
                         "vision:high",
                         "openai/" + REAL_CHAT,
                         REAL_CHAT,
