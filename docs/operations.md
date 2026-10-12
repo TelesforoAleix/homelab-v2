@@ -111,8 +111,9 @@ Attach a client container from another Compose project to the external Docker ne
 `homelab-models`, created by this stack. Only LiteLLM joins it; Postgres, API and both
 embedding servers remain on the stack's private network. Give the client its base URL `http://litellm:4000/v1`
 and an arbitrary API key through its environment, then use OpenAI-shaped `GET /v1/models`,
-`POST /v1/chat/completions` and `POST /v1/embeddings`. There are exactly nine names: `chat`
-(standard), `chat:high`, `chat:xhigh`, `embed`, `embed-large`, `grade`, `translate`, `vision` and `vision:xhigh`.
+`POST /v1/chat/completions` and `POST /v1/embeddings`. There are exactly ten names: `chat`
+(standard), `chat:high`, `chat:xhigh`, `embed`, `embed-large`, `embed-large-bulk`, `grade`,
+`translate`, `vision` and `vision:xhigh`.
 `grade` makes yes/no relevance judgements per candidate passage, using the same model and low effort as `chat`.
 `translate` translates passages on request, using the same model and low effort as `chat`.
 `vision` reads page images with Qwen3-VL-8B on the owner’s Mac while it serves;
@@ -129,7 +130,10 @@ are refused; configuration and management endpoints are not exposed. New purpose
 request fields can be added to `/v1`; breaking changes require `/v2`.
 
 `embed` uses Nemotron 1B; `embed-large` uses Qwen3-Embedding-4B Q8_0 on the node's CPU,
-always on. Both embedding purposes accept optional `input_type: "query"` or `"passage"`
+always on. `embed-large-bulk` serves the same vector space from the Mac for bulk ingest only;
+students’ questions keep using the node’s `embed-large`. It has no tier or fallback and fails
+with a 3-second connection limit when the Mac is stopped. All three embedding purposes accept
+optional `input_type: "query"` or `"passage"`
 on `/v1/embeddings`, for a string or list of strings. LiteLLM applies the model's configured
 question/document wording and removes the field before forwarding. Other values and token
 arrays with `input_type` receive 400. Without it, input is forwarded unchanged, preserving
@@ -183,7 +187,57 @@ Set `HOMELAB_MAC_VISION_URL` only in the node clone’s private, root-owned `.en
 Tailscale HTTP URL on port 8090 ending in `/v1`. Never put the address or tailnet name in git.
 Compose supplies a closed loopback endpoint when the variable is empty or unset: LiteLLM
 still starts, and local vision fails. Before deployment, check med-ask processes and recent
-`embed` audit calls; wait for any ingest to finish before restarting `homelab.service`.
+`embed` and `embed-large` audit calls; wait for any ingest to finish before restarting
+`homelab.service`.
+
+## Mac bulk embedding serving
+
+From this checkout, the owner starts and stops the server by hand, outside the Codex sandbox
+where Metal is unavailable:
+
+```bash
+mac/homelab-embed start
+mac/homelab-embed status
+mac/homelab-embed stop
+```
+
+The command follows the vision lifecycle: runtime Tailscale IPv4 only, port 8092, a node-only
+tailnet grant, no API key, no login/boot service or wake lock. Vision on 8090 and the action
+listener on 8091 can run alongside it. `start` refuses a missing model, unavailable address or
+occupied port and waits up to 120 seconds for health. `status` exits 0 only while the managed
+process is healthy. Commands lock and check PID start time before signalling; `stop` waits up
+to 30 seconds. Private PID, lock and content-disabled log are under
+`~/.local/state/homelab-embed/`.
+
+Download the official GGUF once to `~/homelab-models/Qwen3-Embedding-4B-GGUF/` from
+`https://huggingface.co/Qwen/Qwen3-Embedding-4B-GGUF/resolve/f4602530db1d980e16da9d7d3a70294cf5c190be/Qwen3-Embedding-4B-Q8_0.gguf`.
+Verify SHA256 `b60ae5ce2dd6a0b77f82cadf21def1f310a3e10cde380ad0081b07a9d416949d`
+before starting; the command never downloads. It uses the node’s last-token pooling, L2
+normalisation, context 8192, batch/microbatch 2048 and four threads, plus Metal `-ngl 99`.
+The purpose reports `Qwen3-Embedding-4B` like `embed-large`, with identical optional
+`input_type` wording (plain passages). Clients can ingest through the bulk purpose and query
+through the node purpose without changing vector spaces.
+
+Set `HOMELAB_MAC_EMBED_URL` beside `HOMELAB_MAC_VISION_URL` only in the node clone’s private,
+root-owned `.env`, using the Mac’s Tailscale HTTP URL on port 8092 ending in `/v1`.
+Keep addresses and tailnet names out of git, logs and PRs. The same closed loopback default
+keeps LiteLLM startup independent of the Mac. Bulk calls have a 3-second connect limit and
+300-second request limit, with no retry, fallback or stopped-Mac alert.
+
+Before any stack restart, inspect med-ask processes and recent embedding audit metadata:
+
+```bash
+ssh homelab-agent 'sudo docker ps --format "{{.Names}}"'
+ssh homelab-agent 'sudo ps -eo pid,comm,cgroup | rg "med-ask|ingest"'
+ssh homelab-agent 'sudo journalctl --since "10 minutes ago" -o cat | rg "model_call purpose=embed(-large)? " | tail -n 30'
+```
+
+Inspect the med-ask container’s process names with `sudo docker top <container> -eo pid,comm`
+and its ingest status without printing arguments or content. Recent continuous embedding calls
+or a running ingest mean wait for completion; do not restart `homelab.service`.
+After deploying, test plain and `input_type: passage` bulk calls from `homelab-models`, compare
+with `embed-large`, and check the real model and `/v1/models`. Stop the Mac, time a bulk failure,
+and confirm the existing `embed-large`, `embed` and `vision` purposes still behave as before.
 
 ## Mac action listener
 
@@ -549,6 +603,9 @@ SSH accounts work through Tailscale.
     in the password manager, and a new Telegram bot token through BotFather. Enter keys and
     the password only at hidden prompts; never put them in shell arguments or history.
     `.env` holds the database password and four volume paths and is `root:root` `0600`.
+    Optional `HOMELAB_MAC_VISION_URL` (8090) and `HOMELAB_MAC_EMBED_URL` (8092) also live
+    only in this private `.env`, each ending in `/v1`; leave them unset for closed defaults.
+    Restore them from the owner’s Mac serving configuration, never from Git.
     The gateway key is `root:10001` `0440`, readable only by the non-root LiteLLM container.
 
     ```bash

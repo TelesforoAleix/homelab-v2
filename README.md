@@ -20,6 +20,9 @@ Solid parts are built; dashed parts are planned.
 
 - The diagram shows where HomeLab is heading: one API for every client. Today med-ask reaches
   only LiteLLM, over the `homelab-models` network.
+- `embed-large` stays on the node for questions; `embed-large-bulk` uses the same vector space
+  on the owner’s manually started Mac for bulk ingest. See the
+  [Mac serving runbook](docs/operations.md#mac-bulk-embedding-serving).
 - Knowledge endpoints: `POST /v1/knowledge/query` and `/v1/knowledge/answer`; jobs persist in Postgres.
 - [ARCHITECTURE.md](ARCHITECTURE.md) explains the boundaries and rules;
   [DECISIONS.md](DECISIONS.md) records the choices behind them.
@@ -44,7 +47,7 @@ Running the stack needs a provisioned node; see the [operator runbook](docs/oper
 | `src/homelab/jobs/` | Procrastinate tasks and worker |
 | `config/litellm.yaml` | Model purposes and routes |
 | `node/` | Host files at their installed paths |
-| `mac/` | Measurements, vision serving and action listener |
+| `mac/` | Measurements, on-demand vision/bulk embedding serving and action listener |
 
 First version: [homelab-v1](https://github.com/TelesforoAleix/homelab-v1)
 

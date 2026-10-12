@@ -64,6 +64,18 @@ model_list:
       input_prefixes:
         query: "Instruct: Given a question, retrieve passages that answer the question\nQuery:"
         passage: ""
+  - model_name: embed-large-bulk
+    litellm_params:
+      model: openai/Qwen3-Embedding-4B
+      api_base: os.environ/HOMELAB_MAC_EMBED_URL
+      api_key: none
+      timeout: 300.0
+    model_info:
+      connect_timeout: 3.0
+      mode: embedding
+      input_prefixes:
+        query: "Instruct: Given a question, retrieve passages that answer the question\nQuery:"
+        passage: ""
 
 router_settings:
   num_retries: 0

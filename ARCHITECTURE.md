@@ -107,6 +107,17 @@ It runs as `10001:10001`, drops all capabilities and uses `no-new-privileges`; i
 cache is `models/embed-large` on the encrypted volume. It joins only the default network
 and publishes no port. LiteLLM depends on both embedding containers being started.
 
+`embed-large-bulk` serves the same official GGUF and vector space from the owner’s Mac for
+bulk ingest; questions keep using the always-on node’s `embed-large`. Its hand-started
+`mac/homelab-embed` server uses the node’s pooling, normalisation, context and batch flags
+plus Metal `-ngl 99`, binding only the runtime Tailscale IPv4 on TCP 8092. The node-only
+tailnet grant gates access without a key. Its URL lives only in `HOMELAB_MAC_EMBED_URL`
+beside vision’s variable in the node’s private `.env`, with the same closed Compose default.
+The deployment hook applies a 3-second connect limit and 300-second request limit; no retries,
+fallback or stopped-Mac alerts. No login/boot service or wake lock; PID start-time checks,
+private state and content-disabled logs follow vision under `~/.local/state/homelab-embed/`.
+It reports the same real model and uses the same role wording as `embed-large`.
+
 Embedding requests optionally accept `input_type` (`query` or `passage`). Prefixes live in
 `model_info.input_prefixes` per purpose: Nemotron uses `query: ` / `passage: `; Qwen uses a
 generic retrieval instruction before questions and leaves passages plain. The pre-call hook
@@ -235,5 +246,6 @@ including quotes). Only counts are exposed, without text or match details.
 5. Content is not logged by default; ids, sizes, timings and costs are.
 6. Spend control is the gateway key's budget and dashboard.
 7. Jobs: persist before ack; idempotent or non-retryable.
-8. Indexing is local; knowledge answering sends only the question and retrieved chunks off-node.
+8. Indexing is local (node, or the owner’s Mac for explicit bulk embedding calls); knowledge
+   answering sends only the question and retrieved chunks off-node.
    Explicit vision calls send page images to the owner’s Mac or the selected hosted vision rung.

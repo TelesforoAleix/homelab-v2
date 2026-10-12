@@ -329,3 +329,17 @@ reminder now points to `/backup`. Addresses remain private and logs contain only
 
 
 **2026-10-08 — Runbook moved to docs/operations.md.** README stays a short overview.
+
+
+**2026-10-12 — A bulk embedding purpose uses the same vector space on the Mac.** Add
+`embed-large-bulk` for bulk ingest with the official Qwen3-Embedding-4B Q8_0 file, identical
+pooling, normalisation and batch/context flags, plus Metal. The measured Mac throughput is
+about 18 times the node’s CPU; questions keep using always-on `embed-large`, so student use
+does not depend on the Mac. The name identifies the vector space and kind of work, without
+a tier. Real-model reporting and role prefixes match the node purpose. Serving is started
+and stopped by hand on Tailscale TCP 8092, reachable only by the node under the owner’s grant.
+The private URL stays beside vision’s URL in the node’s `.env`; a closed default permits
+proxy startup without it. A 3-second connect limit, no retries and no fallback make missing
+Mac serving fail fast rather than silently moving a long ingest back to the slow CPU.
+Private state, PID start-time checks and content-disabled logs follow vision, with no
+automatic start or wake lock.
