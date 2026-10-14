@@ -77,8 +77,8 @@ model_list:
         query: "Instruct: Given a question, retrieve passages that answer the question\nQuery:"
         passage: ""
 
-  # Sources and price bases are linked in docs/operations.md. Null measurements are
-  # intentionally pending the direct gateway proofs; do not merge before filling them.
+  # Sources and direct proof results are in docs/operations.md. Nano Banana 2's
+  # measurements remain null after its HTTP 400; resolve that proof before merging.
   - model_name: image-nano-banana-2
     litellm_params:
       model: openai/google/gemini-3.1-flash-image
@@ -122,10 +122,10 @@ model_list:
       display_name: GPT Image 2.5 Flare
       paid: true
       placeholder: false
-      seconds_per_image: null
+      seconds_per_image: 10.074
       licence: You own output as between you and OpenAI, subject to OpenAI terms and applicable law.
       endpoint: images/edits
-      response: null
+      response: b64_json
       prompt_family: openai
       max_prompt_chars: 32000
       max_references: 16
@@ -157,10 +157,10 @@ model_list:
       display_name: GPT Image 2.5 Sunburst
       paid: true
       placeholder: false
-      seconds_per_image: null
+      seconds_per_image: 8.718
       licence: You own output as between you and OpenAI, subject to OpenAI terms and applicable law.
       endpoint: images/edits
-      response: null
+      response: b64_json
       prompt_family: openai
       max_prompt_chars: 32000
       max_references: 16
@@ -190,10 +190,11 @@ model_list:
       display_name: Nano Banana 2.1
       paid: true
       placeholder: false
-      seconds_per_image: null
+      # 14.147s for the call, which returned two message images.
+      seconds_per_image: 7.074
       licence: Google does not claim ownership of generated content; Gemini API terms apply.
       endpoint: chat/completions
-      response: null
+      response: message_images
       prompt_family: gemini
       max_references: 14
       reference_slots: {object: 10, character: 4}
@@ -220,10 +221,10 @@ model_list:
       display_name: FLUX 3 Image
       paid: true
       placeholder: false
-      seconds_per_image: null
+      seconds_per_image: 27.75
       licence: Use of generated content is subject to Black Forest Labs terms and usage policy.
       endpoint: images/edits
-      response: null
+      response: b64_json
       prompt_family: flux
       max_references: 10
       reference_max_side: 2048

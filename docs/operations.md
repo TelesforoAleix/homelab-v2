@@ -136,9 +136,30 @@ Discover their capabilities with `GET /v1/model/info`: its `data` array contains
 `model_name` and `model_info` for every purpose. Deployment parameters, upstream addresses
 and key references are never returned. Each image profile includes its endpoint, response
 form, reference count, display name, terms, settings and USD price estimates.
-While the PR awaits direct proofs, `response` and `seconds_per_image` are null; both must be
-filled from actual calls before merge. Reference maxima are documented limits; the proof
+Nano Banana 2's `response` and `seconds_per_image` remain null after its direct proof
+received HTTP 400; resolve that call before merging or deploying. Reference maxima are documented limits; the proof
 checks two references per model rather than claiming a full-count load test.
+
+Direct gateway proofs on the node, 2026-10-14, used two synthetic 256px PNG references
+and one call per model, without retries. These measure the gateway, not the deployed proxy.
+
+| Purpose | Endpoint | HTTP | Response | Call seconds | Images | Reported USD |
+|---|---|---|---|---:|---:|---:|
+| `image-nano-banana-2` | edits | 400 | invalid_request_error | 0.969 | 0 | not reported |
+| `image-gpt-2.5-flare` | edits | 200 | b64_json | 10.074 | 1 | not reported |
+| `image-gpt-2.5-sunburst` | edits | 200 | b64_json | 8.718 | 1 | not reported |
+| `image-nano-banana-2.1` | chat | 200 | message_images | 14.147 | 2 | 0.0377865 |
+| `image-flux-3` | edits | 200 | b64_json | 27.750 | 1 | not reported |
+
+The Nano Banana 2 request used `size=512x512`; its response error type was
+`invalid_request_error`. No diagnostic body was retained, and no alternative request was
+tried. GPT calls used `quality=low`, `size=1024x1024`; Nano Banana 2.1 used 1K; FLUX used
+`size=768x768`. FLUX 3 remains selected because its reference edit succeeded, so the allowed
+FLUX.2 substitution is unnecessary. `seconds_per_image` divides call time by returned image
+count (Nano Banana 2.1 returned two). These single samples are estimates of future latency.
+The reported cost subtotal is $0.0377865; other calls did not report a cost in the inspected
+response fields. Listed output estimates for the two GPT calls and FLUX add $0.03226,
+excluding reference/prompt tokens. The exact total spend requires the Vercel dashboard.
 
 For the four `images/edits` profiles, send an OpenAI multipart request to
 `POST /v1/images/edits` with the purpose as `model`, a `prompt`, `response_format=b64_json`,

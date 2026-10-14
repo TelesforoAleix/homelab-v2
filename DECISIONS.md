@@ -359,3 +359,6 @@ timings before merge; documented reference limits are not represented as full-co
 GPT entries use LiteLLM's native parameter-drop setting for the legacy `response_format`
 selector rejected by its generation validation; GPT output is implicitly base64 and URL
 requests are refused. No provider adapter or image conversion is introduced.
+The direct two-reference FLUX 3 edit succeeded, retaining FLUX 3 rather than FLUX.2 pro.
+Nano Banana 2's prescribed proof returned 400 at the cheapest listed size; its measured
+profile fields remain unset pending orchestration, without a retry or route substitution.
