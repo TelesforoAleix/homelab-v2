@@ -130,30 +130,44 @@ attach only trusted clients to this network. Provider/routing overrides and remo
 are refused; configuration and management endpoints are not exposed. New purposes and optional
 request fields can be added to `/v1`; breaking changes require `/v2`.
 
-Five paid image purposes also appear: `image-nano-banana-2`, `image-nano-banana-2.1`,
+Four paid image purposes also appear: `image-nano-banana-2.1`,
 `image-gpt-2.5-flare`, `image-gpt-2.5-sunburst` and `image-flux-3`.
 Discover their capabilities with `GET /v1/model/info`: its `data` array contains only
 `model_name` and `model_info` for every purpose. Deployment parameters, upstream addresses
 and key references are never returned. Each image profile includes its endpoint, response
 form, reference count, display name, terms, settings and USD price estimates.
-Nano Banana 2's `response` and `seconds_per_image` remain null after its direct proof
-received HTTP 400; resolve that call before merging or deploying. Reference maxima are documented limits; the proof
+All offered profiles contain measured response forms and times. Reference maxima are
+documented limits; the proof
 checks two references per model rather than claiming a full-count load test.
 
-Direct gateway proofs on the node, 2026-10-14, used two synthetic 256px PNG references
-and one call per model, without retries. These measure the gateway, not the deployed proxy.
+Direct gateway proofs on the node, 2026-10-14, initially used two synthetic 256px PNG
+references and one call per model. Nano Banana 2 then received two owner-authorized
+diagnostic calls. These measure the gateway, not the deployed proxy.
 
 | Purpose | Endpoint | HTTP | Response | Call seconds | Images | Reported USD |
 |---|---|---|---|---:|---:|---:|
-| `image-nano-banana-2` | edits | 400 | invalid_request_error | 0.969 | 0 | not reported |
+| Nano Banana 2 (excluded) | edits | 400 | invalid_request_error | 0.969 / 0.233 / 0.223 | 0 | not reported |
 | `image-gpt-2.5-flare` | edits | 200 | b64_json | 10.074 | 1 | not reported |
 | `image-gpt-2.5-sunburst` | edits | 200 | b64_json | 8.718 | 1 | not reported |
 | `image-nano-banana-2.1` | chat | 200 | message_images | 14.147 | 2 | 0.0377865 |
 | `image-flux-3` | edits | 200 | b64_json | 27.750 | 1 | not reported |
 
-The Nano Banana 2 request used `size=512x512`; its response error type was
-`invalid_request_error`. No diagnostic body was retained, and no alternative request was
-tried. GPT calls used `quality=low`, `size=1024x1024`; Nano Banana 2.1 used 1K; FLUX used
+Nano Banana 2 was tried three times in total, always with two references: the original
+`size=512x512` request, one exact repeat retaining a sanitized error, then one request
+omitting `size`. Both diagnostic calls returned this sanitized error:
+
+```json
+{"message":"Model 'google/gemini-3.1-flash-image' is a language model, not an image model. Use the language generation API instead.","type":"invalid_request_error"}
+```
+
+The [model page](https://vercel.com/ai-gateway/models/gemini-3.1-flash-image) documents language
+APIs, while the general edits guide lists it as supported. The live gateway's classification
+refusal remained unchanged without a size, so Nano Banana 2 is not reachable through
+`/images/edits` and has no entry here. It was not moved to chat or replaced; the owner
+decides any later route. This is not a shared size-mapping failure. The remaining profile
+mappings stay unchanged; no additional paid calls were made for those models.
+
+GPT calls used `quality=low`, `size=1024x1024`; Nano Banana 2.1 used 1K; FLUX used
 `size=768x768`. FLUX 3 remains selected because its reference edit succeeded, so the allowed
 FLUX.2 substitution is unnecessary. `seconds_per_image` divides call time by returned image
 count (Nano Banana 2.1 returned two). These single samples are estimates of future latency.
@@ -161,13 +175,13 @@ The reported cost subtotal is $0.0377865; other calls did not report a cost in t
 response fields. Listed output estimates for the two GPT calls and FLUX add $0.03226,
 excluding reference/prompt tokens. The exact total spend requires the Vercel dashboard.
 
-For the four `images/edits` profiles, send an OpenAI multipart request to
+For the three `images/edits` profiles, send an OpenAI multipart request to
 `POST /v1/images/edits` with the purpose as `model`, a `prompt`, `response_format=b64_json`,
 and repeated `image[]` file parts. Without references, send a JSON request to
 `POST /v1/images/generations`. Nano Banana 2.1 instead uses `/v1/chat/completions`:
 send `modalities: ["text", "image"]` and a user message containing text and reference
 `image_url` parts with data URIs; images return in `choices[0].message.images`.
-All five allow 300 seconds per request with no retries or fallbacks. No image processing
+All four allow 300 seconds per request with no retries or fallbacks. No image processing
 or prompt changes happen on the node. Prepare references at up to 2048 pixels per side in
 the client. No smaller gateway request-body limit was found in the published image docs;
 this is a client-side size recommendation, not a proved maximum byte count.

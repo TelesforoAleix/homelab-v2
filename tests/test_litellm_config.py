@@ -19,7 +19,6 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
         "translate",
         "vision",
         "vision:xhigh",
-        "image-nano-banana-2",
         "image-nano-banana-2.1",
         "image-gpt-2.5-flare",
         "image-gpt-2.5-sunburst",
@@ -133,7 +132,6 @@ def test_proxy_is_the_only_network_member_and_gateway_secret_holder():
 def test_image_profiles_and_key_isolation():
     config = yaml.safe_load((ROOT / "config/litellm.yaml").read_text())
     expected = {
-        "image-nano-banana-2": ("google/gemini-3.1-flash-image", 14, "images/edits", "gemini"),
         "image-nano-banana-2.1": (
             "google/gemini-nano-banana-2.1",
             14,
@@ -161,9 +159,8 @@ def test_image_profiles_and_key_isolation():
         assert info["endpoint"] == endpoint and info["prompt_family"] == family
         assert info["max_references"] == references and info["reference_max_side"] == 2048
         assert info["display_name"] and info["licence"]
-        # Nulls are permitted only while the PR waits for its direct proof calls.
-        assert info["seconds_per_image"] is None or info["seconds_per_image"] > 0
-        assert info["response"] in {None, "b64_json", "url", "message_images"}
+        assert info["seconds_per_image"] > 0
+        assert info["response"] in {"b64_json", "url", "message_images"}
         assert info["aspect_ratios"]["field"] and info["aspect_ratios"]["values"]
         setting = info.get("resolutions", info.get("qualities"))
         assert setting["field"] and setting["values"]

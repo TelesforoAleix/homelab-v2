@@ -143,8 +143,8 @@ Clients keep pages queued and supply prompts, DPI, temperature and completion li
 No Mac login/boot service or wake lock is installed. PID and content-disabled log stay private
 in the owner’s home. Image inputs must be `data:` URLs.
 
-Five hosted image purposes use the gateway through OpenAI-path entries:
-`image-nano-banana-2`, `image-nano-banana-2.1`, `image-gpt-2.5-flare`,
+Four hosted image purposes use the gateway through OpenAI-path entries:
+`image-nano-banana-2.1`, `image-gpt-2.5-flare`,
 `image-gpt-2.5-sunburst` and `image-flux-3`. Only these entries use
 `/run/secrets/image_gateway_api_key`, read into `HOMELAB_IMAGE_GATEWAY_API_KEY` by the
 entrypoint. It has the existing key's `root:10001` `0440` protection and a separate $20
@@ -153,7 +153,7 @@ calls return 402 `quota_for_entity_exceeded`, with a fixed budget message. It re
 1st at 00:00 UTC. Chat and embeddings keep their existing entries and keys.
 Image requests have 300-second timeouts without retries or fallbacks. LiteLLM only routes:
 clients supply prompts, sizes and references; the node does no image processing.
-Nano Banana 2.1 uses chat completions with `modalities: [text, image]`; the other four
+Nano Banana 2.1 uses chat completions with `modalities: [text, image]`; the other three
 use multipart image edits (or JSON generations without references). `/v1/model/info` returns
 only `model_name` and configured `model_info` for every entry, never deployment parameters.
 Image profiles publish reference limits, settings, terms, prices and measured response/timing.

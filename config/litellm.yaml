@@ -77,37 +77,7 @@ model_list:
         query: "Instruct: Given a question, retrieve passages that answer the question\nQuery:"
         passage: ""
 
-  # Sources and direct proof results are in docs/operations.md. Nano Banana 2's
-  # measurements remain null after its HTTP 400; resolve that proof before merging.
-  - model_name: image-nano-banana-2
-    litellm_params:
-      model: openai/google/gemini-3.1-flash-image
-      api_base: https://ai-gateway.vercel.sh/v1
-      api_key: os.environ/HOMELAB_IMAGE_GATEWAY_API_KEY
-      timeout: 300.0
-    model_info:
-      mode: image_generation
-      display_name: Nano Banana 2
-      paid: true
-      placeholder: false
-      seconds_per_image: null
-      licence: Google does not claim ownership of generated content; Gemini API terms apply.
-      endpoint: images/edits
-      response: null
-      prompt_family: gemini
-      max_references: 14
-      reference_slots: {object: 10, character: 4}
-      reference_max_side: 2048
-      aspect_ratios:
-        field: size
-        values: {"1:1": "1024x1024", "3:2": "1264x848", "2:3": "848x1264", "16:9": "1376x768", "9:16": "768x1376"}
-      resolutions:
-        field: size
-        values: ["512x512", "1024x1024", "2048x2048", "4096x4096"]
-      advanced: []
-      price_per_image: {"512x512": 0.045, "1024x1024": 0.067, "2048x2048": 0.101, "4096x4096": 0.151}
-      price_estimated: true
-      price_checked: "2026-10-14"
+  # Sources and direct proof results are in docs/operations.md.
   - model_name: image-gpt-2.5-flare
     litellm_params:
       model: openai/openai/gpt-image-2.5-flare

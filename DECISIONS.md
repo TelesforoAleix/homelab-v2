@@ -347,7 +347,7 @@ automatic start or wake lock.
 
 **2026-10-14 — Hosted image purposes share LiteLLM with a separate gateway budget.**
 The owner selected Nano Banana 2, Nano Banana 2.1, both GPT Image 2.5 variants (Flare and
-Sunburst), and FLUX 3 Image if its edit route works. Five `image-*` entries use the OpenAI
+Sunburst), and FLUX 3 Image if its edit route works. Four `image-*` entries use the OpenAI
 provider path to Vercel, because the pinned Vercel provider has no image-edit config.
 Only images use a new Compose secret with a $20 monthly key budget; chat's key is unchanged.
 The proxy exposes edits, generations and capability discovery, while Nano Banana 2.1 retains
@@ -360,5 +360,9 @@ GPT entries use LiteLLM's native parameter-drop setting for the legacy `response
 selector rejected by its generation validation; GPT output is implicitly base64 and URL
 requests are refused. No provider adapter or image conversion is introduced.
 The direct two-reference FLUX 3 edit succeeded, retaining FLUX 3 rather than FLUX.2 pro.
-Nano Banana 2's prescribed proof returned 400 at the cheapest listed size; its measured
-profile fields remain unset pending orchestration, without a retry or route substitution.
+Nano Banana 2 was excluded after three two-reference edit calls returned 400. On the owner's
+authorized diagnostics, the exact repeat and a call omitting size both returned a sanitized
+language-model classification refusal. Its model page documents language APIs despite the
+general edits guide listing it. The owner authorized removal rather than a chat-route
+substitution; any later route is the owner's decision. The remaining four profiles retain
+their successful measurements, with no null capability fields.

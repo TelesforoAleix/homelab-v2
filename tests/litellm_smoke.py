@@ -213,7 +213,6 @@ def run(unset=False):
                         "image-flux-3",
                         "image-gpt-2.5-flare",
                         "image-gpt-2.5-sunburst",
-                        "image-nano-banana-2",
                         "image-nano-banana-2.1",
                         "translate",
                         "vision",
@@ -665,6 +664,7 @@ def run(unset=False):
 
                     before = len(requests)
                     for purpose in [
+                        "image-nano-banana-2",
                         "openai/gpt-5.6-luna",
                         "embed:high",
                         "embed-large:high",
