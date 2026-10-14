@@ -22,7 +22,6 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
         "image-nano-banana-2.1",
         "image-gpt-2.5-flare",
         "image-gpt-2.5-sunburst",
-        "image-flux-3",
     }
     for purpose, effort in [
         ("chat", "low"),
@@ -140,7 +139,6 @@ def test_image_profiles_and_key_isolation():
         ),
         "image-gpt-2.5-flare": ("openai/gpt-image-2.5-flare", 16, "images/edits", "openai"),
         "image-gpt-2.5-sunburst": ("openai/gpt-image-2.5-sunburst", 16, "images/edits", "openai"),
-        "image-flux-3": ("bfl/flux-3-image", 10, "images/edits", "flux"),
     }
     for row in config["model_list"]:
         spec = row["litellm_params"]
@@ -161,9 +159,19 @@ def test_image_profiles_and_key_isolation():
         assert info["display_name"] and info["licence"]
         assert info["seconds_per_image"] > 0
         assert info["response"] in {"b64_json", "url", "message_images"}
-        assert info["aspect_ratios"]["field"] and info["aspect_ratios"]["values"]
-        setting = info.get("resolutions", info.get("qualities"))
-        assert setting["field"] and setting["values"]
+        if "sizes" in info:
+            assert not {"aspect_ratios", "resolutions", "qualities"} & info.keys()
+            assert info["sizes"]
+            for size in info["sizes"]:
+                assert set(size) == {"value", "aspect_ratio", "resolution", "price"}
+                assert size["value"] and size["aspect_ratio"] and size["resolution"]
+                assert size["price"] > 0
+        else:
+            assert info["aspect_ratios"]["field"] and info["aspect_ratios"]["values"]
+            assert ("resolutions" in info) != ("qualities" in info)
+            setting = info.get("resolutions", info.get("qualities"))
+            assert setting["field"] and setting["values"]
+            assert setting["field"] != info["aspect_ratios"]["field"]
         for option in info["advanced"]:
             assert {"name", "type", "default"} <= option.keys()
             assert "values" in option or "range" in option

@@ -180,33 +180,6 @@ model_list:
       price_per_image: {1K: 0.0336, 2K: 0.0504, 4K: 0.1134}
       price_estimated: true
       price_checked: "2026-10-14"
-  - model_name: image-flux-3
-    litellm_params:
-      model: openai/bfl/flux-3-image
-      api_base: https://ai-gateway.vercel.sh/v1
-      api_key: os.environ/HOMELAB_IMAGE_GATEWAY_API_KEY
-      timeout: 300.0
-    model_info:
-      mode: image_generation
-      display_name: FLUX 3 Image
-      paid: true
-      placeholder: false
-      seconds_per_image: 27.75
-      licence: Use of generated content is subject to Black Forest Labs terms and usage policy.
-      endpoint: images/edits
-      response: b64_json
-      prompt_family: flux
-      max_references: 10
-      reference_max_side: 2048
-      aspect_ratios:
-        field: size
-        values: {"1:1": "1024x1024", "3:2": "1248x832", "2:3": "832x1248", "16:9": "1360x768", "9:16": "768x1360"}
-      resolutions:
-        field: size
-        values: ["768x768", "1024x1024", "1536x1536", "2048x2048", "4096x4096"]
-      advanced: []
-      price_per_image: {"768x768": 0.0205, "1024x1024": 0.024, "1536x1536": 0.035, "2048x2048": 0.05, "4096x4096": 0.3035}
-      price_checked: "2026-10-14"
 
 router_settings:
   num_retries: 0

@@ -159,7 +159,34 @@ def run(unset=False):
         import httpx
         import openai
         from fastapi.testclient import TestClient
+        from litellm.utils import ImageResponse
         from litellm_entrypoint import create_app
+        from pydantic import ValidationError
+
+        # Both real FLUX responses contained an image but failed this pinned schema.
+        # Keep the diagnostic reproducible without paid calls or response rewriting.
+        for details in ({}, {"input_tokens_details": None}):
+            usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, **details}
+            try:
+                ImageResponse(created=1, data=[{"b64_json": IMAGE.split(",", 1)[1]}], usage=usage)
+            except ValidationError as exc:
+                assert any(
+                    error["loc"] == ("usage", "input_tokens_details") for error in exc.errors()
+                )
+            else:
+                raise AssertionError(
+                    "Recheck excluded FLUX models: pinned parser now accepts usage"
+                )
+        ImageResponse(
+            created=1,
+            data=[{"b64_json": IMAGE.split(",", 1)[1]}],
+            usage={
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "input_tokens_details": {"text_tokens": 0, "image_tokens": 0},
+            },
+        )
 
         sdk_timeouts = []
         original_init = openai.AsyncOpenAI.__init__
@@ -210,7 +237,6 @@ def run(unset=False):
                         "embed-large",
                         "embed-large-bulk",
                         "grade",
-                        "image-flux-3",
                         "image-gpt-2.5-flare",
                         "image-gpt-2.5-sunburst",
                         "image-nano-banana-2.1",

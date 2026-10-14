@@ -130,8 +130,8 @@ attach only trusted clients to this network. Provider/routing overrides and remo
 are refused; configuration and management endpoints are not exposed. New purposes and optional
 request fields can be added to `/v1`; breaking changes require `/v2`.
 
-Four paid image purposes also appear: `image-nano-banana-2.1`,
-`image-gpt-2.5-flare`, `image-gpt-2.5-sunburst` and `image-flux-3`.
+Three paid image purposes also appear: `image-nano-banana-2.1`,
+`image-gpt-2.5-flare` and `image-gpt-2.5-sunburst`.
 Discover their capabilities with `GET /v1/model/info`: its `data` array contains only
 `model_name` and `model_info` for every purpose. Deployment parameters, upstream addresses
 and key references are never returned. Each image profile includes its endpoint, response
@@ -168,14 +168,38 @@ decides any later route. This is not a shared size-mapping failure. The remainin
 mappings stay unchanged; no additional paid calls were made for those models.
 
 GPT calls used `quality=low`, `size=1024x1024`; Nano Banana 2.1 used 1K; FLUX used
-`size=768x768`. FLUX 3 remains selected because its reference edit succeeded, so the allowed
-FLUX.2 substitution is unnecessary. `seconds_per_image` divides call time by returned image
+`size=768x768`. FLUX 3 was subsequently removed after proxy validation; see below. `seconds_per_image` divides call time by returned image
 count (Nano Banana 2.1 returned two). These single samples are estimates of future latency.
 The reported cost subtotal is $0.0377865; other calls did not report a cost in the inspected
 response fields. Listed output estimates for the two GPT calls and FLUX add $0.03226,
 excluding reference/prompt tokens. The exact total spend requires the Vercel dashboard.
 
-For the three `images/edits` profiles, send an OpenAI multipart request to
+The subsequent pinned LiteLLM 1.103.3 response-parser check found that FLUX 3's gateway
+response has `usage.input_tokens_details: null`, which `ImageResponse` rejects. A local
+stub captured the same model, prompt, `n=1`, `size=768x768`, `response_format=b64_json`
+and two identical PNG `image[]` parts as the direct proof. Only filenames, user-agent and
+multipart framing differed. Matching the LiteLLM request shape still returned an image
+that failed response parsing; the client-facing upstream error remains sanitized.
+FLUX 3 is not offered until LiteLLM accepts that response.
+
+The authorized FLUX.2 pro alternative was checked with the same LiteLLM request shape,
+`size=1024x1024` and two synthetic references. It also returned an image, but its response
+omitted `usage.input_tokens_details`, which the pinned parser rejects. It has no entry.
+No adapter, response rewriting or substitution is used.
+
+| Correction proof | HTTP | Response | Seconds | Pinned parser | Reported USD |
+|---|---|---|---:|---|---:|
+| FLUX 3, matching multipart shape | 200 | b64_json | 20.158 | rejects null input token details | not reported |
+| FLUX.2 pro, matching multipart shape | 200 | b64_json | 7.327 | rejects missing input token details | not reported |
+
+A model with a combined size field publishes only `sizes`, a list of
+`{value, aspect_ratio, resolution, price}`. Models with separate fields publish
+`aspect_ratios` and either `resolutions` or `qualities`, each naming a distinct request
+field. A profile never carries both forms. The GPT entries already use `size` and
+`quality`; Nano Banana 2.1 already uses separate nested aspect-ratio and image-size fields.
+Their profiles are unchanged.
+
+For the two `images/edits` profiles, send an OpenAI multipart request to
 `POST /v1/images/edits` with the purpose as `model`, a `prompt`, `response_format=b64_json`,
 and repeated `image[]` file parts. Without references, send a JSON request to
 `POST /v1/images/generations`. Nano Banana 2.1 instead uses `/v1/chat/completions`:

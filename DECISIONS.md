@@ -366,3 +366,15 @@ language-model classification refusal. Its model page documents language APIs de
 general edits guide listing it. The owner authorized removal rather than a chat-route
 substitution; any later route is the owner's decision. The remaining four profiles retain
 their successful measurements, with no null capability fields.
+
+
+**2026-10-14 — Remove FLUX routes whose gateway response the pinned LiteLLM rejects.**
+FLUX 3's gateway response contains `usage.input_tokens_details: null`, rejected by
+LiteLLM 1.103.3 and main as checked by the orchestrator on 2026-10-14. Remove its entry;
+it returns when LiteLLM accepts that response. The owner's permitted FLUX.2 pro alternative
+also returned an image but omitted the same required field and failed the pinned
+`ImageResponse` parser, so it is not added. No adapter, response rewriting or sanitizer
+change. The client agreed that combined size fields publish only `sizes` entries containing
+`value`, `aspect_ratio`, `resolution` and `price`; separate settings retain distinct named
+fields under `aspect_ratios` and `resolutions` or `qualities`. Existing GPT and Nano Banana
+2.1 profiles already satisfy that rule and stay unchanged.
