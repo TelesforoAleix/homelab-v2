@@ -46,6 +46,7 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
     secrets:
       - gateway_api_key
+      - image_gateway_api_key
     volumes:
       - ./config:/etc/litellm:ro
     networks:
@@ -148,6 +149,8 @@ services:
 secrets:
   gateway_api_key:
     file: ./secrets/gateway_api_key
+  image_gateway_api_key:
+    file: ./secrets/image_gateway_api_key
 
 networks:
   models:

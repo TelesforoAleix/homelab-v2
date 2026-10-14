@@ -18,9 +18,14 @@ LOGGING = {
 }
 
 
-def create_app(config_path="/etc/litellm/litellm.yaml", secret_path="/run/secrets/gateway_api_key"):
+def create_app(
+    config_path="/etc/litellm/litellm.yaml",
+    secret_path="/run/secrets/gateway_api_key",
+    image_secret_path="/run/secrets/image_gateway_api_key",
+):
     # This variable exists only inside the running proxy; Compose and env files hold no key.
     os.environ["HOMELAB_GATEWAY_API_KEY"] = Path(secret_path).read_text().strip()
+    os.environ["HOMELAB_IMAGE_GATEWAY_API_KEY"] = Path(image_secret_path).read_text().strip()
     os.environ["CONFIG_FILE_PATH"] = config_path
     os.environ["WORKER_CONFIG"] = json.dumps(
         {

@@ -17,6 +17,8 @@ from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy.route_llm_request import ProxyModelNotFoundError
 from openai.types.chat.completion_create_params import CompletionCreateParamsBase
 from openai.types.embedding_create_params import EmbeddingCreateParams
+from openai.types.image_edit_params import ImageEditParamsBase
+from openai.types.image_generate_params import ImageGenerateParamsBase
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -46,18 +48,44 @@ def input_type_error(data):
     return None
 
 
-def error_response(status: int, message: str):
+def error_response(status: int, message: str, error_type="invalid_request_error"):
     return JSONResponse(
         {
             "error": {
                 "message": message,
-                "type": "invalid_request_error",
+                "type": error_type,
                 "param": None,
                 "code": None,
             }
         },
         status_code=status,
     )
+
+
+def profile_fields(info):
+    """Published fields only; dotted setting paths denote nested JSON objects."""
+    return {
+        *(item["name"] for item in info.get("advanced", [])),
+        *(
+            info[key]["field"]
+            for key in ("aspect_ratios", "resolutions", "qualities")
+            if key in info
+        ),
+    }
+
+
+def nested_fields_allowed(value, paths):
+    if not isinstance(value, dict):
+        return False
+    for key, item in value.items():
+        if key in paths:
+            if isinstance(item, (dict, list)):
+                return False
+            continue
+        children = {path[len(key) + 1 :] for path in paths if path.startswith(key + ".")}
+        if not children or not nested_fields_allowed(item, children):
+            return False
+    return True
 
 
 class ModelEndpointMiddleware(BaseHTTPMiddleware):
@@ -87,6 +115,12 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
             fields = None
             if path == "/v1/models" and request.method == "GET":
                 event["purpose"] = "models"
+            elif path == "/v1/model/info" and request.method == "GET":
+                event["purpose"] = "model-info"
+            elif path == "/v1/images/edits" and request.method == "POST":
+                fields = set(ImageEditParamsBase.__annotations__) | {"image[]", "mask[]", "stream"}
+            elif path == "/v1/images/generations" and request.method == "POST":
+                fields = set(ImageGenerateParamsBase.__annotations__) | {"stream"}
             elif path == "/v1/chat/completions" and request.method == "POST":
                 fields = set(CompletionCreateParamsBase.__annotations__) | {"stream"}
             elif path == "/v1/embeddings" and request.method == "POST":
@@ -101,7 +135,14 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                 response = error_response(400, "Query parameters are not offered")
             elif fields is not None:
                 try:
-                    body = await request.json()
+                    if path == "/v1/images/edits":
+                        # Cache the bytes before parsing: LiteLLM must receive the original
+                        # multipart body, including every repeated image[] part.
+                        await request.body()
+                        async with request.form() as form:
+                            body = dict(form)
+                    else:
+                        body = await request.json()
                 except (ValueError, UnicodeError):
                     body = None
                 if not isinstance(body, dict):
@@ -111,10 +152,35 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                     if isinstance(purpose, str) and purpose in model_specs:
                         event["purpose"] = purpose
                         event["real_model"] = model_specs[purpose]["model"].split("/", 1)[1]
+                    info = model_info.get(purpose, {}) if isinstance(purpose, str) else {}
+                    image_entry = info.get("mode") == "image_generation"
+                    published = profile_fields(info) if image_entry else set()
+                    fields |= {field.split(".", 1)[0] for field in published}
+                    if image_entry:
+                        fields.discard("seed")
                     # SDK fields define the OpenAI shape. LiteLLM-specific provider/routing
                     # overrides must never reach the library, even before its pre-call hook.
                     if set(body) - set(fields):
                         response = error_response(400, "Only OpenAI request fields are offered")
+                    elif "providerOptions" in body and not nested_fields_allowed(
+                        body["providerOptions"],
+                        {
+                            field.removeprefix("providerOptions.")
+                            for field in published
+                            if field.startswith("providerOptions.")
+                        },
+                    ):
+                        response = error_response(400, "Only published image settings are offered")
+                    elif path.startswith("/v1/images/") and not image_entry:
+                        response = error_response(400, "An image purpose is required")
+                    elif path.startswith("/v1/images/") and info["endpoint"] != "images/edits":
+                        response = error_response(400, "This image purpose uses chat/completions")
+                    elif (
+                        image_entry
+                        and info["prompt_family"] == "openai"
+                        and body.get("response_format", "b64_json") != "b64_json"
+                    ):
+                        response = error_response(400, "This image purpose returns b64_json")
                     elif path == "/v1/embeddings" and (error := input_type_error(body)):
                         # The proxy decodes some token arrays before its pre-call hook.
                         response = error_response(400, error)
@@ -128,9 +194,40 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                         ]
                         response = await call_next(request)
             else:
-                response = await call_next(request)
+                if path == "/v1/model/info":
+                    # Build the allow-list projection from the route table. Never serialize
+                    # LiteLLM's expanded deployment entries (URLs, key references, metadata).
+                    response = JSONResponse(
+                        {
+                            "data": [
+                                {"model_name": name, "model_info": info}
+                                for name, info in model_info.items()
+                            ]
+                        }
+                    )
+                else:
+                    response = await call_next(request)
 
             status = response.status_code
+            if (
+                event["purpose"] in model_info
+                and model_info[event["purpose"]].get("mode") == "image_generation"
+                and status >= 400
+            ):
+                # Image handlers do not all use the failure hook's returned exception.
+                # Discard their response body too, so provider diagnostics cannot escape.
+                if hasattr(response, "body_iterator"):
+                    async for _ in response.body_iterator:
+                        pass
+                response = (
+                    error_response(
+                        402,
+                        "Monthly image budget exhausted; resets on the 1st at 00:00 UTC",
+                        "quota_for_entity_exceeded",
+                    )
+                    if status == 402
+                    else error_response(status, "Image request failed")
+                )
             # Provider URLs and deployment diagnostics are not part of the client contract.
             for name in list(response.headers):
                 if name.lower() not in {
