@@ -113,6 +113,7 @@ model_list:
         - {name: moderation, type: string, values: [auto, low], default: auto}
       # Approximate output-only USD at 1024x1024; excludes text/reference tokens.
       price_per_image: {low: 0.00588, medium: 0.0132, high: 0.05268, xhigh: 0.09366, max: 0.21072}
+      price_per_reference: 0.0122
       price_estimated: true
       price_checked: "2026-10-14"
   - model_name: image-gpt-2.5-sunburst
@@ -147,6 +148,7 @@ model_list:
         - {name: output_compression, type: integer, range: [0, 100], default: 100}
         - {name: moderation, type: string, values: [auto, low], default: auto}
       price_per_image: {low: 0.00588, medium: 0.0132, high: 0.05268, xhigh: 0.09366, max: 0.21072}
+      price_per_reference: 0.0122
       price_estimated: true
       price_checked: "2026-10-14"
   - model_name: image-nano-banana-2.1

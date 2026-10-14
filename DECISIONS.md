@@ -378,3 +378,5 @@ change. The client agreed that combined size fields publish only `sizes` entries
 `value`, `aspect_ratio`, `resolution` and `price`; separate settings retain distinct named
 fields under `aspect_ratios` and `resolutions` or `qualities`. Existing GPT and Nano Banana
 2.1 profiles already satisfy that rule and stay unchanged.
+
+**2026-10-14 — Estimate GPT Image 2.5 reference cost from measured Flare usage.** One versus two synthetic 2048 px references on Flare used 1,521 additional image tokens; at OpenAI's $8/M image-input rate ([OpenAI pricing](https://developers.openai.com/api/docs/pricing)), this estimates $0.0122/reference. Sunburst uses the same estimate by assumption.

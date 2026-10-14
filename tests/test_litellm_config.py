@@ -178,6 +178,8 @@ def test_image_profiles_and_key_isolation():
             assert option["name"] != "seed"
         assert all(price > 0 for price in info["price_per_image"].values())
         assert info["price_checked"] == "2026-10-14"
+        if row["model_name"] in {"image-gpt-2.5-flare", "image-gpt-2.5-sunburst"}:
+            assert info["price_per_reference"] == 0.0122
 
 
 def test_private_mac_url_only_reaches_proxy_and_has_safe_unset_default():
