@@ -88,7 +88,7 @@ uv sync
 uv run pytest
 ```
 
-On a Docker host, provision `.env` and the secret as described in step 10, then run:
+On a Docker host, provision `.env` and both gateway secrets as described in step 10, then run:
 
 ```bash
 docker compose up -d --build
@@ -111,7 +111,8 @@ Attach a client container from another Compose project to the external Docker ne
 `homelab-models`, created by this stack. Only LiteLLM joins it; Postgres, API and both
 embedding servers remain on the stack's private network. Give the client its base URL `http://litellm:4000/v1`
 and an arbitrary API key through its environment, then use OpenAI-shaped `GET /v1/models`,
-`POST /v1/chat/completions` and `POST /v1/embeddings`. There are exactly ten names: `chat`
+`GET /v1/model/info`, `POST /v1/chat/completions`, `POST /v1/embeddings`,
+`POST /v1/images/edits` and `POST /v1/images/generations`. The existing ten names are `chat`
 (standard), `chat:high`, `chat:xhigh`, `embed`, `embed-large`, `embed-large-bulk`, `grade`,
 `translate`, `vision` and `vision:xhigh`.
 `grade` makes yes/no relevance judgements per candidate passage, using the same model and low effort as `chat`.
@@ -128,6 +129,60 @@ a 4xx without an upstream call. The accepted client key provides no access contr
 attach only trusted clients to this network. Provider/routing overrides and remote image URLs
 are refused; configuration and management endpoints are not exposed. New purposes and optional
 request fields can be added to `/v1`; breaking changes require `/v2`.
+
+Five paid image purposes also appear: `image-nano-banana-2`, `image-nano-banana-2.1`,
+`image-gpt-2.5-flare`, `image-gpt-2.5-sunburst` and `image-flux-3`.
+Discover their capabilities with `GET /v1/model/info`: its `data` array contains only
+`model_name` and `model_info` for every purpose. Deployment parameters, upstream addresses
+and key references are never returned. Each image profile includes its endpoint, response
+form, reference count, display name, terms, settings and USD price estimates.
+While the PR awaits direct proofs, `response` and `seconds_per_image` are null; both must be
+filled from actual calls before merge. Reference maxima are documented limits; the proof
+checks two references per model rather than claiming a full-count load test.
+
+For the four `images/edits` profiles, send an OpenAI multipart request to
+`POST /v1/images/edits` with the purpose as `model`, a `prompt`, `response_format=b64_json`,
+and repeated `image[]` file parts. Without references, send a JSON request to
+`POST /v1/images/generations`. Nano Banana 2.1 instead uses `/v1/chat/completions`:
+send `modalities: ["text", "image"]` and a user message containing text and reference
+`image_url` parts with data URIs; images return in `choices[0].message.images`.
+All five allow 300 seconds per request with no retries or fallbacks. No image processing
+or prompt changes happen on the node. Prepare references at up to 2048 pixels per side in
+the client. No smaller gateway request-body limit was found in the published image docs;
+this is a client-side size recommendation, not a proved maximum byte count.
+
+Settings publish `field` and `values`. A `size` mapping associates aspect ratios with
+explicit dimensions; resolution choices are square dimensions, and clients compute the
+dimensions for other shapes. Dotted field paths denote nested JSON, for example
+`providerOptions.google.imageConfig.imageSize`. Only those published nested paths are
+accepted; `providerOptions.gateway` and routing overrides remain refused. `advanced`
+publishes pass-through request fields and their defaults; no image seed is offered.
+Wrong fields receive 400 before an upstream call. Supported OpenAI fields still depend
+on the selected model; the gateway validates parameter values.
+GPT image models always return base64; `response_format=url` is refused. Their entries use
+LiteLLM's native `additional_drop_params: [response_format]` to avoid its generation-parameter
+validation rejecting this legacy selector on edits. Both routes use the implicit base64
+default. No image format conversion is performed.
+
+Only image entries use the dedicated image key. Its $20 monthly budget is set in Vercel,
+resets on the 1st at 00:00 UTC, and is a soft cap: the request crossing the budget completes.
+Later calls return HTTP 402 with `error.type: quota_for_entity_exceeded` and the fixed
+message `Monthly image budget exhausted; resets on the 1st at 00:00 UTC`.
+Do not retry until the reset or an owner budget change. Chat uses its existing key.
+
+Profile sources, checked 2026-10-14: the [gateway catalogue](https://ai-gateway.vercel.sh/v1/models),
+[gateway image API](https://vercel.com/docs/ai-gateway/modalities/image-generation/openai),
+[Nano Banana 2.1](https://ai.google.dev/gemini-api/docs/models/gemini-nano-banana-2.1),
+[Gemini images](https://ai.google.dev/gemini-api/docs/image-generation),
+[GPT image settings and cost calculator](https://developers.openai.com/api/docs/guides/image-generation),
+and [FLUX 3 gateway announcement](https://vercel.com/changelog/flux-3-image-now-available-on-ai-gateway).
+GPT estimates use the official calculator's output tokens at 1024x1024 and the gateway's
+$30/M output token rate, excluding prompt and reference input tokens. Both variants have
+the same rate, but actual consumption can differ. Gemini estimates use the gateway's
+resolution table, excluding additional input/text costs; FLUX uses its gateway size table.
+Terms: [Google](https://ai.google.dev/gemini-api/terms),
+[OpenAI](https://openai.com/policies/terms-of-use/),
+[Black Forest Labs](https://bfl.ai/legal/terms-of-service).
 
 `embed` uses Nemotron 1B; `embed-large` uses Qwen3-Embedding-4B Q8_0 on the node's CPU,
 always on. `embed-large-bulk` serves the same vector space from the Mac for bulk ingest only;
@@ -606,13 +661,18 @@ SSH accounts work through Tailscale.
     Optional `HOMELAB_MAC_VISION_URL` (8090) and `HOMELAB_MAC_EMBED_URL` (8092) also live
     only in this private `.env`, each ending in `/v1`; leave them unset for closed defaults.
     Restore them from the owner’s Mac serving configuration, never from Git.
-    The gateway key is `root:10001` `0440`, readable only by the non-root LiteLLM container.
+    Create a separate gateway key used only for images and set its $20 monthly budget in
+    Vercel. Both gateway keys are `root:10001` `0440`, mounted only into LiteLLM and read
+    at startup. Never place either key in `.env`, Compose environment or configuration.
 
     ```bash
     sudo install -d -m 0700 -o root -g root /srv/homelab/homelab-v2/secrets
     sudo bash -c 'umask 077; read -r -s -p "new gateway key: " K </dev/tty; echo; test -n "$K" || exit 1; printf "%s" "$K" > /srv/homelab/homelab-v2/secrets/gateway_api_key'
     sudo chown root:10001 /srv/homelab/homelab-v2/secrets/gateway_api_key
     sudo chmod 0440 /srv/homelab/homelab-v2/secrets/gateway_api_key
+    sudo bash -c 'umask 077; read -r -s -p "new image gateway key: " K </dev/tty; echo; test -n "$K" || exit 1; printf "%s" "$K" > /srv/homelab/homelab-v2/secrets/image_gateway_api_key'
+    sudo chown root:10001 /srv/homelab/homelab-v2/secrets/image_gateway_api_key
+    sudo chmod 0440 /srv/homelab/homelab-v2/secrets/image_gateway_api_key
     sudo bash -c 'umask 077; read -r -s -p "new hexadecimal database password: " P </dev/tty; echo; [[ "$P" =~ ^[[:xdigit:]]{32,}$ ]] || exit 1; printf "%s\n" "HOMELAB_DB_PASSWORD=$P" "HOMELAB_BRAIN_PATH=/srv/homelab/brain" "HOMELAB_CORPUS_PATH=/srv/homelab/homelab-v2-data/originals/corpus" "HOMELAB_POSTGRES_PATH=/srv/homelab/postgres" "HOMELAB_MODELS_PATH=/srv/homelab/models" > /srv/homelab/homelab-v2/.env'
     sudo chown root:root /srv/homelab/homelab-v2/.env
     sudo chmod 0600 /srv/homelab/homelab-v2/.env

@@ -12,6 +12,8 @@ import sys
 import tempfile
 import threading
 import time
+from email import policy
+from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from secrets import token_hex
@@ -39,6 +41,11 @@ sys.addaudithook(socket_audit)
 requests = []
 CONTENT = "private-fixture-content-9876"
 KEY = token_hex(24)
+IMAGE_KEY = token_hex(24)
+IMAGE = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+    "AAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII="
+)
 REAL_CHAT = "deepseek/deepseek-v4.1-flash"
 REAL_EMBED = "llama-nemotron-embed-1b-v2"
 REAL_LARGE = "Qwen3-Embedding-4B"
@@ -49,8 +56,37 @@ class Upstream(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        raw = self.rfile.read(int(self.headers["Content-Length"]))
+        if self.headers["Content-Type"].startswith("multipart/form-data"):
+            parts = BytesParser(policy=policy.default).parsebytes(
+                ("Content-Type: " + self.headers["Content-Type"] + "\r\n\r\n").encode() + raw
+            )
+            body = {}
+            for part in parts.iter_parts():
+                name = part.get_param("name", header="content-disposition")
+                value = part.get_payload(decode=True)
+                if part.get_filename():
+                    body.setdefault(name, []).append(len(value))
+                else:
+                    body[name] = value.decode()
+        else:
+            body = json.loads(raw)
         requests.append((self.path, body, self.headers.get("Authorization")))
+        if body.get("prompt") == CONTENT + ":quota":
+            self.send_response(402)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "error": {
+                            "type": "quota_for_entity_exceeded",
+                            "message": CONTENT + IMAGE_KEY + REAL_CHAT,
+                        }
+                    }
+                ).encode()
+            )
+            return
         self.send_response(
             500 if body.get("messages", [{}])[0].get("content") == CONTENT + ":fail" else 200
         )
@@ -61,6 +97,10 @@ class Upstream(BaseHTTPRequestHandler):
         self.end_headers()
         if body.get("messages", [{}])[0].get("content") == CONTENT + ":fail":
             self.wfile.write(json.dumps({"error": {"message": CONTENT + KEY + REAL_CHAT}}).encode())
+        elif self.path.startswith("/v1/images/"):
+            self.wfile.write(
+                json.dumps({"created": 1, "data": [{"b64_json": IMAGE.split(",", 1)[1]}]}).encode()
+            )
         elif self.path == "/v1/embeddings":
             self.wfile.write(
                 json.dumps(
@@ -94,6 +134,10 @@ class Upstream(BaseHTTPRequestHandler):
                     "completion_tokens_details": {"reasoning_tokens": 2},
                 },
             }
+            if body.get("modalities") == ["text", "image"]:
+                response["choices"][0]["message"]["images"] = [
+                    {"type": "image_url", "image_url": {"url": IMAGE}}
+                ]
             if body.get("stream"):
                 response["object"] = "chat.completion.chunk"
                 response["choices"] = [
@@ -148,7 +192,10 @@ def run(unset=False):
                 secret = Path(directory) / "gateway_api_key"
                 secret.write_text(KEY)
                 secret.chmod(0o440)
-                app = create_app(str(path), str(secret))
+                image_secret = Path(directory) / "image_gateway_api_key"
+                image_secret.write_text(IMAGE_KEY)
+                image_secret.chmod(0o440)
+                app = create_app(str(path), str(secret), str(image_secret))
                 logger = logging.getLogger("homelab.models")
                 logger.handlers = [logging.StreamHandler(output)]
                 with TestClient(app) as client:
@@ -163,12 +210,193 @@ def run(unset=False):
                         "embed-large",
                         "embed-large-bulk",
                         "grade",
+                        "image-flux-3",
+                        "image-gpt-2.5-flare",
+                        "image-gpt-2.5-sunburst",
+                        "image-nano-banana-2",
+                        "image-nano-banana-2.1",
                         "translate",
                         "vision",
                         "vision:xhigh",
                     ]
                     assert REAL_CHAT not in response.text and REAL_EMBED not in response.text
                     calls = 1
+                    response = client.get("/v1/model/info", headers=headers)
+                    calls += 1
+                    assert response.status_code == 200
+                    assert response.json() == {
+                        "data": [
+                            {
+                                "model_name": row["model_name"],
+                                "model_info": row.get("model_info", {}),
+                            }
+                            for row in config["model_list"]
+                        ]
+                    }
+                    assert "litellm_params" not in response.text and "api_base" not in response.text
+                    assert "127.0.0.1" not in response.text
+                    assert KEY not in response.text and IMAGE_KEY not in response.text
+                    for row in config["model_list"]:
+                        info = row.get("model_info", {})
+                        if info.get("mode") != "image_generation":
+                            continue
+                        purpose = row["model_name"]
+                        if info["endpoint"] == "chat/completions":
+                            response = client.post(
+                                "/v1/chat/completions",
+                                headers=headers,
+                                json={
+                                    "model": purpose,
+                                    "messages": [
+                                        {
+                                            "role": "user",
+                                            "content": [
+                                                {"type": "text", "text": CONTENT},
+                                                {"type": "image_url", "image_url": {"url": IMAGE}},
+                                                {"type": "image_url", "image_url": {"url": IMAGE}},
+                                            ],
+                                        }
+                                    ],
+                                    "modalities": ["text", "image"],
+                                    "reasoning_effort": "minimal",
+                                    "providerOptions": {
+                                        "google": {
+                                            "imageConfig": {"aspectRatio": "1:1", "imageSize": "1K"}
+                                        }
+                                    },
+                                },
+                            )
+                            calls += 1
+                            assert response.status_code == 200, response.text
+                            assert (
+                                response.json()["choices"][0]["message"]["images"][0]["image_url"][
+                                    "url"
+                                ]
+                                == IMAGE
+                            )
+                            assert (
+                                requests[-1][1]["providerOptions"]["google"]["imageConfig"][
+                                    "imageSize"
+                                ]
+                                == "1K"
+                            )
+                        else:
+                            response = client.post(
+                                "/v1/images/edits",
+                                headers=headers,
+                                data={
+                                    "model": purpose,
+                                    "prompt": CONTENT,
+                                    "response_format": "b64_json",
+                                    **(
+                                        {
+                                            "quality": "low",
+                                            "output_format": "png",
+                                            "output_compression": "100",
+                                            "background": "opaque",
+                                        }
+                                        if info["prompt_family"] == "openai"
+                                        else {}
+                                    ),
+                                },
+                                files=[
+                                    ("image[]", ("a.png", b"synthetic-image-a", "image/png")),
+                                    ("image[]", ("b.png", b"synthetic-image-b", "image/png")),
+                                ],
+                            )
+                            calls += 1
+                            assert response.status_code == 200, response.text
+                            assert response.json()["data"][0]["b64_json"] == IMAGE.split(",", 1)[1]
+                            assert requests[-1][1]["image[]"] == [17, 17]
+                            if info["prompt_family"] == "openai":
+                                assert requests[-1][1]["output_format"] == "png"
+                                assert requests[-1][1]["output_compression"] == "100"
+                                assert "response_format" not in requests[-1][1]
+                        assert requests[-1][1]["model"] == row["litellm_params"]["model"][7:]
+                        assert requests[-1][2] == "Bearer " + IMAGE_KEY
+                    response = client.post(
+                        "/v1/images/generations",
+                        headers=headers,
+                        json={
+                            "model": "image-gpt-2.5-flare",
+                            "prompt": CONTENT,
+                            "response_format": "b64_json",
+                            "quality": "low",
+                            "output_format": "png",
+                        },
+                    )
+                    calls += 1
+                    assert response.status_code == 200, response.text
+                    assert requests[-1][2] == "Bearer " + IMAGE_KEY
+                    assert requests[-1][1]["output_format"] == "png"
+                    response = client.post(
+                        "/v1/images/generations",
+                        headers=headers,
+                        json={"model": "image-gpt-2.5-flare", "prompt": CONTENT + ":quota"},
+                    )
+                    calls += 1
+                    assert response.status_code == 402
+                    assert response.json()["error"]["type"] == "quota_for_entity_exceeded"
+                    assert "Monthly image budget exhausted" in response.text
+                    assert CONTENT not in response.text and IMAGE_KEY not in response.text
+                    response = client.post(
+                        "/v1/images/edits",
+                        headers=headers,
+                        data={"model": "image-gpt-2.5-sunburst", "prompt": CONTENT + ":quota"},
+                        files={"image": ("a.png", b"synthetic", "image/png")},
+                    )
+                    calls += 1
+                    assert response.status_code == 402
+                    assert response.json()["error"]["type"] == "quota_for_entity_exceeded"
+                    assert CONTENT not in response.text and IMAGE_KEY not in response.text
+                    before_invalid_image = len(requests)
+                    for image_path in ["/v1/images/edits", "/v1/images/generations"]:
+                        for override in [
+                            {"api_base": "https://example.com"},
+                            {"seed": 1},
+                            {"extra_body": {"api_key": KEY}},
+                            {"wrong_field": True},
+                            {"response_format": "url"},
+                        ]:
+                            body = {"model": "image-gpt-2.5-flare", "prompt": CONTENT, **override}
+                            response = (
+                                client.post(
+                                    image_path,
+                                    headers=headers,
+                                    data={
+                                        key: json.dumps(value) if isinstance(value, dict) else value
+                                        for key, value in body.items()
+                                    },
+                                    files={"image": ("a.png", b"synthetic", "image/png")},
+                                )
+                                if image_path.endswith("edits")
+                                else client.post(image_path, headers=headers, json=body)
+                            )
+                            calls += 1
+                            assert response.status_code == 400
+                    for options in [
+                        {"gateway": {"byok": {"apiKey": KEY}}},
+                        {"google": {"imageConfig": {"api_base": "https://example.com"}}},
+                    ]:
+                        response = client.post(
+                            "/v1/chat/completions",
+                            headers=headers,
+                            json={
+                                "model": "image-nano-banana-2.1",
+                                "messages": [{"role": "user", "content": CONTENT}],
+                                "providerOptions": options,
+                            },
+                        )
+                        calls += 1
+                        assert response.status_code == 400
+                    assert len(requests) == before_invalid_image
+                    for endpoint in ["/v1/models", "/v1/model/info"]:
+                        assert (
+                            client.get(endpoint + "?model=vision", headers=headers).status_code
+                            == 400
+                        )
+                        assert client.post(endpoint, headers=headers).status_code == 404
+                        calls += 2
                     for purpose, effort in [
                         ("chat", "low"),
                         ("chat:high", "medium"),
@@ -536,6 +764,7 @@ def run(unset=False):
                 assert (
                     CONTENT not in logs
                     and KEY not in logs
+                    and IMAGE_KEY not in logs
                     and image not in logs
                     and "arbitrary-client-key" not in logs
                 )
@@ -568,7 +797,9 @@ def run(unset=False):
                 assert all(
                     "upstream=true" in line
                     for line in lines
-                    if "status=200" in line and "purpose=models" not in line
+                    if "status=200" in line
+                    and "purpose=models" not in line
+                    and "purpose=model-info" not in line
                 )
                 assert not external_attempts
         finally:

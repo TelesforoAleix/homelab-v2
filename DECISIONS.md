@@ -343,3 +343,19 @@ proxy startup without it. A 3-second connect limit, no retries and no fallback m
 Mac serving fail fast rather than silently moving a long ingest back to the slow CPU.
 Private state, PID start-time checks and content-disabled logs follow vision, with no
 automatic start or wake lock.
+
+
+**2026-10-14 — Hosted image purposes share LiteLLM with a separate gateway budget.**
+The owner selected Nano Banana 2, Nano Banana 2.1, both GPT Image 2.5 variants (Flare and
+Sunburst), and FLUX 3 Image if its edit route works. Five `image-*` entries use the OpenAI
+provider path to Vercel, because the pinned Vercel provider has no image-edit config.
+Only images use a new Compose secret with a $20 monthly key budget; chat's key is unchanged.
+The proxy exposes edits, generations and capability discovery, while Nano Banana 2.1 retains
+its chat request shape. Capability discovery projects only names and configured profiles,
+never LiteLLM deployment metadata. Published nested settings remain narrowly allowed, and
+image errors are sanitized with a clear 402 budget message. No node image processing,
+retries, fallback, proxy budget or master key. Direct proofs must supply response forms and
+timings before merge; documented reference limits are not represented as full-count tests.
+GPT entries use LiteLLM's native parameter-drop setting for the legacy `response_format`
+selector rejected by its generation validation; GPT output is implicitly base64 and URL
+requests are refused. No provider adapter or image conversion is introduced.

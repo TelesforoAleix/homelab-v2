@@ -19,6 +19,11 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
         "translate",
         "vision",
         "vision:xhigh",
+        "image-nano-banana-2",
+        "image-nano-banana-2.1",
+        "image-gpt-2.5-flare",
+        "image-gpt-2.5-sunburst",
+        "image-flux-3",
     }
     for purpose, effort in [
         ("chat", "low"),
@@ -105,19 +110,69 @@ def test_proxy_is_the_only_network_member_and_gateway_secret_holder():
     assert "ports" not in proxy
     assert proxy["networks"] == ["default", "models"]
     assert compose["networks"]["models"] == {"name": "homelab-models"}
-    assert proxy["secrets"] == ["gateway_api_key"]
+    assert proxy["secrets"] == ["gateway_api_key", "image_gateway_api_key"]
+    assert compose["secrets"]["image_gateway_api_key"] == {
+        "file": "./secrets/image_gateway_api_key"
+    }
     assert "HOMELAB_GATEWAY_API_KEY" not in proxy["environment"]
+    assert "HOMELAB_IMAGE_GATEWAY_API_KEY" not in proxy["environment"]
     assert proxy["environment"]["LITELLM_LOCAL_MODEL_COST_MAP"] == "True"
     assert proxy["environment"]["DISABLE_ADMIN_UI"] == "True"
     for name, service in services.items():
         if name != "litellm":
             assert "models" not in service.get("networks", [])
             assert "gateway_api_key" not in service.get("secrets", [])
+            assert "image_gateway_api_key" not in service.get("secrets", [])
     for name in ["api", "worker"]:
         assert not any(
             "GATEWAY" in key or "LOCAL_BASE" in key for key in services[name]["environment"]
         )
         assert services[name]["depends_on"]["litellm"] == {"condition": "service_healthy"}
+
+
+def test_image_profiles_and_key_isolation():
+    config = yaml.safe_load((ROOT / "config/litellm.yaml").read_text())
+    expected = {
+        "image-nano-banana-2": ("google/gemini-3.1-flash-image", 14, "images/edits", "gemini"),
+        "image-nano-banana-2.1": (
+            "google/gemini-nano-banana-2.1",
+            14,
+            "chat/completions",
+            "gemini",
+        ),
+        "image-gpt-2.5-flare": ("openai/gpt-image-2.5-flare", 16, "images/edits", "openai"),
+        "image-gpt-2.5-sunburst": ("openai/gpt-image-2.5-sunburst", 16, "images/edits", "openai"),
+        "image-flux-3": ("bfl/flux-3-image", 10, "images/edits", "flux"),
+    }
+    for row in config["model_list"]:
+        spec = row["litellm_params"]
+        if row["model_name"] not in expected:
+            assert spec["api_key"] != "os.environ/HOMELAB_IMAGE_GATEWAY_API_KEY"
+            continue
+        model, references, endpoint, family = expected[row["model_name"]]
+        assert ":" not in row["model_name"]
+        assert spec["model"] == "openai/" + model
+        assert spec["api_base"] == "https://ai-gateway.vercel.sh/v1"
+        assert spec["api_key"] == "os.environ/HOMELAB_IMAGE_GATEWAY_API_KEY"
+        assert spec["timeout"] >= 300
+        info = row["model_info"]
+        assert info["mode"] == "image_generation"
+        assert info["paid"] is True and info["placeholder"] is False
+        assert info["endpoint"] == endpoint and info["prompt_family"] == family
+        assert info["max_references"] == references and info["reference_max_side"] == 2048
+        assert info["display_name"] and info["licence"]
+        # Nulls are permitted only while the PR waits for its direct proof calls.
+        assert info["seconds_per_image"] is None or info["seconds_per_image"] > 0
+        assert info["response"] in {None, "b64_json", "url", "message_images"}
+        assert info["aspect_ratios"]["field"] and info["aspect_ratios"]["values"]
+        setting = info.get("resolutions", info.get("qualities"))
+        assert setting["field"] and setting["values"]
+        for option in info["advanced"]:
+            assert {"name", "type", "default"} <= option.keys()
+            assert "values" in option or "range" in option
+            assert option["name"] != "seed"
+        assert all(price > 0 for price in info["price_per_image"].values())
+        assert info["price_checked"] == "2026-10-14"
 
 
 def test_private_mac_url_only_reaches_proxy_and_has_safe_unset_default():

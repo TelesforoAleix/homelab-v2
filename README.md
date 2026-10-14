@@ -24,6 +24,8 @@ Solid parts are built; dashed parts are planned.
   on the owner’s manually started Mac for bulk ingest. See the
   [Mac serving runbook](docs/operations.md#mac-bulk-embedding-serving).
 - Knowledge endpoints: `POST /v1/knowledge/query` and `/v1/knowledge/answer`; jobs persist in Postgres.
+- Hosted images use five `image-*` purposes through LiteLLM, with capability profiles at
+  `GET /v1/model/info`, reference edits and a separate $20 monthly gateway-key budget.
 - [ARCHITECTURE.md](ARCHITECTURE.md) explains the boundaries and rules;
   [DECISIONS.md](DECISIONS.md) records the choices behind them.
 

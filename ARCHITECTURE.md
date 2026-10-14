@@ -11,7 +11,7 @@ Other Compose clients ── homelab-models ── LiteLLM (no published port)
                                             │ default network
                               ┌─────────────┴──────────────┐
                        Vercel AI Gateway       llama-embed / llama-embed-large
-                         (hosted chat)           (local embeddings)
+                      (hosted chat/images)        (local embeddings)
 
 api / worker ── Postgres + pgvector (private default network)
 ```
@@ -143,7 +143,24 @@ Clients keep pages queued and supply prompts, DPI, temperature and completion li
 No Mac login/boot service or wake lock is installed. PID and content-disabled log stay private
 in the owner’s home. Image inputs must be `data:` URLs.
 
-Names are `purpose:tier`; a bare purpose is standard, and embeddings have no tiers. Clients
+Five hosted image purposes use the gateway through OpenAI-path entries:
+`image-nano-banana-2`, `image-nano-banana-2.1`, `image-gpt-2.5-flare`,
+`image-gpt-2.5-sunburst` and `image-flux-3`. Only these entries use
+`/run/secrets/image_gateway_api_key`, read into `HOMELAB_IMAGE_GATEWAY_API_KEY` by the
+entrypoint. It has the existing key's `root:10001` `0440` protection and a separate $20
+monthly budget set in Vercel. The cap is soft: the crossing request completes, then image
+calls return 402 `quota_for_entity_exceeded`, with a fixed budget message. It resets on the
+1st at 00:00 UTC. Chat and embeddings keep their existing entries and keys.
+Image requests have 300-second timeouts without retries or fallbacks. LiteLLM only routes:
+clients supply prompts, sizes and references; the node does no image processing.
+Nano Banana 2.1 uses chat completions with `modalities: [text, image]`; the other four
+use multipart image edits (or JSON generations without references). `/v1/model/info` returns
+only `model_name` and configured `model_info` for every entry, never deployment parameters.
+Image profiles publish reference limits, settings, terms, prices and measured response/timing.
+Published nested settings are allowed only at their specified paths, preventing routing
+overrides inside provider options. Provider image errors are sanitized at the HTTP boundary.
+
+Names are `purpose:tier`; image purposes and embeddings have no tiers. Clients
 choose tiers themselves. There is no wildcard, pass-through, default model or fallback.
 Unknown names, deployment model ids and unavailable tiers receive LiteLLM's default
 OpenAI-shaped 4xx and never reach a provider. The pre-call hook checks against the same config
@@ -163,7 +180,9 @@ named network, alongside the private default network it uses to reach both embed
 Postgres, API and both embedding servers do not join the client network. LiteLLM publishes
 no host port.
 The key sent by a client is accepted and ignored; there is no master key, database, UI or
-virtual key configuration. HTTP middleware exposes only the three `/v1` model endpoints and
+virtual key configuration. HTTP middleware exposes `GET /v1/models`, `GET /v1/model/info`,
+`POST /v1/chat/completions`, `POST /v1/embeddings`, `POST /v1/images/edits`,
+`POST /v1/images/generations` and
 liveness; management endpoints and LiteLLM-specific request fields are refused. Provider
 headers are removed and upstream errors are reduced to status and a generic message. `/v1`
 only grows through new purposes and optional fields; incompatible changes go under `/v2`.
