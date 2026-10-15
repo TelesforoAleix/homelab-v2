@@ -426,7 +426,8 @@ that command lists recognised `codex exec`, model servers and GPU jobs descendin
 VS Code and refuses. Python and other possible GPU runtimes are conservatively included even
 when their script names do not mention inference. `--confirm-kill` is the owner's explicit override. Never use that override
 with the production app list from a chat terminal. Jobs inherit a marker that refuses entry
-into Inference, even with the confirmation flag. Registered job executables are owner-trusted
+into Inference, even with the confirmation flag; worker ancestry also catches wrappers that
+strip environment variables. Registered job executables are owner-trusted
 code, not a sandbox for untrusted programs.
 
 When every router model has remained unloaded/sleeping and no job has run for 15 minutes,

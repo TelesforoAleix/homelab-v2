@@ -43,6 +43,7 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(p, "settings", lambda: power.copy())
     monkeypatch.setattr(p, "router_models", lambda: models.copy())
     monkeypatch.setattr(p, "vscode_work", lambda: [])
+    monkeypatch.setattr(p, "processes", lambda: {})
     monkeypatch.setattr(
         p,
         "set_models",
@@ -374,3 +375,18 @@ def test_job_worker_records_exit_and_propagates_context(world, monkeypatch):
 def test_cleanup_state_uses_running_process_not_loaded_agent(monkeypatch, output, expected):
     monkeypatch.setattr(p, "run", lambda *args, **kwargs: output)
     assert p.cleanup_running() is expected
+
+
+def test_worker_ancestry_prevents_switch_when_environment_is_stripped(world, monkeypatch):
+    monkeypatch.delenv("HOMELAB_PROFILE_JOB", raising=False)
+    monkeypatch.setattr(
+        p,
+        "processes",
+        lambda: {
+            os.getpid(): (20, "/usr/bin/python homelab-profile switch inference --confirm-kill"),
+            20: (10, "/usr/bin/env -i"),
+            10: (1, "/usr/bin/python /private/checkout/mac/homelab-profile job-worker example"),
+        },
+    )
+    with pytest.raises(ValueError, match="forbidden"):
+        p.switch("inference", world[0], confirm=True)

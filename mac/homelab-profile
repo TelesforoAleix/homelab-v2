@@ -247,6 +247,23 @@ def under_vscode():
     return os.getpid() in descendants(rows, roots)
 
 
+def job_context():
+    if os.environ.get("HOMELAB_PROFILE_JOB"):
+        return True
+    # Also recognise a worker ancestor when a job uses env -i or another wrapper
+    # that strips environment variables. Registered executables remain owner-trusted.
+    rows = processes()
+    pid = os.getpid()
+    seen = set()
+    while pid in rows and pid not in seen:
+        seen.add(pid)
+        parent, command = rows[pid]
+        if re.search(r"\bhomelab-profile\s+job-worker\b", command):
+            return True
+        pid = parent
+    return False
+
+
 def jobs():
     return load(STATE / "jobs.json", {})
 
@@ -301,7 +318,7 @@ def switch(name, cfg, confirm=False, skip=False, automatic=False):
     target = cfg["profiles"][name]
     # Check BEFORE every side effect, even with a test list: make the guard easy to prove.
     if name == "inference":
-        if automatic or os.environ.get("HOMELAB_PROFILE_JOB"):
+        if automatic or job_context():
             raise ValueError("automatic entry into Inference is forbidden")
         work = vscode_work()
         if work and not confirm:

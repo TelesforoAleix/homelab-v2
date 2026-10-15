@@ -414,5 +414,5 @@ keeps settings editable without granting arbitrary commands; rejects symlinks, n
 oversize or foreign-owned files; and caps GPU wired memory at 44 GiB. Install only after merge
 with the owner's password and protected root-owned parent directories. launchd owns calendar
 jobs and deferred idle launches; one pending bit coalesces missed runs, without a work queue.
-A job context marker rejects Inference entry, and jobs execute outside the VS Code process
-tree. The public example contains no owner's app list or paths.
+A job context marker and worker-ancestry check reject Inference entry, including through
+wrappers that strip environment variables; jobs execute outside the VS Code process tree. The public example contains no owner's app list or paths.
