@@ -143,7 +143,8 @@ High Power and disables sleep only for AC (`pmset -c`), and raises the global GP
 to 45056 MB. Entry reads per-source settings from `pmset -g custom` and records the AC power
 mode, AC sleep and GPU limit; every return restores those exact bounded values from private
 recovery state. Battery power and display settings are never written. Only the owner enters
-Inference; a VS Code descendant-work guard requires explicit confirmation before side effects.
+Inference, by hand or through the owner-set night window below; a VS Code descendant-work guard
+requires explicit confirmation before side effects.
 The root-owned `homelab-profile-apply` accepts only the two profile names through exact sudoers
 arguments, validates bounded numeric settings from the invoking user's private files and calls
 only fixed pmset/sysctl commands with an isolated interpreter. No user code executes as root.
@@ -163,6 +164,23 @@ to zero. The helper refuses Inference without a complete bounded recovery record
 Working settings are validated, then ignored without rewriting the private configuration.
 Manual changes are compared to observed profiles, rather than trusting a selected-name flag.
 
+The SwiftUI menu bar app under `mac/MenuBar` is a client of `homelab-profile`: it runs the
+command recorded in its bundle and renders its JSON (status, `plan-inference`, the guard's
+refusal, `waiting`, `usage`, `schedule`), holding no profile rules. It is ad hoc signed into
+`~/Applications` and started at login by the `org.homelab.menu` user LaunchAgent; it uses only
+Apple's SDK. `waiting` makes two read-only calls over the node-only `homelab-agent` SSH account:
+the last 24 hours of `homelab.service` journal lines with `profile_blocked=true`, and public
+`/v1/model/info` from inside the LiteLLM container. It returns counts per purpose, with an
+estimate only where `seconds_per_image` is published, and keeps nothing; there is no queue.
+`usage` reads only local files: Codex's session logs and a private snapshot that
+`mac/usage-snapshot` writes from the owner's Claude Code status line, holding only the two
+rate-limit windows and a time. The night window is the one unattended entry into Inference,
+owner-set and off by default, in private configuration. The existing profile agent evaluates each
+selected night once at its start: only from exact Working, on AC, with no VS Code guard work, then
+through the same guarded switch, which still refuses job context. It records ownership privately
+and returns to Working at the end only if no manual switch, service action or `schedule off`
+ended that ownership.
+
 The router's private preset allow-list omits disallowed services; native preset reload unloads
 removed children without request rewriting or changes to model flags. The gateway checks the
 Mac's native model list before inference. An absent preset receives a fixed purpose-specific
@@ -172,7 +190,7 @@ Light Mac jobs use individual launchd calendar agents and run only in an exact p
 profile, on AC power with idle input. Missed runs coalesce into a pending bit, retried through
 launchd at the next eligible idle check. Jobs never enter Inference and never run under a
 VS Code terminal. These owner-trusted local commands are independent of the node's durable
-Procrastinate jobs; no Mac work queue or menu bar app is introduced.
+Procrastinate jobs; no Mac work queue is introduced.
 The deployment hook keeps each purpose's 3-second connect and 300-second request limits,
 without retries, fallback or stopped-Mac alerts.
 

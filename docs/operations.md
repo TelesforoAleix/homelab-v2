@@ -432,7 +432,8 @@ sets the global GPU wired limit to 45056 MB. Battery power mode/sleep and both s
 display settings are untouched. Inference requires AC power: `pmset -g batt` is checked before any switching
 side effect, with the clear refusal `Inference requires AC power; connect the charger before
 switching`. The helper rechecks AC before applying Inference settings. Its power mode must
-be 2 (High Power). Only an explicit owner `switch inference` enters it. Before any side effect,
+be 2 (High Power). Only an explicit owner `switch inference`, or the owner's
+[night window](#menu-bar-app-usage-and-night-window), enters it. Before any side effect,
 that command lists recognised `codex exec`, model servers and GPU jobs descending from
 VS Code and refuses. Python and other possible GPU runtimes are conservatively included even
 when their script names do not mention inference. `--confirm-kill` is the owner's explicit override. Never use that override
@@ -588,6 +589,99 @@ The cycle checks the native metadata path before changing test configuration. Un
 battery entry refusal, the full grace period, timer reset, pause/AC resume, suspended idle return
 and manual Working restoration. Pinned gateway tests cover both purposes’ paused messages,
 audit flags and invalid metadata. Actual privileged restoration is verified after owner installation.
+
+### Menu bar app, usage and night window
+
+The SwiftUI `MenuBarExtra` app is a thin client of `mac/homelab-profile`: every state, plan,
+guard and switch comes from the command's JSON, and the app holds no profile rules. Its menu
+shows *Working*, *Inference* (or *Inference, paused* with the reason), or *Custom*, and each
+service's state with a Start/Stop button (one service changes the state to *Custom*, as the
+command does). *Working* is one click. *Inference…* first runs `plan-inference` and shows the
+configured apps it would quit, the dictation it would stop and the VS Code guard's running work,
+then asks once. A battery refusal is shown as such, without side effects. The app then runs an
+unconfirmed `switch inference`; if the guard refuses, the app repeats the guard's warning and its
+work list and offers **Switch anyway** (`--confirm-kill`) or **Cancel**. Never use *Switch
+anyway* while a chat or job under VS Code must survive.
+
+**Build, install and start** (from the owner's checkout, outside any sandbox; it switches nothing):
+
+```bash
+mac/install-menu-bar.sh
+```
+
+It builds `mac/MenuBar` in release mode, replaces `~/Applications/HomeLab.app`, signs it ad hoc
+(`codesign --sign -`) and loads the `org.homelab.menu` user LaunchAgent, which starts the app now
+and at every login. A LaunchAgent works with an ad hoc signature; no Developer ID is needed. The
+bundle's `Info.plist` records this checkout's `mac/homelab-profile` and interpreter
+(`.venv/bin/python3`, else `python3`), so the app runs the same command as the
+`org.homelab.profile` agent. Rerun the script after pulling changes. The installer also copies
+`usage-snapshot` to `~/.local/bin`. The menu bar icon shows the state: laptop (*Working*), bolt
+(*Inference*), pause (*paused*), sliders (*Custom*).
+
+The commands it uses, all JSON on stdout:
+
+```bash
+mac/homelab-profile plan-inference      # apps/dictation to stop, guard work, AC refusal
+mac/homelab-profile waiting             # refusals per purpose, last 24 hours
+mac/homelab-profile usage               # Codex and Claude 5-hour/7-day usage
+mac/homelab-profile schedule show
+mac/homelab-profile schedule set --start 23:00 --end 07:00 --days mon,tue,wed,thu,fri
+mac/homelab-profile schedule off
+```
+
+**Waiting work.** `waiting` runs two read-only commands over `ssh homelab-agent` (batch mode,
+10-second connect limit): `journalctl -u homelab.service --since '24 hours ago'` filtered to
+`profile_blocked=true` audit lines, and the public `GET /v1/model/info` from inside the LiteLLM
+container (it publishes no host port). It counts `model_call` lines per purpose. An estimate is
+count × the purpose's `seconds_per_image`; purposes publishing none (today `vision` and the
+embeddings) show the count with “estimate unavailable”. Nothing is written on the node or
+locally, and there is no queue. Unreachable node: the menu says waiting work is unavailable.
+
+**Usage, on *Refresh*.** `usage` reads local files only:
+
+- Codex: the newest `rate_limits` entry in `~/.codex/sessions/**/*.jsonl` with `primary` 300 and
+  `secondary` 10,080 window minutes (other limit families are ignored), newest files first.
+  `used_percent` and `resets_at` become the 5-hour and 7-day figures, as of the entry's timestamp.
+- Claude: the snapshot written by Claude Code's status line, as of the time it was written.
+  Until it exists, Claude shows “unknown”.
+
+To feed the Claude snapshot, add one line to the owner's own status-line script, after the line
+that reads Claude Code's JSON from stdin into `$input`:
+
+```bash
+printf '%s' "$input" | "$HOME/.local/bin/usage-snapshot"
+```
+
+`usage-snapshot` keeps only `rate_limits.five_hour` and `seven_day` (`used_percentage`,
+`resets_at`) plus the time, in mode-0600 `~/.local/state/homelab-usage/claude.json`. It never
+prints and always exits 0, so it cannot change or break the status line; input without both
+windows leaves the previous snapshot. Usage values stay on the Mac and out of git.
+
+**Night window.** Off by default. Set it in the menu (start, end, days, *Save*; the switch turns
+it on or off) or with `schedule`; it is stored in private `~/.config/homelab/night-window.json`.
+The existing `org.homelab.profile` agent (installed by `mac/homelab-profile install`) evaluates
+each selected night once, within five minutes after its start time. It enters Inference only when
+the observed state is exactly *Working*, the Mac is on AC and the VS Code guard finds no running
+work; the switch itself repeats the AC, job and guard checks. Otherwise, including a Mac that was
+asleep at the start time, that night is skipped and the menu shows the reason. Saving the window
+while inside it never enters it that night. The usual 15-minute idle return and battery pause
+still apply. At the end time the agent returns to Working only if the window entered the session
+and no manual switch, Start/Stop or `schedule off` has happened since; those end its ownership.
+Days name the night by its start day. Jobs and gateway requests still never enter Inference; a
+job cannot set the window, and the window's entry is refused in job context.
+
+**Turning it all off:**
+
+```bash
+mac/homelab-profile schedule off
+launchctl bootout "gui/$(id -u)/org.homelab.menu"
+rm "$HOME/Library/LaunchAgents/org.homelab.menu.plist"
+rm -rf "$HOME/Applications/HomeLab.app"
+```
+
+Remove the `usage-snapshot` line from the status line, then optionally
+`rm "$HOME/.local/bin/usage-snapshot"` and `rm -r "$HOME/.local/state/homelab-usage"`. The profile
+agent and its idle return and jobs keep working without the app.
 
 ## Mac action listener
 

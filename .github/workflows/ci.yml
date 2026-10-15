@@ -30,3 +30,9 @@ jobs:
       - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  menu-bar:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build the menu bar app as the installer does
+        run: swift build --package-path mac/MenuBar -c release
