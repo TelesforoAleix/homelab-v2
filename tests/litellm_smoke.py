@@ -56,12 +56,15 @@ class Upstream(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        self.send_response(200)
+        profile = self.path == "/homelab-profile.json"
+        self.send_response(getattr(self.server, "profile_status", 200) if profile else 200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(
             json.dumps(
-                {
+                getattr(self.server, "profile_state", {"paused_on_battery": False})
+                if profile
+                else {
                     "data": [
                         {"id": model}
                         for model in getattr(self.server, "models", ["vision", REAL_LARGE])
@@ -691,6 +694,43 @@ def run(unset=False):
                                 for line in output.getvalue().splitlines()
                             )
                         vision_upstream.models = ["vision", REAL_LARGE]
+                        for purpose, endpoint, payload in (
+                            ("vision", "/v1/chat/completions", {"messages": []}),
+                            ("embed-large-bulk", "/v1/embeddings", {"input": CONTENT}),
+                        ):
+                            vision_upstream.models = []
+                            for code, state, paused in (
+                                (200, {"paused_on_battery": True}, True),
+                                (200, {"paused_on_battery": "true"}, False),
+                                (200, [CONTENT, KEY], False),
+                                (404, {"paused_on_battery": True}, False),
+                            ):
+                                vision_upstream.profile_status = code
+                                vision_upstream.profile_state = state
+                                before_refusal = len(requests)
+                                response = client.post(
+                                    endpoint, headers=headers, json={"model": purpose, **payload}
+                                )
+                                calls += 1
+                                assert response.status_code == 503, response.text
+                                assert response.json()["error"]["message"] == (
+                                    f"{purpose} is paused because the Mac is on battery"
+                                    if paused
+                                    else f"{purpose} is not available until Inference"
+                                )
+                                assert len(requests) == before_refusal
+                                assert CONTENT not in response.text and KEY not in response.text
+                                assert any(
+                                    f"purpose={purpose} " in line
+                                    and "status=503" in line
+                                    and "profile_blocked=true" in line
+                                    and "upstream=false" in line
+                                    and f"profile_paused={str(paused).lower()}" in line
+                                    for line in output.getvalue().splitlines()
+                                )
+                        vision_upstream.models = ["vision", REAL_LARGE]
+                        vision_upstream.profile_status = 200
+                        vision_upstream.profile_state = {"paused_on_battery": False}
                         vision_upstream.shutdown()
                         vision_upstream.server_close()
                         before_stopped = len(requests)

@@ -390,7 +390,9 @@ routes. Leave the router running.
 
 `mac/homelab-profile` is the command interface for usage profiles. Run it outside the
 sandbox. `status` emits one JSON object: `profile` (`working`, `inference`, or `custom`),
-`services`, `settings`, `apps`, `running_jobs`, `settings_skipped`, and `return_pending`.
+`services`, `settings`, `apps`, `running_jobs`, `settings_skipped`, `return_pending`,
+`paused` and `pause_reason`. A normal pause reports `profile: inference`, `paused: true` and
+`pause_reason: on_battery`; manual differences can still make the observed profile custom.
 It observes launchd, running apps, power settings and native router presets rather than
 trusting the last selected profile. Starting/stopping a service or editing a setting makes
 it `custom` unless it exactly matches a configured profile. Model loading/sleep is activity,
@@ -437,11 +439,23 @@ strip environment variables. Registered job executables are owner-trusted
 code, not a sandbox for untrusted programs.
 
 When every router model has remained unloaded/sleeping and no job has run for 15 minutes,
-the LaunchAgent returns to Working. It also returns as soon as its existing 30-second check
-notices the Mac is unplugged, even when models or jobs are active. A private, atomic recovery
-record at `~/.local/state/homelab-profile/session.json` records apps and services stopped by
-the switch
-and `previous_powermode` before any change; the return reopens only those and restores that
+the LaunchAgent returns to Working, except while paused. A short unplug has no profile
+effect. The existing 30-second check records the first battery observation; after 10 continuous
+minutes on battery it pauses Inference, empties the router allow-list and unloads every model.
+Apps and dictation stay closed. Starting a model service by hand is also refused while paused,
+and no scheduled job starts. Sleep prevention and the GPU limit stay unchanged. Power-mode
+changes on battery do not make the owner-entered Inference session custom.
+
+Paused Inference waits for power or the owner; it never returns to Working merely because the
+idle timeout elapses. Replugging resets the battery timer and automatically resumes the same
+Inference session, applying High Power before restoring its allow-list. Resumption starts a
+fresh 15-minute idle window without replacing the original app/service or prior-mode record.
+If replugging is observed before ten minutes, the grace timer resets; the ordinary idle rule
+still applies during this grace period. The owner can `switch working` at any time, including
+while paused on battery, to restore everything. If that return fails partway through, the
+existing check retries Working restoration instead of resuming Inference on AC. A private,
+atomic recovery record at `~/.local/state/homelab-profile/session.json` records apps and
+services stopped by the switch and `previous_powermode` before any change; the return reopens only those and restores that
 recorded power mode. An ordinary Working switch with no pending return leaves power mode
 alone. The root helper reads the record while it is pending; it is cleared only after
 settings and app/service restoration succeed. Apps/services already stopped remain stopped
@@ -457,10 +471,18 @@ changing any model flags. Native `/models?reload=1` reconciles the presets and u
 models; the command verifies the resulting list. Allowed models keep their processes. This
 requires a llama.cpp build supporting native preset reload. A mismatch fails the switch.
 The gateway checks the native model list before Mac inference, using the existing private URL
-and connection limit. A missing preset returns OpenAI-shaped HTTP 503 with, for example,
+and connection limit. A dedicated private `public/` directory under router state holds only
+`homelab-profile.json`, served by llama.cpp’s native `--path` option on the existing router
+address and port. It publishes exactly one boolean, `paused_on_battery`, never private profile
+contents or paths. See the [native static-path option](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
+The updated router must be restarted once to enable that path; do so outside the sandbox when
+no ingest needs its models. This adds no listener or request proxy. A missing preset returns OpenAI-shaped HTTP 503 with, for example,
 `vision is not available until Inference`. Its existing audit line adds
 `profile_blocked=true`, with purpose and `upstream=false`, so waiting requests can be counted
-without content. Other upstream errors retain sanitising. Clients retain their own queues;
+without content. During battery pause the 503 instead says, for example,
+`vision is paused because the Mac is on battery`, with `profile_paused=true`. Only the native
+metadata boolean selects this fixed message. Missing/invalid metadata falls back to the normal
+availability refusal; upstream bodies and diagnostics are never passed through. Other upstream errors retain sanitising. Clients retain their own queues;
 requests never change profiles. A manual stop of a purpose has the same refusal wording.
 
 Each registered job has its own launchd `StartCalendarInterval`. It runs only in an exact
@@ -537,8 +559,19 @@ To rerun only the cycle from production configuration, use
 `uv run python tests/mac_profile_acceptance.py cycle`; it prepares the safe TextEdit-only test
 configuration and restores the original configuration afterwards, without repeating the guard proof.
 It verifies the captured prior mode and unchanged observed settings, quits TextEdit if the
-test launched it, and removes its fixture. Unit tests cover battery refusal and unplug return;
-actual privileged power-mode restoration is verified after owner installation.
+test launched it, and removes its fixture. Before the first cycle using pause metadata,
+restart the router outside the sandbox:
+
+```bash
+mac/homelab-router stop
+mac/homelab-router start
+uv run python tests/mac_profile_acceptance.py cycle
+```
+
+The cycle checks the native metadata path before changing test configuration. Unit tests cover
+battery entry refusal, the full grace period, timer reset, pause/AC resume, suspended idle return
+and manual Working restoration. Pinned gateway tests cover both purposes’ paused messages,
+audit flags and invalid metadata. Actual privileged restoration is verified after owner installation.
 
 ## Mac action listener
 

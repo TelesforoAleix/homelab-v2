@@ -110,6 +110,11 @@ def healthy(saved):
 
 
 def write_presets():
+    public = STATE / "public"
+    public.mkdir(mode=0o700, exist_ok=True)
+    status = public / "homelab-profile.json"
+    if not status.exists():
+        status.write_text('{"paused_on_battery": false}\n')
     weights = VISION / "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
     projector = VISION / "mmproj-F16.gguf"
     embed = EMBED / "Qwen3-Embedding-4B-Q8_0.gguf"
@@ -153,6 +158,8 @@ def router_args(address):
         "--port",
         str(PORT),
         "--log-disable",
+        "--path",
+        str(STATE / "public"),
     ]
 
 

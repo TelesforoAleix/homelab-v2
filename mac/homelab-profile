@@ -37,6 +37,7 @@ DEFAULTS = {
     },
 }
 SERVICES = set(MODELS) | {"cleanup", "voiceink"}
+BATTERY_GRACE_SECONDS = 600
 
 
 def run(*args, check=True):
@@ -142,11 +143,13 @@ def router_models():
     }
 
 
-def set_models(allowed):
+def set_models(allowed, *, paused=False):
     # Native reload removes disallowed presets AND unloads their children. No HTTP proxy.
     lib = router()
     policy = lib["STATE"] / "allowed.json"
     save(policy, sorted(MODELS[name] for name in allowed if name in MODELS))
+    if paused:
+        save(lib["STATE"] / "public/homelab-profile.json", {"paused_on_battery": True})
     lib["write_presets"]()
     saved = lib["record"]()
     if not lib["healthy"](saved):
@@ -156,6 +159,8 @@ def set_models(allowed):
     expected = {MODELS[name] for name in allowed if name in MODELS}
     if actual != expected:
         raise ValueError("router did not enforce presets; switch incomplete")
+    if not paused:
+        save(lib["STATE"] / "public/homelab-profile.json", {"paused_on_battery": False})
 
 
 def registered(label):
@@ -194,6 +199,11 @@ def app(bundle, start):
 
 def service(name, start):
     if name in MODELS:
+        record = load(STATE / "session.json", {})
+        if record.get("return_pending") and record.get("paused"):
+            if start:
+                raise ProfileRefusal("Inference is paused because the Mac is on battery")
+            return
         current = {key for key, model in MODELS.items() if model in router_models()}
         set_models(current | {name} if start else current - {name})
     elif name == "voiceink":
@@ -312,6 +322,8 @@ def snapshot(cfg):
     states["voiceink"] = {"running": app_running(VOICE)}
     observed = settings()
     record = load(STATE / "session.json", {})
+    paused = bool(record.get("return_pending") and record.get("paused"))
+    on_ac = on_ac_power() if record.get("return_pending") else True
     apps = {
         bundle: app_running(bundle)
         for bundle in {app for profile in cfg["profiles"].values() for app in profile["close_apps"]}
@@ -319,14 +331,21 @@ def snapshot(cfg):
     matches = []
     for name, profile in cfg["profiles"].items():
         allowed = set(profile["services"])
+        if name == "inference" and paused:
+            allowed -= set(MODELS)
         services_match = all(states[s]["allowed"] == (s in allowed) for s in MODELS)
         services_match &= all(
             states[s]["running"] == (s in allowed) for s in ("cleanup", "voiceink")
         )
+        expected_settings = profile["settings"]
+        if name == "inference" and record.get("return_pending") and (paused or not on_ac):
+            expected_settings = {k: v for k, v in expected_settings.items() if k != "powermode"}
         if (
             services_match
-            and settings_match(name, observed, profile["settings"])
-            and (name != "inference" or on_ac_power())
+            and settings_match(name, observed, expected_settings)
+            and (name != "inference" or record.get("return_pending") or on_ac_power())
+            and (not paused or name == "inference")
+            and (not paused or not models)
             and not any(apps[bundle] for bundle in profile["close_apps"])
         ):
             matches.append(name)
@@ -340,6 +359,8 @@ def snapshot(cfg):
         "settings_skipped": bool(record.get("skip_settings")),
         "running_jobs": [name for name, job in jobs().items() if job_live(job)],
         "return_pending": bool(record.get("return_pending")),
+        "paused": paused,
+        "pause_reason": "on_battery" if paused else None,
     }
 
 
@@ -372,6 +393,10 @@ def switch(name, cfg, confirm=False, skip=False, automatic=False):
             "skip_settings": skip,
             "previous_powermode": previous_powermode,
         }
+        save(STATE / "session.json", record)
+    elif record.get("return_pending"):
+        # A failed Working return must be retried, not reversed by an AC resume.
+        record["return_requested"] = True
         save(STATE / "session.json", record)
     # Record recovery intent before quitting: cancellation/crashes retain a recovery record.
     for svc in ("cleanup", "voiceink"):
@@ -412,9 +437,11 @@ def switch(name, cfg, confirm=False, skip=False, automatic=False):
 
 
 def eligible(cfg):
-    current = snapshot(cfg)["profile"]
+    status = snapshot(cfg)
+    current = status["profile"]
     return (
-        current in cfg["profiles"]
+        not status.get("paused", False)
+        and current in cfg["profiles"]
         and cfg["profiles"][current]["jobs"]
         and on_ac_power()
         and idle_seconds() >= cfg.get("idle_seconds", 300)
@@ -430,19 +457,53 @@ def idle_seconds():
 
 def tick(cfg):
     record = load(STATE / "session.json", {})
-    if record.get("return_pending"):
-        if not on_ac_power():
-            switch("working", cfg, automatic=True)
-        else:
-            active = any(
-                state not in ("sleeping", "unloaded") for state in router_models().values()
-            )
-            active |= any(job_live(job) for job in jobs().values())
-            if active:
-                record["last_active"] = time.time()
+    if record.get("return_pending") and record.get("return_requested"):
+        switch("working", cfg, automatic=True)
+    elif record.get("return_pending"):
+        on_ac = on_ac_power()
+        now = time.time()
+        if not on_ac:
+            if "battery_since" not in record:
+                record["battery_since"] = now
                 save(STATE / "session.json", record)
-            elif time.time() - record["last_active"] >= cfg.get("return_seconds", 900):
-                switch("working", cfg, automatic=True)
+            if record.get("paused") or now - record["battery_since"] >= BATTERY_GRACE_SECONDS:
+                # Save intent first so a failed reload is retried and manual starts are refused.
+                record["paused"] = True
+                save(STATE / "session.json", record)
+                set_models(set(), paused=True)
+                return  # A pause never advances the idle return or starts jobs.
+        elif record.get("paused"):
+            # Resume the existing owner-entered session; do not recapture its recovery record.
+            if not record.get("skip_settings"):
+                run("/usr/bin/sudo", "-n", "/usr/local/sbin/homelab-profile-apply", "inference")
+                if not settings_match(
+                    "inference", settings(), cfg["profiles"]["inference"]["settings"]
+                ):
+                    raise ValueError("resume settings do not match; Inference remains paused")
+            try:
+                set_models(set(cfg["profiles"]["inference"]["services"]))
+            except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+                # Failed reload/verification must also leave the on-disk presets closed,
+                # so a router restart cannot bypass the still-paused session.
+                try:
+                    set_models(set(), paused=True)
+                except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+                    pass
+                raise
+            record["paused"] = False
+            record.pop("battery_since", None)
+            record["last_active"] = now
+            save(STATE / "session.json", record)
+        elif "battery_since" in record:
+            record.pop("battery_since")
+            save(STATE / "session.json", record)
+        active = any(state not in ("sleeping", "unloaded") for state in router_models().values())
+        active |= any(job_live(job) for job in jobs().values())
+        if active:
+            record["last_active"] = now
+            save(STATE / "session.json", record)
+        elif now - record["last_active"] >= cfg.get("return_seconds", 900):
+            switch("working", cfg, automatic=True)
     if any(job.get("pending") for job in jobs().values()) and eligible(cfg):
         for name, job in jobs().items():
             if job.get("pending") and not job_live(job):

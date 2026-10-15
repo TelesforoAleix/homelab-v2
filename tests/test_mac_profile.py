@@ -21,6 +21,7 @@ def module(name, filename):
 
 p = module("profile_command", "homelab-profile")
 helper = module("profile_helper", "homelab-profile-apply")
+REAL_SERVICE = p.service
 
 
 @pytest.fixture
@@ -48,7 +49,7 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(
         p,
         "set_models",
-        lambda allowed: (
+        lambda allowed, **kwargs: (
             models.clear(),
             models.update({p.MODELS[s]: "unloaded" for s in allowed if s in p.MODELS}),
         ),
@@ -466,19 +467,20 @@ def test_battery_refusal_is_clear_and_precedes_side_effects(world, monkeypatch, 
     assert not (p.STATE / "session.json").exists()
 
 
-def test_unplug_returns_even_while_models_and_jobs_are_active(world, monkeypatch):
+def test_short_unplug_keeps_inference_and_closed_apps(world, monkeypatch):
     cfg, live, models, power = world
     p.switch("inference", cfg)
     models["vision"] = "loaded"
     p.save(p.STATE / "jobs.json", {"example": {"pid": 1}})
     monkeypatch.setattr(p, "job_live", lambda record: True)
     monkeypatch.setattr(p, "on_ac_power", lambda: False)
-    assert p.snapshot(cfg)["profile"] == "custom"
+    assert p.snapshot(cfg)["profile"] == "inference"
     p.tick(cfg)
-    assert power["powermode"] == 1
-    assert live["cleanup"] and live["voiceink"] and live["com.apple.TextEdit"]
-    assert p.snapshot(cfg)["profile"] == "working"
-    assert not p.snapshot(cfg)["return_pending"]
+    assert power["powermode"] == 2
+    assert not live["cleanup"] and not live["voiceink"] and not live["com.apple.TextEdit"]
+    assert p.snapshot(cfg)["profile"] == "inference"
+    assert p.snapshot(cfg)["return_pending"]
+    assert not p.snapshot(cfg)["paused"]
 
 
 def test_failed_power_restoration_retains_recovery_record(world, monkeypatch):
@@ -601,3 +603,251 @@ def test_inference_requires_high_power_in_private_configuration(world, root_worl
     with pytest.raises(ValueError, match="Inference requires High Power"):
         helper.apply("inference")
     assert not calls
+
+
+@pytest.fixture
+def inference_session(world, monkeypatch):
+    cfg, live, models, power = world
+    cfg["return_seconds"] = 900
+    clock = {"now": 1000, "ac": True}
+    monkeypatch.setattr(p.time, "time", lambda: clock["now"])
+    monkeypatch.setattr(p, "on_ac_power", lambda: clock["ac"])
+    p.switch("inference", cfg)
+    return cfg, live, models, power, clock
+
+
+def pause_session(session):
+    cfg, _, models, _, clock = session
+    models["vision"] = "loaded"
+    clock["ac"] = False
+    p.tick(cfg)
+    clock["now"] += 600
+    p.tick(cfg)
+
+
+def test_battery_pause_waits_full_ten_minutes_and_keeps_recovery(inference_session):
+    cfg, live, models, power, clock = inference_session
+    original = p.load(p.STATE / "session.json", {})
+    models["vision"] = "loaded"
+    clock["ac"] = False
+    power["powermode"] = 1  # macOS/owner may select a battery-specific mode.
+    p.tick(cfg)
+    clock["now"] += 599
+    p.tick(cfg)
+    assert "vision" in models and not p.snapshot(cfg)["paused"]
+    clock["now"] += 1
+    p.tick(cfg)
+    status = p.snapshot(cfg)
+    assert status["profile"] == "inference" and status["paused"]
+    assert status["pause_reason"] == "on_battery"
+    assert not models
+    assert not any(live.values())
+    assert all(not status["services"][name]["allowed"] for name in p.MODELS)
+    record = p.load(p.STATE / "session.json", {})
+    for key in ("previous_powermode", "closed", "stopped"):
+        assert record[key] == original[key]
+
+
+def test_short_replug_resets_continuous_battery_timer(inference_session):
+    cfg, _, models, _, clock = inference_session
+    models["vision"] = "loaded"
+    clock["ac"] = False
+    p.tick(cfg)
+    clock.update(now=1500, ac=True)
+    p.tick(cfg)
+    assert "battery_since" not in p.load(p.STATE / "session.json", {})
+    clock.update(now=1600, ac=False)
+    p.tick(cfg)
+    clock["now"] = 2100
+    p.tick(cfg)
+    assert not p.snapshot(cfg)["paused"]
+    clock["now"] = 2200
+    p.tick(cfg)
+    assert p.snapshot(cfg)["paused"]
+
+
+def test_pause_disables_idle_return_until_power_or_owner(inference_session):
+    cfg, live, models, _, clock = inference_session
+    pause_session(inference_session)
+    clock["now"] += 100000
+    p.tick(cfg)
+    assert p.snapshot(cfg)["profile"] == "inference"
+    assert p.snapshot(cfg)["paused"] and p.snapshot(cfg)["return_pending"]
+    assert not models and not any(live.values())
+
+
+def test_resume_restores_high_power_before_models_and_restarts_idle_clock(
+    inference_session, monkeypatch
+):
+    cfg, live, models, power, clock = inference_session
+    pause_session(inference_session)
+    power["powermode"] = 1
+    native_set = p.set_models
+    calls = []
+
+    def set_models(allowed, **kwargs):
+        assert power["powermode"] == 2
+        calls.append(set(allowed))
+        native_set(allowed, **kwargs)
+
+    monkeypatch.setattr(p, "set_models", set_models)
+    clock.update(now=10000, ac=True)
+    p.tick(cfg)
+    status = p.snapshot(cfg)
+    assert status["profile"] == "inference" and not status["paused"]
+    assert status["pause_reason"] is None
+    assert calls == [set(cfg["profiles"]["inference"]["services"])]
+    assert not any(live.values())
+    record = p.load(p.STATE / "session.json", {})
+    assert record["previous_powermode"] == 1 and record["last_active"] == 10000
+    assert "battery_since" not in record
+    clock["now"] += 899
+    p.tick(cfg)
+    assert p.snapshot(cfg)["profile"] == "inference"
+    clock["now"] += 1
+    p.tick(cfg)
+    assert p.snapshot(cfg)["profile"] == "working"
+    assert power["powermode"] == 1 and all(live.values())
+
+
+def test_owner_can_return_to_working_while_paused_on_battery(inference_session):
+    cfg, live, _, power, _ = inference_session
+    pause_session(inference_session)
+    p.switch("working", cfg)
+    status = p.snapshot(cfg)
+    assert status["profile"] == "working" and not status["paused"]
+    assert not status["return_pending"]
+    assert power["powermode"] == 1 and all(live.values())
+
+
+def test_manual_heavy_starts_cannot_bypass_pause(inference_session):
+    pause_session(inference_session)
+    for name in p.MODELS:
+        with pytest.raises(p.ProfileRefusal, match="paused because the Mac is on battery"):
+            REAL_SERVICE(name, True)
+        REAL_SERVICE(name, False)  # Already stopped; must not erase the pause publication.
+    assert not inference_session[2]
+
+
+def test_paused_jobs_stay_blocked_even_after_replug_before_resume(world, monkeypatch):
+    monkeypatch.setattr(p, "snapshot", lambda cfg: {"profile": "inference", "paused": True})
+    monkeypatch.setattr(p, "idle_seconds", lambda: 10000)
+    assert not p.eligible(world[0])
+
+
+def test_failed_resume_keeps_models_blocked_and_recovery(inference_session, monkeypatch):
+    cfg, live, models, _, clock = inference_session
+    pause_session(inference_session)
+    clock["ac"] = True
+
+    def fail(*args):
+        raise ValueError("settings application failed")
+
+    monkeypatch.setattr(p, "run", fail)
+    with pytest.raises(ValueError):
+        p.tick(cfg)
+    assert not models and not any(live.values())
+    assert p.snapshot(cfg)["paused"] and p.snapshot(cfg)["return_pending"]
+
+
+def test_failed_pause_reload_is_retried(inference_session, monkeypatch):
+    cfg, _, _, _, clock = inference_session
+    clock["ac"] = False
+    p.tick(cfg)
+    clock["now"] += 600
+    native_set = p.set_models
+
+    def fail(*args, **kwargs):
+        raise ValueError("reload failed")
+
+    monkeypatch.setattr(p, "set_models", fail)
+    with pytest.raises(ValueError):
+        p.tick(cfg)
+    assert p.load(p.STATE / "session.json", {})["paused"]
+    monkeypatch.setattr(p, "set_models", native_set)
+    p.tick(cfg)
+    assert not inference_session[2] and p.snapshot(cfg)["paused"]
+
+
+def test_idle_return_still_applies_during_battery_grace(inference_session):
+    cfg, live, _, _, clock = inference_session
+    clock.update(now=1850, ac=False)
+    p.tick(cfg)
+    assert p.snapshot(cfg)["return_pending"]
+    clock["now"] = 1900
+    p.tick(cfg)
+    assert p.snapshot(cfg)["profile"] == "working" and all(live.values())
+
+
+def test_pause_publication_survives_reload_failures(monkeypatch, tmp_path):
+    def api(*args, **kwargs):
+        assert json.loads((tmp_path / "public/homelab-profile.json").read_text()) == {
+            "paused_on_battery": True,
+        }
+        raise ValueError("reload failed")
+
+    monkeypatch.setattr(
+        p,
+        "router",
+        lambda: {
+            "STATE": tmp_path,
+            "write_presets": lambda: None,
+            "record": lambda: {"address": "private"},
+            "healthy": lambda saved: True,
+            "api": api,
+        },
+    )
+    with pytest.raises(ValueError):
+        p.set_models(set(), paused=True)
+    assert json.loads((tmp_path / "allowed.json").read_text()) == []
+    # A failed resume must not erase the pause reason while models remain unavailable.
+    with pytest.raises(ValueError):
+        p.set_models({"vision", "embed-large-bulk"})
+    assert json.loads((tmp_path / "public/homelab-profile.json").read_text()) == {
+        "paused_on_battery": True,
+    }
+
+
+def test_failed_resume_reload_restores_empty_policy(inference_session, monkeypatch):
+    cfg, _, models, _, clock = inference_session
+    pause_session(inference_session)
+    native_set = p.set_models
+    calls = []
+
+    def set_models(allowed, **kwargs):
+        calls.append((set(allowed), kwargs))
+        if allowed:
+            # Simulate a partial reload followed by failed verification.
+            native_set(allowed, **kwargs)
+            raise ValueError("verification failed")
+        native_set(allowed, **kwargs)
+
+    monkeypatch.setattr(p, "set_models", set_models)
+    clock["ac"] = True
+    with pytest.raises(ValueError):
+        p.tick(cfg)
+    assert calls[-1] == (set(), {"paused": True})
+    assert not models and p.snapshot(cfg)["paused"]
+
+
+def test_failed_owner_return_is_retried_instead_of_resuming_inference(
+    inference_session, monkeypatch
+):
+    cfg, live, models, power, clock = inference_session
+    pause_session(inference_session)
+    original_run = p.run
+
+    def fail(*args, **kwargs):
+        raise ValueError("settings restoration failed")
+
+    monkeypatch.setattr(p, "run", fail)
+    with pytest.raises(ValueError):
+        p.switch("working", cfg)
+    assert p.load(p.STATE / "session.json", {})["return_requested"]
+    monkeypatch.setattr(p, "run", original_run)
+    clock["ac"] = True
+    p.tick(cfg)
+    assert p.snapshot(cfg)["profile"] == "working"
+    assert not p.snapshot(cfg)["paused"] and not p.snapshot(cfg)["return_pending"]
+    assert power["powermode"] == 1 and all(live.values())
+    assert "vision" not in models

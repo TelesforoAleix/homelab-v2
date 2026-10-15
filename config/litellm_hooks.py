@@ -104,13 +104,14 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
         def record():
             logger.info(
                 "model_call purpose=%s real_model=%s status=%d elapsed_seconds=%.3f "
-                "upstream=%s profile_blocked=%s",
+                "upstream=%s profile_blocked=%s profile_paused=%s",
                 event["purpose"],
                 event["real_model"],
                 status,
                 monotonic() - started,
                 str(event["upstream"]).lower(),
                 str(event.get("profile_blocked", False)).lower(),
+                str(event.get("profile_paused", False)).lower(),
             )
 
         try:
@@ -218,7 +219,11 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                         pass
                 response = error_response(
                     503,
-                    f"{event['purpose']} is not available until Inference",
+                    (
+                        f"{event['purpose']} is paused because the Mac is on battery"
+                        if event.get("profile_paused")
+                        else f"{event['purpose']} is not available until Inference"
+                    ),
                     "service_unavailable_error",
                 )
                 status = 503
@@ -330,7 +335,18 @@ class PurposeHooks(CustomLogger):
                 response = await client.get(base + "/models")
                 response.raise_for_status()
                 available = {row["id"] for row in response.json()["data"]}
-            model = model_specs[purpose]["model"].split("/", 1)[1]
+                model = model_specs[purpose]["model"].split("/", 1)[1]
+                if model not in available:
+                    # A native static file carries one boolean, never private profile contents.
+                    try:
+                        state = await client.get(base + "/homelab-profile.json")
+                        if state.status_code == 200:
+                            value = state.json()
+                            event["profile_paused"] = (
+                                isinstance(value, dict) and value.get("paused_on_battery") is True
+                            )
+                    except (httpx.RequestError, ValueError):
+                        pass  # Old routers/missing metadata retain the fixed availability refusal.
             if model not in available:
                 event["profile_blocked"] = True
                 raise HTTPException(503, "Model call failed")

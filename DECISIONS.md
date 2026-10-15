@@ -438,3 +438,23 @@ and the 45056 MB GPU limit remain unchanged. Keep the two exact sudoers argument
 the standalone helper validates the invoking owner’s private recovery record, accepting only
 integer modes 0–2, rather than accepting extra command arguments. Ordinary Working invocation
 with no pending return leaves power mode alone.
+
+
+**2026-10-15 — G14 amended: battery pauses Inference after a ten-minute grace.**
+Supersede unplug return: observe continuous battery time in the existing launchd check; a
+short unplug leaves Inference running, and replug resets the timer. After 600 seconds, retain
+the Inference session and recovery record while native preset reload unloads/disallows all
+models. Apps and dictation remain closed. Status exposes Inference with paused/on_battery
+metadata; manual heavy starts and new jobs cannot bypass the pause. Paused time suspends idle
+return. Replug resumes that existing owner-entered session, restores High Power before the
+allow-list and starts a fresh idle window. The owner can return to Working on battery at any
+time, restoring the original apps/services and recorded power mode.
+
+Publish only a pause boolean through llama.cpp’s native static-file serving on the existing
+node-only router address/port; its dedicated directory contains no private configuration or
+paths. The gateway uses that boolean for a fixed purpose-specific battery-pause 503 and adds
+`profile_paused` to the existing audit line. Native presets still enforce the allow-list; no
+request rewriting, custom HTTP server, listener change, queue or new sudoers arguments. A failed
+resume retains paused state and its published reason; the existing check retries transitions.
+An explicit Working return records its intent before restoration, so a failure is retried
+instead of resuming Inference when AC returns.

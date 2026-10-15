@@ -61,6 +61,13 @@ def main(stage):
         assert not p.load(p.STATE / "session.json", {}).get("return_pending"), (
             "recover Working first"
         )
+        lib = p.router()
+        try:
+            saved = lib["record"]()
+            published = lib["api"](saved["address"], "/homelab-profile.json")
+        except (OSError, ValueError, TypeError):
+            raise AssertionError("restart homelab-router to enable native pause metadata") from None
+        assert published == {"paused_on_battery": False}, "recover Working before acceptance"
         cli("install")
         p.save(BACKUP, p.load(p.CONFIG, {}))
         cfg = {"profiles": p.config()["profiles"], "return_seconds": 15}
@@ -132,6 +139,7 @@ def main(stage):
             time.sleep(2)
         after = p.snapshot(cfg)
         assert after["profile"] == "working" and not after["return_pending"], after
+        assert not after["paused"] and after["pause_reason"] is None
         assert after["settings"] == before["settings"]
         assert p.app_running("com.apple.TextEdit")
         assert FIXTURE.read_text() == "Harmless profile acceptance document.\n"

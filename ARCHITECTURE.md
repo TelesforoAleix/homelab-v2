@@ -146,9 +146,16 @@ The root-owned `homelab-profile-apply` accepts only the two profile names throug
 arguments, validates bounded numeric settings from the invoking user's private files and calls
 only fixed pmset/sysctl commands with an isolated interpreter. No user code executes as root.
 A user LaunchAgent checks inactivity every 30 seconds and returns to Working after 900 seconds
-without loaded router models or jobs, or immediately on the first check after unplugging,
-reopening precisely the recorded apps/services. Unplug return takes priority over model/job
-activity. Ordinary Working application leaves power mode alone; the helper changes it only
+without loaded router models or jobs, reopening precisely the recorded apps/services.
+A short unplug is ignored. Ten continuous minutes observed on battery pauses Inference:
+native presets are emptied and models unloaded while apps/dictation remain closed. Status
+reports `profile: inference`, `paused: true`, `pause_reason: on_battery`. Power-mode changes
+on battery do not turn an existing Inference session into custom state. Paused time suspends
+idle return; the Mac waits for AC or an explicit Working switch. Replug automatically restores
+High Power before the allow-list, preserving the original recovery record and restarting the
+15-minute idle window. A native static JSON file on the existing router port publishes only
+a pause boolean, so gateway refusals name the battery pause and audit `profile_paused=true`.
+No profile contents, app lists or paths are served. Ordinary Working application leaves power mode alone; the helper changes it only
 for Inference or to restore the bounded recorded mode on return. Legacy Working configuration
 fields naming a power mode are ignored.
 Manual changes are compared to observed profiles, rather than trusting a selected-name flag.
