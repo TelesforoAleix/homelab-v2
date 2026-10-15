@@ -1,0 +1,678 @@
+#!/usr/bin/env python3
+"""Mac usage profiles. Status is JSON; only an explicit switch can enter Inference."""
+
+import argparse
+import contextlib
+import copy
+import fcntl
+import json
+import os
+import plistlib
+import re
+import runpy
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+SCRIPT = Path(__file__).resolve()
+CONFIG = Path.home() / ".config/homelab/profiles.json"
+STATE = Path.home() / ".local/state/homelab-profile"
+AGENTS = Path.home() / "Library/LaunchAgents"
+VOICE = "com.prakashjoshipax.VoiceInk"
+CLEANUP = "org.mac-dictation.cleanup"
+MODELS = {"vision": "vision", "embed-large-bulk": "Qwen3-Embedding-4B"}
+DEFAULTS = {
+    "working": {
+        "services": ["embed-large-bulk", "cleanup", "voiceink"],
+        "close_apps": [],
+        "settings": {"sleep": 1, "gpu_limit_mb": 0},
+        "jobs": True,
+    },
+    "inference": {
+        "services": ["vision", "embed-large-bulk"],
+        "close_apps": ["com.google.Chrome", "com.microsoft.VSCode"],
+        "settings": {"powermode": 2, "sleep": 0, "gpu_limit_mb": 45056},
+        "jobs": True,
+    },
+}
+SERVICES = set(MODELS) | {"cleanup", "voiceink"}
+BATTERY_GRACE_SECONDS = 600
+
+
+def run(*args, check=True):
+    return subprocess.run(args, capture_output=True, text=True, timeout=120, check=check).stdout
+
+
+def load(path, default):
+    return json.loads(path.read_text()) if path.exists() else copy.deepcopy(default)
+
+
+def save(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(value, indent=2) + "\n")
+    temp.chmod(0o600)
+    temp.replace(path)
+
+
+def config():
+    value = load(CONFIG, {})
+    if not isinstance(value, dict) or not isinstance(value.get("profiles", {}), dict):
+        raise ValueError("invalid profile configuration")
+    profiles = copy.deepcopy(DEFAULTS)
+    for name, overrides in value.get("profiles", {}).items():
+        if (
+            name not in profiles
+            or not isinstance(overrides, dict)
+            or set(overrides) - set(profiles[name])
+        ):
+            raise ValueError("invalid profile configuration")
+        profiles[name].update(overrides)
+    for name, profile in profiles.items():
+        if (
+            not isinstance(profile["services"], list)
+            or not all(isinstance(s, str) for s in profile["services"])
+            or set(profile["services"]) - SERVICES
+        ):
+            raise ValueError("unknown service")
+        if not isinstance(profile["jobs"], bool):
+            raise ValueError("jobs must be boolean")
+        if not isinstance(profile["close_apps"], list):
+            raise ValueError("apps must be bundle identifiers")
+        for app in profile["close_apps"]:
+            if not isinstance(app, str) or not re.fullmatch(r"[A-Za-z0-9.-]+", app):
+                raise ValueError("apps must be bundle identifiers")
+        if name == "working" and isinstance(profile["settings"], dict):
+            # Private files installed before G14 may retain this now-ignored field.
+            profile["settings"].pop("powermode", None)
+        validate_settings(profile["settings"], inference=name == "inference")
+    for key in ("return_seconds", "idle_seconds"):
+        if type(value.get(key, 900 if key == "return_seconds" else 300)) is not int:
+            raise ValueError("idle intervals must be integer seconds")
+        if value.get(key, 1) < 1:
+            raise ValueError("idle intervals must be positive")
+    return {**value, "profiles": profiles}
+
+
+def validate_settings(settings, *, inference=False):
+    bounds = {"sleep": (0, 180), "gpu_limit_mb": (0, 45056)}
+    if inference:
+        bounds["powermode"] = (2, 2)
+    if not isinstance(settings, dict) or set(settings) != set(bounds):
+        raise ValueError("invalid system settings")
+    for key, (low, high) in bounds.items():
+        if type(settings[key]) is not int or not low <= settings[key] <= high:
+            raise ValueError("system setting outside approved bounds")
+
+
+class ProfileRefusal(ValueError):
+    """Fixed, safe-to-display reason for refusing a profile operation."""
+
+
+def on_ac_power():
+    source = re.search(
+        r"^Now drawing from '(AC Power|Battery Power)'",
+        run("/usr/bin/pmset", "-g", "batt"),
+        re.M,
+    )
+    if source is None:
+        raise ProfileRefusal("Cannot determine power source; profile operation refused")
+    return source[1] == "AC Power"
+
+
+def settings_match(name, observed, expected):
+    return all(
+        observed.get(key) == value
+        for key, value in expected.items()
+        if name != "working" or key != "powermode"
+    )
+
+
+def router():
+    return runpy.run_path(str(SCRIPT.with_name("homelab-router")))
+
+
+def router_models():
+    lib = router()
+    saved = lib["record"]()
+    if not lib["healthy"](saved):
+        return {}
+    return {
+        row["id"]: row["status"]["value"] for row in lib["api"](saved["address"], "/models")["data"]
+    }
+
+
+def set_models(allowed, *, paused=False):
+    # Native reload removes disallowed presets AND unloads their children. No HTTP proxy.
+    lib = router()
+    policy = lib["STATE"] / "allowed.json"
+    save(policy, sorted(MODELS[name] for name in allowed if name in MODELS))
+    if paused:
+        save(lib["STATE"] / "public/homelab-profile.json", {"paused_on_battery": True})
+    lib["write_presets"]()
+    saved = lib["record"]()
+    if not lib["healthy"](saved):
+        raise ValueError("router unavailable; start it before switching")
+    lib["api"](saved["address"], "/models?reload=1", timeout=120)
+    actual = set(router_models())
+    expected = {MODELS[name] for name in allowed if name in MODELS}
+    if actual != expected:
+        raise ValueError("router did not enforce presets; switch incomplete")
+    if not paused:
+        save(lib["STATE"] / "public/homelab-profile.json", {"paused_on_battery": False})
+
+
+def registered(label):
+    return (
+        subprocess.run(
+            ["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"],
+            capture_output=True,
+            timeout=10,
+        ).returncode
+        == 0
+    )
+
+
+def cleanup_running():
+    output = run("/bin/launchctl", "print", f"gui/{os.getuid()}/{CLEANUP}", check=False)
+    return bool(re.search(r"^\s*state = running\s*$", output, re.M))
+
+
+def app_running(bundle):
+    return (
+        run("/usr/bin/osascript", "-e", f'application id "{bundle}" is running').strip() == "true"
+    )
+
+
+def app(bundle, start):
+    if start:
+        run("/usr/bin/open", "-b", bundle)
+    else:
+        run("/usr/bin/osascript", "-e", f'tell application id "{bundle}" to quit')
+    deadline = time.monotonic() + 30
+    while app_running(bundle) != start:
+        if time.monotonic() > deadline:
+            raise ValueError("app did not finish opening or quitting; switch incomplete")
+        time.sleep(0.2)
+
+
+def service(name, start):
+    if name in MODELS:
+        record = load(STATE / "session.json", {})
+        if record.get("return_pending") and record.get("paused"):
+            if start:
+                raise ProfileRefusal("Inference is paused because the Mac is on battery")
+            return
+        current = {key for key, model in MODELS.items() if model in router_models()}
+        set_models(current | {name} if start else current - {name})
+    elif name == "voiceink":
+        if app_running(VOICE) != start:
+            app(VOICE, start)
+    elif (registered(CLEANUP) != start) or (start and not cleanup_running()):
+        plist = AGENTS / f"{CLEANUP}.plist"
+        if not plist.is_file():
+            raise ValueError("cleanup LaunchAgent missing")
+        if registered(CLEANUP):
+            run("/bin/launchctl", "bootout", f"gui/{os.getuid()}", str(plist))
+        if start:
+            run("/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist))
+            deadline = time.monotonic() + 30
+            while not cleanup_running() and time.monotonic() < deadline:
+                time.sleep(0.2)
+        if registered(CLEANUP) != start or (start and not cleanup_running()):
+            raise ValueError("cleanup did not change state")
+
+
+def settings():
+    pm = run("/usr/bin/pmset", "-g")
+
+    def number(key):
+        match = re.search(r"^\s*" + key + r"\s+(\d+)", pm, re.M)
+        if not match:
+            raise ValueError("power settings unavailable")
+        return int(match[1])
+
+    return {
+        "powermode": number("powermode"),
+        "sleep": number("sleep"),
+        "gpu_limit_mb": int(run("/usr/sbin/sysctl", "-n", "iogpu.wired_limit_mb")),
+    }
+
+
+def processes():
+    rows = {}
+    for line in run("/bin/ps", "-axo", "pid=,ppid=,command=").splitlines():
+        pid, parent, command = line.strip().split(maxsplit=2)
+        rows[int(pid)] = (int(parent), command)
+    return rows
+
+
+def descendants(rows, roots):
+    family = set(roots)
+    while True:
+        expanded = family | {pid for pid, (parent, _) in rows.items() if parent in family}
+        if expanded == family:
+            return family
+        family = expanded
+
+
+def vscode_work(rows=None):
+    rows = processes() if rows is None else rows
+    roots = {
+        pid
+        for pid, (_, cmd) in rows.items()
+        if "Visual Studio Code.app/" in cmd or re.search(r"\bCode Helper\b", cmd)
+    }
+    family = descendants(rows, roots)
+    # GPU use cannot be established from ps. Conservatively include runtimes that may
+    # own GPU work, including scripts whose filename does not advertise inference.
+    pattern = (
+        r"\bcodex(?:\s+\S+)*?\s+exec\b|\bllama-server\b|\bmlx[_ .-]|"
+        r"\bollama\b|\bvllm\b|\b(?:python[\d.]*|uv|torchrun|accelerate|"
+        r"node|bun|deno|julia|Rscript|swift|metal|ffmpeg)(?:\s|$)"
+    )
+    return [
+        {"pid": pid, "command": rows[pid][1]}
+        for pid in sorted(family)
+        if pid != os.getpid() and re.search(pattern, rows[pid][1], re.I)
+    ]
+
+
+def under_vscode():
+    rows = processes()
+    roots = {pid for pid, (_, cmd) in rows.items() if "Visual Studio Code.app/" in cmd}
+    return os.getpid() in descendants(rows, roots)
+
+
+def job_context():
+    if os.environ.get("HOMELAB_PROFILE_JOB"):
+        return True
+    # Also recognise a worker ancestor when a job uses env -i or another wrapper
+    # that strips environment variables. Registered executables remain owner-trusted.
+    rows = processes()
+    pid = os.getpid()
+    seen = set()
+    while pid in rows and pid not in seen:
+        seen.add(pid)
+        parent, command = rows[pid]
+        if re.search(r"\bhomelab-profile\s+job-worker\b", command):
+            return True
+        pid = parent
+    return False
+
+
+def jobs():
+    return load(STATE / "jobs.json", {})
+
+
+def job_live(record):
+    if not record.get("pid"):
+        return False
+    return router()["identity"](record["pid"]) == record.get("identity") != ""
+
+
+def snapshot(cfg):
+    models = router_models()
+    states = {
+        name: {"allowed": model in models, "state": models.get(model, "disallowed")}
+        for name, model in MODELS.items()
+    }
+    states["cleanup"] = {"running": cleanup_running()}
+    states["voiceink"] = {"running": app_running(VOICE)}
+    observed = settings()
+    record = load(STATE / "session.json", {})
+    paused = bool(record.get("return_pending") and record.get("paused"))
+    on_ac = on_ac_power() if record.get("return_pending") else True
+    apps = {
+        bundle: app_running(bundle)
+        for bundle in {app for profile in cfg["profiles"].values() for app in profile["close_apps"]}
+    }
+    matches = []
+    for name, profile in cfg["profiles"].items():
+        allowed = set(profile["services"])
+        if name == "inference" and paused:
+            allowed -= set(MODELS)
+        services_match = all(states[s]["allowed"] == (s in allowed) for s in MODELS)
+        services_match &= all(
+            states[s]["running"] == (s in allowed) for s in ("cleanup", "voiceink")
+        )
+        expected_settings = profile["settings"]
+        if name == "inference" and record.get("return_pending") and (paused or not on_ac):
+            expected_settings = {k: v for k, v in expected_settings.items() if k != "powermode"}
+        if (
+            services_match
+            and settings_match(name, observed, expected_settings)
+            and (name != "inference" or record.get("return_pending") or on_ac_power())
+            and (not paused or name == "inference")
+            and (not paused or not models)
+            and not any(apps[bundle] for bundle in profile["close_apps"])
+        ):
+            matches.append(name)
+    # Test mode never claims that skipped system settings were applied.
+    profile = matches[0] if matches else "custom"
+    return {
+        "profile": profile,
+        "services": states,
+        "settings": observed,
+        "apps": apps,
+        "settings_skipped": bool(record.get("skip_settings")),
+        "running_jobs": [name for name, job in jobs().items() if job_live(job)],
+        "return_pending": bool(record.get("return_pending")),
+        "paused": paused,
+        "pause_reason": "on_battery" if paused else None,
+    }
+
+
+def switch(name, cfg, confirm=False, skip=False, automatic=False):
+    target = cfg["profiles"][name]
+    # Check BEFORE every side effect, even with a test list: make the guard easy to prove.
+    if name == "inference":
+        if automatic or job_context():
+            raise ValueError("automatic entry into Inference is forbidden")
+        if not on_ac_power():
+            raise ProfileRefusal(
+                "Inference requires AC power; connect the charger before switching"
+            )
+        work = vscode_work()
+        if work and not confirm:
+            print(json.dumps({"refused": "VS Code descendant work would be killed", "work": work}))
+            raise ValueError("inspect work; only the owner may use --confirm-kill")
+    record = load(STATE / "session.json", {})
+    if name == "inference" and record.get("return_pending"):
+        raise ValueError("return to Working before another Inference switch")
+    if name == "inference":
+        previous_powermode = settings()["powermode"]
+        if type(previous_powermode) is not int or previous_powermode not in (0, 1, 2):
+            raise ValueError("power mode could not be recorded")
+        record = {
+            "return_pending": True,
+            "closed": [],
+            "stopped": [],
+            "last_active": time.time(),
+            "skip_settings": skip,
+            "previous_powermode": previous_powermode,
+        }
+        save(STATE / "session.json", record)
+    elif record.get("return_pending"):
+        # A failed Working return must be retried, not reversed by an AC resume.
+        record["return_requested"] = True
+        save(STATE / "session.json", record)
+    # Record recovery intent before quitting: cancellation/crashes retain a recovery record.
+    for svc in ("cleanup", "voiceink"):
+        present = cleanup_running() if svc == "cleanup" else app_running(VOICE)
+        desired = svc in target["services"]
+        if name == "working" and record.get("return_pending"):
+            desired = svc in record.get("stopped", [])
+        if name == "inference" and present and not desired:
+            record["stopped"].append(svc)
+            save(STATE / "session.json", record)
+        service(svc, desired)
+    for bundle in target["close_apps"]:
+        if app_running(bundle):
+            record.setdefault("closed", []).append(bundle)
+            save(STATE / "session.json", record)
+            app(bundle, False)
+    set_models(set(target["services"]))
+    skip = skip or (name == "working" and record.get("skip_settings", False))
+    if not skip:
+        run("/usr/bin/sudo", "-n", "/usr/local/sbin/homelab-profile-apply", name)
+        observed = settings()
+        if not settings_match(name, observed, target["settings"]):
+            raise ValueError("system settings do not match; recovery record retained")
+        if (
+            name == "working"
+            and record.get("return_pending")
+            and observed["powermode"] != record.get("previous_powermode")
+        ):
+            raise ValueError("previous power mode was not restored; recovery record retained")
+    if name == "working":
+        for svc in record.get("stopped", []):
+            service(svc, True)
+        for bundle in record.get("closed", []):
+            if not app_running(bundle):
+                app(bundle, True)
+        record = {"skip_settings": skip}
+    save(STATE / "session.json", record)
+
+
+def eligible(cfg):
+    status = snapshot(cfg)
+    current = status["profile"]
+    return (
+        not status.get("paused", False)
+        and current in cfg["profiles"]
+        and cfg["profiles"][current]["jobs"]
+        and on_ac_power()
+        and idle_seconds() >= cfg.get("idle_seconds", 300)
+    )
+
+
+def idle_seconds():
+    match = re.search(r'"HIDIdleTime"\s*=\s*(\d+)', run("/usr/sbin/ioreg", "-c", "IOHIDSystem"))
+    if not match:
+        raise ValueError("input idle time unavailable")
+    return int(match[1]) / 1_000_000_000
+
+
+def tick(cfg):
+    record = load(STATE / "session.json", {})
+    if record.get("return_pending") and record.get("return_requested"):
+        switch("working", cfg, automatic=True)
+    elif record.get("return_pending"):
+        on_ac = on_ac_power()
+        now = time.time()
+        if not on_ac:
+            if "battery_since" not in record:
+                record["battery_since"] = now
+                save(STATE / "session.json", record)
+            if record.get("paused") or now - record["battery_since"] >= BATTERY_GRACE_SECONDS:
+                # Save intent first so a failed reload is retried and manual starts are refused.
+                record["paused"] = True
+                save(STATE / "session.json", record)
+                set_models(set(), paused=True)
+                return  # A pause never advances the idle return or starts jobs.
+        elif record.get("paused"):
+            # Resume the existing owner-entered session; do not recapture its recovery record.
+            if not record.get("skip_settings"):
+                run("/usr/bin/sudo", "-n", "/usr/local/sbin/homelab-profile-apply", "inference")
+                if not settings_match(
+                    "inference", settings(), cfg["profiles"]["inference"]["settings"]
+                ):
+                    raise ValueError("resume settings do not match; Inference remains paused")
+            try:
+                set_models(set(cfg["profiles"]["inference"]["services"]))
+            except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+                # Failed reload/verification must also leave the on-disk presets closed,
+                # so a router restart cannot bypass the still-paused session.
+                try:
+                    set_models(set(), paused=True)
+                except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+                    pass
+                raise
+            record["paused"] = False
+            record.pop("battery_since", None)
+            record["last_active"] = now
+            save(STATE / "session.json", record)
+        elif "battery_since" in record:
+            record.pop("battery_since")
+            save(STATE / "session.json", record)
+        active = any(state not in ("sleeping", "unloaded") for state in router_models().values())
+        active |= any(job_live(job) for job in jobs().values())
+        if active:
+            record["last_active"] = now
+            save(STATE / "session.json", record)
+        elif now - record["last_active"] >= cfg.get("return_seconds", 900):
+            switch("working", cfg, automatic=True)
+    if any(job.get("pending") for job in jobs().values()) and eligible(cfg):
+        for name, job in jobs().items():
+            if job.get("pending") and not job_live(job):
+                run(
+                    "/bin/launchctl",
+                    "kickstart",
+                    f"gui/{os.getuid()}/org.homelab.profile.job.{name}",
+                )
+
+
+@contextlib.contextmanager
+def lock():
+    with (STATE / "command.lock").open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def install_agent(label, arguments, **extra):
+    path = AGENTS / f"{label}.plist"
+    if registered(label):
+        run("/bin/launchctl", "bootout", f"gui/{os.getuid()}/{label}")
+    AGENTS.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "Label": label,
+        "ProgramArguments": [sys.executable, str(SCRIPT), *arguments],
+        "Umask": 0o077,
+        "StandardOutPath": "/dev/null",
+        "StandardErrorPath": "/dev/null",
+        "EnvironmentVariables": {"PYTHONDONTWRITEBYTECODE": "1"},
+        **extra,
+    }
+    path.write_bytes(plistlib.dumps(payload))
+    path.chmod(0o600)
+    run("/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(path))
+
+
+def job_add(name, calendar, command):
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,40}", name):
+        raise ValueError("invalid job name")
+    allowed = {
+        "Minute": (0, 59),
+        "Hour": (0, 23),
+        "Day": (1, 31),
+        "Weekday": (0, 7),
+        "Month": (1, 12),
+    }
+    if not calendar or set(calendar) - set(allowed):
+        raise ValueError("invalid launchd calendar")
+    for key, value in calendar.items():
+        low, high = allowed[key]
+        if type(value) is not int or not low <= value <= high:
+            raise ValueError("invalid launchd calendar value")
+    if not command or not Path(command[0]).is_absolute():
+        raise ValueError("job requires an absolute executable and argv, without a shell")
+    records = jobs()
+    if name in records:
+        raise ValueError("job already registered")
+    records[name] = {"calendar": calendar, "command": command, "pending": False}
+    save(STATE / "jobs.json", records)
+    install_agent(
+        f"org.homelab.profile.job.{name}", ["job-worker", name], StartCalendarInterval=calendar
+    )
+
+
+def job_worker(name, cfg):
+    if under_vscode():
+        raise ValueError("jobs must run through launchd, outside VS Code")
+    with lock():
+        records = jobs()
+        job = records[name]
+        if job_live(job):
+            return
+        job["pending"] = True
+        save(STATE / "jobs.json", records)
+        if not eligible(cfg):
+            return
+        job.update(pid=os.getpid(), identity=router()["identity"](os.getpid()), pending=False)
+        save(STATE / "jobs.json", records)
+    result = 1
+    try:
+        result = subprocess.run(
+            job["command"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "HOMELAB_PROFILE_JOB": "1"},
+        ).returncode
+    finally:
+        with lock():
+            records = jobs()
+            records[name].update(pid=None, identity="", last_exit=result)
+            save(STATE / "jobs.json", records)
+            record = load(STATE / "session.json", {})
+            if record.get("return_pending"):
+                record["last_active"] = time.time()
+                save(STATE / "session.json", record)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    for command in ("status", "install", "tick", "check-work"):
+        sub.add_parser(command)
+    change = sub.add_parser("switch")
+    change.add_argument("profile", choices=DEFAULTS)
+    change.add_argument("--confirm-kill", action="store_true")
+    change.add_argument(
+        "--skip-settings", action="store_true", help="unprivileged acceptance test only"
+    )
+    for command in ("start", "stop"):
+        sub.add_parser(command).add_argument("service", choices=sorted(SERVICES))
+    job = sub.add_parser("job").add_subparsers(dest="action", required=True)
+    job.add_parser("list")
+    job.add_parser("run").add_argument("name")
+    add = job.add_parser("add")
+    add.add_argument("name")
+    add.add_argument("--calendar", required=True, help="launchd StartCalendarInterval JSON")
+    add.add_argument("argv", nargs="+")
+    sub.add_parser("job-worker").add_argument("name")
+    args = parser.parse_args()
+    os.umask(0o077)
+    STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        cfg = config()
+        if args.command == "job-worker":
+            job_worker(args.name, cfg)
+            return 0
+        with lock():
+            if args.command == "status":
+                print(json.dumps(snapshot(cfg)))
+            elif args.command == "check-work":
+                work = vscode_work()
+                print(json.dumps({"work": work}))
+                return int(bool(work))
+            elif args.command == "switch":
+                switch(args.profile, cfg, args.confirm_kill, args.skip_settings)
+                print(json.dumps(snapshot(cfg)))
+            elif args.command in ("start", "stop"):
+                service(args.service, args.command == "start")
+                print(json.dumps(snapshot(cfg)))
+            elif args.command == "tick":
+                tick(cfg)
+            elif args.command == "install":
+                if not CONFIG.exists():
+                    save(CONFIG, {"profiles": DEFAULTS})
+                install_agent("org.homelab.profile", ["tick"], StartInterval=30, RunAtLoad=True)
+            elif args.action == "list":
+                print(json.dumps(jobs()))
+            elif args.action == "add":
+                command = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
+                job_add(args.name, json.loads(args.calendar), command)
+            else:
+                if args.name not in jobs():
+                    raise ValueError("unknown job")
+                run(
+                    "/bin/launchctl",
+                    "kickstart",
+                    f"gui/{os.getuid()}/org.homelab.profile.job.{args.name}",
+                )
+    except ProfileRefusal as exc:
+        parser.exit(1, str(exc) + "\n")
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        parser.exit(
+            1,
+            "profile command failed; check configuration and observed state; "
+            "recovery record retained\n",
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

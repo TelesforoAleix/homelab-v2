@@ -1,0 +1,18 @@
+{
+  "profiles": {
+    "working": {
+      "services": ["embed-large-bulk", "cleanup", "voiceink"],
+      "close_apps": [],
+      "settings": {"sleep": 1, "gpu_limit_mb": 0},
+      "jobs": true
+    },
+    "inference": {
+      "services": ["vision", "embed-large-bulk"],
+      "close_apps": [],
+      "settings": {"powermode": 2, "sleep": 0, "gpu_limit_mb": 45056},
+      "jobs": true
+    }
+  },
+  "return_seconds": 900,
+  "idle_seconds": 300
+}

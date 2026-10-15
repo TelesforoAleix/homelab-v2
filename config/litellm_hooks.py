@@ -103,12 +103,15 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
 
         def record():
             logger.info(
-                "model_call purpose=%s real_model=%s status=%d elapsed_seconds=%.3f upstream=%s",
+                "model_call purpose=%s real_model=%s status=%d elapsed_seconds=%.3f "
+                "upstream=%s profile_blocked=%s profile_paused=%s",
                 event["purpose"],
                 event["real_model"],
                 status,
                 monotonic() - started,
                 str(event["upstream"]).lower(),
+                str(event.get("profile_blocked", False)).lower(),
+                str(event.get("profile_paused", False)).lower(),
             )
 
         try:
@@ -209,6 +212,21 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                     response = await call_next(request)
 
             status = response.status_code
+            if event.get("profile_blocked"):
+                # Only our own observed missing preset can produce this fixed refusal.
+                if hasattr(response, "body_iterator"):
+                    async for _ in response.body_iterator:
+                        pass
+                response = error_response(
+                    503,
+                    (
+                        f"{event['purpose']} is paused because the Mac is on battery"
+                        if event.get("profile_paused")
+                        else f"{event['purpose']} is not available until Inference"
+                    ),
+                    "service_unavailable_error",
+                )
+                status = 503
             if (
                 event["purpose"] in model_info
                 and model_info[event["purpose"]].get("mode") == "image_generation"
@@ -308,6 +326,29 @@ class PurposeHooks(CustomLogger):
             purpose = event["purpose"]
             url_variable = model_specs[purpose]["api_base"].removeprefix("os.environ/")
             if not os.environ.get(url_variable):
+                raise HTTPException(503, "Model call failed")
+            # Native preset omission enforces policy at the Mac. Inspect only model ids;
+            # never forward upstream diagnostics or accept policy supplied by a client.
+            base = os.environ[url_variable].removesuffix("/v1").rstrip("/")
+            timeout = httpx.Timeout(3.0, connect=model_info[purpose]["connect_timeout"])
+            async with httpx.AsyncClient(trust_env=False, timeout=timeout) as client:
+                response = await client.get(base + "/models")
+                response.raise_for_status()
+                available = {row["id"] for row in response.json()["data"]}
+                model = model_specs[purpose]["model"].split("/", 1)[1]
+                if model not in available:
+                    # A native static file carries one boolean, never private profile contents.
+                    try:
+                        state = await client.get(base + "/homelab-profile.json")
+                        if state.status_code == 200:
+                            value = state.json()
+                            event["profile_paused"] = (
+                                isinstance(value, dict) and value.get("paused_on_battery") is True
+                            )
+                    except (httpx.RequestError, ValueError):
+                        pass  # Old routers/missing metadata retain the fixed availability refusal.
+            if model not in available:
+                event["profile_blocked"] = True
                 raise HTTPException(503, "Model call failed")
             kwargs["timeout"] = httpx.Timeout(
                 model_specs[purpose]["timeout"], connect=model_info[purpose]["connect_timeout"]

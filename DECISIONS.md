@@ -393,3 +393,68 @@ and cleanup server on 8095 stay independent. No profiles, allow-lists, app quitt
 settings are introduced. Preserve embedding vectors, real-model reporting, 3-second connect
 limits and 300-second request limits. Runtime paths and addresses stay private; content logs
 are disabled. The retired vision pointer retains address discovery for the unchanged listener.
+
+
+**2026-10-15 — Owner-selected Mac usage profiles restrict native router presets.**
+Working and Inference are private editable configurations, with custom determined by observed
+service availability, app closures and system settings. Keep model lifecycle in llama.cpp:
+render only permitted presets and use native reload, verifying its resulting model list.
+The gateway reads that list before Mac calls and emits a fixed, sanitised HTTP 503 naming the
+purpose and Inference, with a boolean on the existing purpose audit line. No request rewriting,
+client queue or listener change. Only the owner enters Inference; recognised VS Code descendant
+work requires an explicit confirmation flag. Record closures before attempting graceful quits
+so a cancellation or crash leaves recovery information. Restore only recorded apps/services;
+previously stopped services stay stopped and can leave custom state after return. A 30-second
+launchd check returns after 900 seconds without loaded router models or jobs.
+
+The privilege boundary is one root-owned standalone script with two exact sudoers argument
+forms. An isolated system Python reads only bounded numeric settings from the invoking sudo
+user's private file, then calls fixed absolute pmset/sysctl binaries without a shell. This
+keeps settings editable without granting arbitrary commands; rejects symlinks, nonregular,
+oversize or foreign-owned files; and caps GPU wired memory at 44 GiB. Install only after merge
+with the owner's password and protected root-owned parent directories. launchd owns calendar
+jobs and deferred idle launches; one pending bit coalesces missed runs, without a work queue.
+A job context marker and worker-ancestry check reject Inference entry, including through
+wrappers that strip environment variables; jobs execute outside the VS Code process tree. The public example contains no owner's app list or paths.
+
+
+**2026-10-15 — Profile return guarantees app relaunch, not document restoration.**
+Mac acceptance proved graceful quits and automatic relaunch of TextEdit and dictation.
+TextEdit did not reopen its saved document with macOS’s default “Close windows when quitting
+an application” behaviour. The orchestrator resolved this escalation: acceptance checks app
+relaunch; window and tab restoration belongs to each app’s settings. Document Chrome’s
+“Continue where you left off” and the macOS option for the owner to choose, without changing
+any app or system preference.
+
+
+**2026-10-15 — G14: Working follows the owner’s power mode; Inference requires AC.**
+Remove power mode from Working’s defaults, settings application and matching; legacy private
+fields are ignored without rewriting the owner’s file. Inference requires AC before any
+switching side effect and selects High Power; the privileged helper rechecks AC before writes.
+Record the observed power mode before entry and restore it on every return, including idle
+and unplug returns. The existing 30-second launchd check prioritises unplug return even while
+models or jobs are active, reopening precisely the recorded apps/services. Sleep prevention
+and the 45056 MB GPU limit remain unchanged. Keep the two exact sudoers argument forms:
+the standalone helper validates the invoking owner’s private recovery record, accepting only
+integer modes 0–2, rather than accepting extra command arguments. Ordinary Working invocation
+with no pending return leaves power mode alone.
+
+
+**2026-10-15 — G14 amended: battery pauses Inference after a ten-minute grace.**
+Supersede unplug return: observe continuous battery time in the existing launchd check; a
+short unplug leaves Inference running, and replug resets the timer. After 600 seconds, retain
+the Inference session and recovery record while native preset reload unloads/disallows all
+models. Apps and dictation remain closed. Status exposes Inference with paused/on_battery
+metadata; manual heavy starts and new jobs cannot bypass the pause. Paused time suspends idle
+return. Replug resumes that existing owner-entered session, restores High Power before the
+allow-list and starts a fresh idle window. The owner can return to Working on battery at any
+time, restoring the original apps/services and recorded power mode.
+
+Publish only a pause boolean through llama.cpp’s native static-file serving on the existing
+node-only router address/port; its dedicated directory contains no private configuration or
+paths. The gateway uses that boolean for a fixed purpose-specific battery-pause 503 and adds
+`profile_paused` to the existing audit line. Native presets still enforce the allow-list; no
+request rewriting, custom HTTP server, listener change, queue or new sudoers arguments. A failed
+resume retains paused state and its published reason; the existing check retries transitions.
+An explicit Working return records its intent before restoration, so a failure is retried
+instead of resuming Inference when AC returns.

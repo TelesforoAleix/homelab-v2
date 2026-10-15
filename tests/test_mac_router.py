@@ -156,6 +156,8 @@ def test_serve_executes_native_router_without_environment_overrides(monkeypatch,
         "--port",
         "8090",
         "--log-disable",
+        "--path",
+        str(state / "public"),
     ]
     assert not any(key.startswith("LLAMA_ARG_") for key in env)
     assert env["LLAMA_CACHE"] == str(state / "cache")
@@ -384,3 +386,33 @@ def test_manual_start_failure_is_recorded_and_survives_stop(monkeypatch, tmp_pat
     monkeypatch.setattr(router, "launchctl", lambda *a: subprocess.CompletedProcess(a, 1))
     router.stop()
     assert (router.STATE / "startup-failures.log").read_text() == "router health check timed out\n"
+
+
+def test_allowlist_omits_disallowed_and_future_presets(monkeypatch, tmp_path):
+    state = setup_paths(monkeypatch, tmp_path)
+    (state / "allowed.json").write_text('["Qwen3-Embedding-4B"]')
+    router.write_presets()
+    text = (state / "models.ini").read_text()
+    assert "[vision]" not in text and "mmproj" not in text
+    assert "[Qwen3-Embedding-4B]" in text
+    assert "ngl = 99" in text and "embd-normalize = 2" in text
+    (state / "allowed.json").write_text("[]")
+    router.write_presets()
+    text = (state / "models.ini").read_text()
+    assert "[vision]" not in text and "[Qwen3-Embedding-4B]" not in text
+
+
+def test_native_static_directory_contains_only_pause_flag(monkeypatch, tmp_path):
+    state = setup_paths(monkeypatch, tmp_path)
+    router.write_presets()
+    public = state / "public"
+    assert public.stat().st_mode & 0o777 == 0o700
+    assert sorted(path.name for path in public.iterdir()) == ["homelab-profile.json"]
+    assert router.json.loads((public / "homelab-profile.json").read_text()) == {
+        "paused_on_battery": False,
+    }
+    (public / "homelab-profile.json").write_text('{"paused_on_battery": true}')
+    router.write_presets()
+    assert router.json.loads((public / "homelab-profile.json").read_text()) == {
+        "paused_on_battery": True,
+    }

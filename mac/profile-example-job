@@ -1,0 +1,3 @@
+#!/bin/sh
+# Harmless launchd job: no model, network, content or persistent output.
+exit 0

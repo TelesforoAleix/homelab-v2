@@ -1,0 +1,2 @@
+# Replace @OWNER@ at installation; no wildcard arguments or other commands.
+@OWNER@ ALL=(root) NOPASSWD: /usr/local/sbin/homelab-profile-apply working, /usr/local/sbin/homelab-profile-apply inference

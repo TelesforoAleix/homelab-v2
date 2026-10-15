@@ -299,8 +299,8 @@ by default). `/models` then reports `sleeping` (or `unloaded` before the first r
 sleeping child process remains and reloads on demand. Startup loads neither preset. The
 preset template is `mac/router-models.ini.in`; absolute model paths are rendered privately
 at installation, never committed. A private cache under router state keeps unrelated cached
-models out of native discovery. llama.cpp owns model management; this slice adds no profiles
-or allow-lists.
+models out of native discovery. llama.cpp owns model management; the usage profile command
+can restrict which presets are available (see below).
 
 `status` prints only the two preset names/states and current memory in bytes: router RSS,
 router plus descendants' RSS, and their summed Darwin physical footprint (including Metal).
@@ -385,6 +385,193 @@ After the approved merge and deployment, test vision and bulk through `homelab-m
 without starting a model by hand; stop the router and time both failures (about 3 seconds).
 Restart the router outside the sandbox, then check `embed-large`, `embed`, `chat` and image
 routes. Leave the router running.
+
+## Mac usage profiles
+
+`mac/homelab-profile` is the command interface for usage profiles. Run it outside the
+sandbox. `status` emits one JSON object: `profile` (`working`, `inference`, or `custom`),
+`services`, `settings`, `apps`, `running_jobs`, `settings_skipped`, `return_pending`,
+`paused` and `pause_reason`. A normal pause reports `profile: inference`, `paused: true` and
+`pause_reason: on_battery`; manual differences can still make the observed profile custom.
+It observes launchd, running apps, power settings and native router presets rather than
+trusting the last selected profile. Starting/stopping a service or editing a setting makes
+it `custom` unless it exactly matches a configured profile. Model loading/sleep is activity,
+not a profile change. An unavailable router reports its model services disallowed.
+
+```bash
+mac/homelab-profile install
+mac/homelab-profile status
+mac/homelab-profile switch working
+mac/homelab-profile check-work
+mac/homelab-profile switch inference
+mac/homelab-profile start vision
+mac/homelab-profile stop vision
+mac/homelab-profile job list
+mac/homelab-profile job add example --calendar '{"Hour":4,"Minute":0}' -- "$PWD/mac/profile-example-job"
+mac/homelab-profile job run example
+```
+
+Installation creates a private `~/.config/homelab/profiles.json` with editable defaults and
+`org.homelab.profile`, a user LaunchAgent that checks every 30 seconds. It does not switch
+profiles. Install/start the router first. The repository's `mac/profiles.example.json` has an
+empty placeholder app list; `install` defaults Inference's list to Chrome and VS Code bundle
+identifiers. Keep the owner's edited app list and paths only in the private file, never git.
+Profiles contain `services`, `close_apps` (bundle identifiers), `settings` and `jobs` (boolean).
+`return_seconds` defaults to 900; `idle_seconds` for jobs defaults to 300.
+
+Working allows bulk embeddings, cleanup and VoiceInk, closes no apps, selects sleep after
+one minute of inactivity and the default GPU limit. It neither sets nor matches power mode;
+the owner chooses it (usually High Power on the charger and Low Power on battery). Power-mode
+changes alone never make Working custom. Remove the old `powermode` key from Working’s
+private settings when convenient; old files remain readable and that field is ignored.
+Vision and unregistered future image presets are excluded. Inference permits both router purposes, stops dictation, politely
+quits the configured apps, selects High Power, disables system sleep and sets GPU wired memory
+to 45056 MB. Inference requires AC power: `pmset -g batt` is checked before any switching
+side effect, with the clear refusal `Inference requires AC power; connect the charger before
+switching`. The helper rechecks AC before applying Inference settings. Its power mode must
+be 2 (High Power). Only an explicit owner `switch inference` enters it. Before any side effect,
+that command lists recognised `codex exec`, model servers and GPU jobs descending from
+VS Code and refuses. Python and other possible GPU runtimes are conservatively included even
+when their script names do not mention inference. `--confirm-kill` is the owner's explicit override. Never use that override
+with the production app list from a chat terminal. Jobs inherit a marker that refuses entry
+into Inference, even with the confirmation flag; worker ancestry also catches wrappers that
+strip environment variables. Registered job executables are owner-trusted
+code, not a sandbox for untrusted programs.
+
+When every router model has remained unloaded/sleeping and no job has run for 15 minutes,
+the LaunchAgent returns to Working, except while paused. A short unplug has no profile
+effect. The existing 30-second check records the first battery observation; after 10 continuous
+minutes on battery it pauses Inference, empties the router allow-list and unloads every model.
+Apps and dictation stay closed. Starting a model service by hand is also refused while paused,
+and no scheduled job starts. Sleep prevention and the GPU limit stay unchanged. Power-mode
+changes on battery do not make the owner-entered Inference session custom.
+
+Paused Inference waits for power or the owner; it never returns to Working merely because the
+idle timeout elapses. Replugging resets the battery timer and automatically resumes the same
+Inference session, applying High Power before restoring its allow-list. Resumption starts a
+fresh 15-minute idle window without replacing the original app/service or prior-mode record.
+If replugging is observed before ten minutes, the grace timer resets; the ordinary idle rule
+still applies during this grace period. The owner can `switch working` at any time, including
+while paused on battery, to restore everything. If that return fails partway through, the
+existing check retries Working restoration instead of resuming Inference on AC. A private,
+atomic recovery record at `~/.local/state/homelab-profile/session.json` records apps and
+services stopped by the switch and `previous_powermode` before any change; the return reopens only those and restores that
+recorded power mode. An ordinary Working switch with no pending return leaves power mode
+alone. The root helper reads the record while it is pending; it is cleared only after
+settings and app/service restoration succeed. Apps/services already stopped remain stopped
+(so the resulting profile may be `custom`). A failed/cancelled quit retains the recovery record; explicitly `switch working`
+to recover. The command relaunches apps; window and tab restoration follows each app’s own
+settings. In Chrome, choose “Continue where you left off” if desired. macOS’s “Close windows
+when quitting an application” controls session restoration for apps using the system behaviour.
+VS Code restores windows by default. The owner chooses these settings; the command changes
+none of them and never force-quits an app. The listener on 8091, the cleanup plist and VoiceInk settings are untouched.
+
+The allow-list is a private router `allowed.json`; rendering omits disallowed presets without
+changing any model flags. Native `/models?reload=1` reconciles the presets and unloads removed
+models; the command verifies the resulting list. Allowed models keep their processes. This
+requires a llama.cpp build supporting native preset reload. A mismatch fails the switch.
+The gateway checks the native model list before Mac inference, using the existing private URL
+and connection limit. A dedicated private `public/` directory under router state holds only
+`homelab-profile.json`, served by llama.cpp’s native `--path` option on the existing router
+address and port. It publishes exactly one boolean, `paused_on_battery`, never private profile
+contents or paths. See the [native static-path option](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
+The updated router must be restarted once to enable that path; do so outside the sandbox when
+no ingest needs its models. This adds no listener or request proxy. A missing preset returns OpenAI-shaped HTTP 503 with, for example,
+`vision is not available until Inference`. Its existing audit line adds
+`profile_blocked=true`, with purpose and `upstream=false`, so waiting requests can be counted
+without content. During battery pause the 503 instead says, for example,
+`vision is paused because the Mac is on battery`, with `profile_paused=true`. Only the native
+metadata boolean selects this fixed message. Missing/invalid metadata falls back to the normal
+availability refusal; upstream bodies and diagnostics are never passed through. Other upstream errors retain sanitising. Clients retain their own queues;
+requests never change profiles. A manual stop of a purpose has the same refusal wording.
+
+Each registered job has its own launchd `StartCalendarInterval`. It runs only in an exact
+profile permitting jobs, on AC power, after keyboard/mouse idle time. A missed run leaves one
+pending bit; the next eligible idle check asks launchd to run it. Missed occurrences coalesce;
+there is no work queue. Jobs execute under launchd, outside VS Code, with output discarded and
+only PID identity, pending state and exit code recorded privately. The included example exits
+successfully without doing work. `job run` also uses launchd and the same gates. Reinstalling
+the main agent preserves job agents and state.
+
+**One-time privileged installation, after merge, by the owner:** inspect the script and
+sudoers template first. Verify `/usr/local` is root-owned and not writable by the owner.
+The first command creates `/usr/local/sbin` if absent; verify it is root-owned and not writable
+by the owner before installing the helper. Do not install this grant in a user-writable directory. From the merged
+clone, typing the password:
+
+```bash
+sudo install -d -o root -g wheel -m 0755 /usr/local/sbin
+sudo install -o root -g wheel -m 0755 mac/homelab-profile-apply /usr/local/sbin/homelab-profile-apply
+PROFILE_SUDOERS=$(mktemp)
+sed "s/@OWNER@/$(id -un)/g" mac/homelab-profile.sudoers.in > "$PROFILE_SUDOERS"
+sudo visudo -cf "$PROFILE_SUDOERS"
+sudo install -o root -g wheel -m 0440 "$PROFILE_SUDOERS" /private/etc/sudoers.d/homelab-profile
+rm "$PROFILE_SUDOERS"
+sudo visudo -c
+```
+
+The grant permits exactly `/usr/local/sbin/homelab-profile-apply working` and the same command
+with `inference`, as root without a password. No other arguments, shell, arbitrary sysctl or
+pmset command is granted. The root-owned script uses `/usr/bin/python3 -I` and fixed absolute
+executables, no imports from the checkout and no shell. It reads only the invoking sudo user’s
+private profile file and (for a pending Working return) `session.json`, rejecting final symlinks,
+foreign ownership, nonregular/oversize files and nonnumeric settings. Inference always sets
+High Power; a return accepts only a recorded integer power mode 0–2. Ordinary Working does
+not apply power mode. Sleep remains bounded to 0–180 minutes and GPU wired limit to
+0–45056 MB. Those settings are editable without widening sudo access. Zero GPU limit restores
+the system default; it also resets at reboot. When power mode is applied or restored it uses
+all power sources, as does sleep.
+A partial system-setting failure retains the recovery record; returning to Working retries.
+
+After installation, verify both names with:
+
+```bash
+sudo -k -n /usr/local/sbin/homelab-profile-apply inference
+sudo -k -n /usr/local/sbin/homelab-profile-apply working
+```
+
+Read `pmset -g` and `sysctl iogpu.wired_limit_mb` after each.
+A direct helper restoration test needs a pending recovery record with the original
+`previous_powermode` (0, 1 or 2); without one, Working deliberately leaves power mode alone.
+For an isolated helper test, pause the profile LaunchAgent, preserve its existing session
+record, create the bounded test record, then restore that record and reload the agent after
+verifying settings. The orchestrator supplies these Mac-only commands after installation.
+An unknown argument must fail with `sudo -k -n`, as must an unrelated command if no independent grant allows it.
+Do not test by running a production Inference switch that quits VS Code while chats run.
+
+**Unprivileged acceptance test before merge:** save the private profile file first. Use only
+TextEdit (`com.apple.TextEdit`) in the test Inference app list and copy the observed settings
+into both test profiles, omitting Working’s power mode and retaining Inference’s fixed
+High Power requirement. Keep the Mac on the charger throughout the cycle. The test skips
+settings; if the owner’s observed mode is not High Power, the inference phase correctly
+reports `custom` while services and restoration are still verified. Set `return_seconds` to 15. Open
+TextEdit with a disposable saved document, start VoiceInk and cleanup, then switch Working
+with `--skip-settings`. From the orchestrator terminal, `check-work` and an unconfirmed
+Inference switch must list the running chat and refuse without changing anything. After that
+proof, only with the test app list verified, use `switch inference --skip-settings --confirm-kill`;
+VS Code and Chrome are excluded. Check the stopped apps/services, wait for the automatic
+return and confirm TextEdit, VoiceInk and cleanup relaunch. Acceptance checks app relaunch,
+not document/window restoration; that follows the owner’s app and macOS settings.
+Restore the private configuration afterwards; leave services in Working and report actual
+settings (which may make the production profile `custom` until privileged installation).
+`--skip-settings` persists across the automatic return and is reported explicitly in status.
+To rerun only the cycle from production configuration, use
+`uv run python tests/mac_profile_acceptance.py cycle`; it prepares the safe TextEdit-only test
+configuration and restores the original configuration afterwards, without repeating the guard proof.
+It verifies the captured prior mode and unchanged observed settings, quits TextEdit if the
+test launched it, and removes its fixture. Before the first cycle using pause metadata,
+restart the router outside the sandbox:
+
+```bash
+mac/homelab-router stop
+mac/homelab-router start
+uv run python tests/mac_profile_acceptance.py cycle
+```
+
+The cycle checks the native metadata path before changing test configuration. Unit tests cover
+battery entry refusal, the full grace period, timer reset, pause/AC resume, suspended idle return
+and manual Working restoration. Pinned gateway tests cover both purposes’ paused messages,
+audit flags and invalid metadata. Actual privileged restoration is verified after owner installation.
 
 ## Mac action listener
 
