@@ -18,9 +18,8 @@ BINARY="$(swift build --package-path "$MAC_DIR/MenuBar" -c release --show-bin-pa
 /bin/launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 while /bin/launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; do sleep 0.2; done
 rm -rf "$APP"
-/usr/bin/install -d -m 0755 "$APP/Contents/MacOS" "$HOME/Library/LaunchAgents" "$HOME/.local/bin"
+/usr/bin/install -d -m 0755 "$APP/Contents/MacOS" "$HOME/Library/LaunchAgents"
 /usr/bin/install -m 0755 "$BINARY" "$APP/Contents/MacOS/HomeLabMenuBar"
-/usr/bin/install -m 0755 "$MAC_DIR/usage-snapshot" "$HOME/.local/bin/usage-snapshot"
 
 # The app runs the same command and interpreter as the profile LaunchAgent: this checkout.
 INFO="$APP/Contents/Info.plist"

@@ -75,6 +75,7 @@ struct UsageReport: Decodable, Sendable {
 
 struct UsageSource: Decodable, Sendable {
     let asOf: String
+    let ageSeconds: Int
     let fiveHour: UsageWindow
     let sevenDay: UsageWindow
 }

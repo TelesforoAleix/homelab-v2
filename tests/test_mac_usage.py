@@ -1,6 +1,5 @@
 import importlib.machinery
 import importlib.util
-import io
 import json
 import os
 import subprocess
@@ -19,7 +18,6 @@ def module(name, filename):
 
 
 profile = module("usage_profile", "homelab-profile")
-snapshot = module("usage_snapshot", "usage-snapshot")
 
 
 # Recorded shape of the gateway's journald audit lines (Compose prefixes each container line).
@@ -162,61 +160,57 @@ def test_codex_usage_falls_back_to_older_files_and_reports_missing(tmp_path):
     assert profile.codex_usage(root)["five_hour"]["used_percentage"] == 5
 
 
-def test_claude_usage_is_unknown_until_a_valid_snapshot_exists(tmp_path):
-    path = tmp_path / "claude.json"
-    assert profile.claude_usage(path) is None
-    path.write_text('{"five_hour": {"used_percentage": 3}}')
-    assert profile.claude_usage(path) is None
-    path.write_text(
-        json.dumps(
-            {
-                "as_of": "2026-10-15T15:00:00+00:00",
-                "five_hour": {"used_percentage": 3, "resets_at": 1800000000},
-                "seven_day": {"used_percentage": 20.5, "resets_at": None},
-            }
-        )
-    )
+CLAUDE_NOW = {
+    "at": 1792076400,  # 2026-10-15T15:00:00Z
+    "rate_limits": {
+        "five_hour": {"used_percentage": 3, "resets_at": 1800000000},
+        "seven_day": {"used_percentage": 20.5, "resets_at": 1800500000},
+    },
+}
+
+
+def test_claude_usage_reads_the_status_line_file_and_its_time(tmp_path):
+    path = tmp_path / "usage-now.json"
+    path.write_text(json.dumps(CLAUDE_NOW))
+    before = path.read_bytes()
     assert profile.claude_usage(path) == {
         "as_of": "2026-10-15T15:00:00+00:00",
         "five_hour": {"used_percentage": 3, "resets_at": "2027-01-15T08:00:00+00:00"},
-        "seven_day": {"used_percentage": 20.5, "resets_at": None},
+        "seven_day": {"used_percentage": 20.5, "resets_at": "2027-01-21T02:53:20+00:00"},
     }
+    assert path.read_bytes() == before
 
 
-def run_snapshot(monkeypatch, tmp_path, text, capsys):
-    monkeypatch.setattr(snapshot.Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(snapshot.sys, "stdin", io.StringIO(text))
-    assert snapshot.main() == 0
-    assert capsys.readouterr() == ("", "")
-    return tmp_path / ".local/state/homelab-usage/claude.json"
+def test_claude_usage_is_unknown_when_missing_or_invalid(tmp_path):
+    path = tmp_path / "usage-now.json"
+    assert profile.claude_usage(path) is None
+    limits = CLAUDE_NOW["rate_limits"]
+    for invalid in (
+        "not json",
+        "[]",
+        json.dumps({"rate_limits": limits}),
+        json.dumps({**CLAUDE_NOW, "at": "yesterday"}),
+        json.dumps({**CLAUDE_NOW, "at": True}),
+        json.dumps({"at": 1, "rate_limits": {"five_hour": limits["five_hour"]}}),
+        json.dumps({"at": 1, "rate_limits": {**limits, "seven_day": {"used_percentage": "x"}}}),
+        json.dumps({"at": 1, "rate_limits": None}),
+    ):
+        path.write_text(invalid)
+        assert profile.claude_usage(path) is None, invalid
 
 
-def test_snapshot_keeps_only_rate_limit_windows(tmp_path, monkeypatch, capsys):
-    payload = {
-        "session_id": "discard",
-        "workspace": {"current_dir": "/private/path"},
-        "rate_limits": {
-            "five_hour": {"used_percentage": 12.5, "resets_at": 1800000000, "extra": "x"},
-            "seven_day": {"used_percentage": 42, "resets_at": 1800500000},
-        },
-    }
-    destination = run_snapshot(monkeypatch, tmp_path, json.dumps(payload), capsys)
-    saved = json.loads(destination.read_text())
-    assert set(saved) == {"as_of", "five_hour", "seven_day"}
-    assert saved["five_hour"] == {"used_percentage": 12.5, "resets_at": 1800000000}
-    assert saved["seven_day"] == {"used_percentage": 42, "resets_at": 1800500000}
-    assert destination.stat().st_mode & 0o777 == 0o600
-    assert destination.parent.stat().st_mode & 0o777 == 0o700
-    assert profile.claude_usage(destination)["seven_day"]["used_percentage"] == 42
-
-
-def test_snapshot_is_silent_and_keeps_the_previous_file_on_bad_input(tmp_path, monkeypatch, capsys):
-    good = {"rate_limits": {k: {"used_percentage": 1} for k in ("five_hour", "seven_day")}}
-    destination = run_snapshot(monkeypatch, tmp_path, json.dumps(good), capsys)
-    before = destination.read_text()
-    for text in ("", "not json", "[]", '{"model": {}}', '{"rate_limits": {"five_hour": {}}}'):
-        run_snapshot(monkeypatch, tmp_path, text, capsys)
-        assert destination.read_text() == before
+def test_usage_report_gives_each_source_its_age(tmp_path, monkeypatch):
+    path = tmp_path / "usage-now.json"
+    path.write_text(json.dumps(CLAUDE_NOW))
+    monkeypatch.setattr(profile, "CLAUDE_USAGE", path)
+    monkeypatch.setattr(profile, "CODEX_SESSIONS", tmp_path / "sessions")
+    write_session(tmp_path / "sessions/a.jsonl", [codex_entry("2026-10-15T14:55:00Z", 5, 6)])
+    report = profile.usage_report(now=CLAUDE_NOW["at"] + 90)
+    assert report["read_at"] == "2026-10-15T15:01:30+00:00"
+    assert report["claude"]["age_seconds"] == 90
+    assert report["codex"]["age_seconds"] == 390
+    path.unlink()
+    assert profile.usage_report(now=CLAUDE_NOW["at"])["claude"] is None
 
 
 def test_cli_usage_and_schedule_reports_use_private_home(tmp_path):

@@ -172,14 +172,13 @@ Apple's SDK. `waiting` makes two read-only calls over the node-only `homelab-age
 the last 24 hours of `homelab.service` journal lines with `profile_blocked=true`, and public
 `/v1/model/info` from inside the LiteLLM container. It returns counts per purpose, with an
 estimate only where `seconds_per_image` is published, and keeps nothing; there is no queue.
-`usage` reads only local files: Codex's session logs and a private snapshot that
-`mac/usage-snapshot` writes from the owner's Claude Code status line, holding only the two
-rate-limit windows and a time. The night window is the one unattended entry into Inference,
-owner-set and off by default, in private configuration. The existing profile agent evaluates each
-selected night once at its start: only from exact Working, on AC, with no VS Code guard work, then
-through the same guarded switch, which still refuses job context. It records ownership privately
-and returns to Working at the end only if no manual switch, service action or `schedule off`
-ended that ownership.
+`usage` only reads local files: Codex's session logs and `~/.claude/usage-now.json`, which the
+owner's Claude Code status line writes, and reports each source's age from its own timestamp.
+The night window is the one unattended entry into Inference, owner-set and off by default, in
+private configuration. The existing profile agent evaluates each selected night once at its
+start: only from exact Working, on AC, with no VS Code guard work, then through the same guarded
+switch, which still refuses job context. It records ownership privately and returns to Working
+at the end only if no manual switch, service action or `schedule off` ended that ownership.
 
 The router's private preset allow-list omits disallowed services; native preset reload unloads
 removed children without request rewriting or changes to model flags. The gateway checks the

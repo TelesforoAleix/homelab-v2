@@ -131,7 +131,8 @@ struct MenuView: View {
                 HStack {
                     Text(name)
                     Spacer()
-                    Text("as of " + Self.time(source.asOf)).foregroundStyle(.secondary)
+                    Text("as of \(Self.time(source.asOf)) (\(Self.age(source.ageSeconds)))")
+                        .foregroundStyle(.secondary)
                 }
                 usageLine("5 hours", source.fiveHour)
                 usageLine("7 days", source.sevenDay)
@@ -224,6 +225,13 @@ struct MenuView: View {
         if seconds < 90 { return "about \(Int(seconds.rounded())) s" }
         if seconds < 5400 { return "about \(Int((seconds / 60).rounded())) min" }
         return String(format: "about %.1f h", seconds / 3600)
+    }
+
+    static func age(_ seconds: Int) -> String {
+        if seconds < 60 { return "just now" }
+        if seconds < 3600 { return "\(seconds / 60) min ago" }
+        if seconds < 172_800 { return "\(seconds / 3600) h ago" }
+        return "\(seconds / 86400) days ago"
     }
 
     static func time(_ iso: String) -> String {

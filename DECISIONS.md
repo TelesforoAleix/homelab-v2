@@ -495,6 +495,8 @@ window still owns. A night-window error never stops the rest of the tick.
 
 **2026-10-15 — Usage figures are read from local files only.** Codex's newest five-hour/weekly
 `rate_limits` entry is read from its session logs, newest files first, as of the entry's own
-timestamp. Claude's arrive through `usage-snapshot`, which keeps only the two windows and a time,
-never prints and always exits 0, so it cannot disturb the owner's status line. Waiting estimates
-use only published `seconds_per_image`; other purposes show their count with no estimate.
+timestamp. Claude's come read-only from `~/.claude/usage-now.json`, which the owner's status line
+already writes with the owner's approval, as of its `at` time; a missing or invalid file is
+unknown. The repository ships no status-line script and the app never writes usage. Each source
+reports its age. Waiting estimates use only published `seconds_per_image`; other purposes show
+their count with no estimate.

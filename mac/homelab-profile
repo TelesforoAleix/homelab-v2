@@ -783,7 +783,8 @@ def waiting_purposes(audit, timings):
 
 
 CODEX_SESSIONS = Path.home() / ".codex/sessions"
-CLAUDE_SNAPSHOT = Path.home() / ".local/state/homelab-usage/claude.json"
+# Written by the owner's Claude Code status line; read only.
+CLAUDE_USAGE = Path.home() / ".claude/usage-now.json"
 
 
 def iso(value):
@@ -835,22 +836,31 @@ def codex_usage(root=None):
 
 
 def claude_usage(path=None):
-    path = path or CLAUDE_SNAPSHOT
+    """{"at": epoch seconds, "rate_limits": {"five_hour": ..., "seven_day": ...}}, or unknown."""
+    path = path or CLAUDE_USAGE
     with contextlib.suppress(OSError, ValueError, AttributeError):
         saved = json.loads(path.read_text())
-        five = usage_window(saved.get("five_hour"), "used_percentage")
-        seven = usage_window(saved.get("seven_day"), "used_percentage")
-        as_of = iso(saved.get("as_of"))
+        limits = saved.get("rate_limits")
+        five = usage_window(limits.get("five_hour"), "used_percentage")
+        seven = usage_window(limits.get("seven_day"), "used_percentage")
+        at = saved.get("at")
+        as_of = iso(at) if type(at) in (int, float) else None
         if five and seven and as_of:
             return {"as_of": as_of, "five_hour": five, "seven_day": seven}
     return None
 
 
-def usage_report():
+def usage_report(now=None):
+    now = time.time() if now is None else now
     codex = None
     with contextlib.suppress(OSError):
         codex = codex_usage()
-    return {"read_at": iso(time.time()), "codex": codex, "claude": claude_usage()}
+    sources = {"codex": codex, "claude": claude_usage()}
+    for source in filter(None, sources.values()):
+        # Age of the figures, from their own timestamp; never negative for a skewed clock.
+        read = datetime.fromisoformat(source["as_of"]).timestamp()
+        source["age_seconds"] = max(0, round(now - read))
+    return {"read_at": iso(now), **sources}
 
 
 def inference_plan(cfg):

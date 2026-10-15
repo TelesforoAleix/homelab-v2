@@ -614,8 +614,8 @@ It builds `mac/MenuBar` in release mode, replaces `~/Applications/HomeLab.app`, 
 and at every login. A LaunchAgent works with an ad hoc signature; no Developer ID is needed. The
 bundle's `Info.plist` records this checkout's `mac/homelab-profile` and interpreter
 (`.venv/bin/python3`, else `python3`), so the app runs the same command as the
-`org.homelab.profile` agent. Rerun the script after pulling changes. The installer also copies
-`usage-snapshot` to `~/.local/bin`. The menu bar icon shows the state: laptop (*Working*), bolt
+`org.homelab.profile` agent. Rerun the script after pulling changes. The menu bar icon shows
+the state: laptop (*Working*), bolt
 (*Inference*), pause (*paused*), sliders (*Custom*).
 
 The commands it uses, all JSON on stdout:
@@ -637,25 +637,18 @@ count × the purpose's `seconds_per_image`; purposes publishing none (today `vis
 embeddings) show the count with “estimate unavailable”. Nothing is written on the node or
 locally, and there is no queue. Unreachable node: the menu says waiting work is unavailable.
 
-**Usage, on *Refresh*.** `usage` reads local files only:
+**Usage, on *Refresh*.** `usage` reads local files only, without writing any:
 
 - Codex: the newest `rate_limits` entry in `~/.codex/sessions/**/*.jsonl` with `primary` 300 and
   `secondary` 10,080 window minutes (other limit families are ignored), newest files first.
   `used_percent` and `resets_at` become the 5-hour and 7-day figures, as of the entry's timestamp.
-- Claude: the snapshot written by Claude Code's status line, as of the time it was written.
-  Until it exists, Claude shows “unknown”.
+- Claude: `~/.claude/usage-now.json`, which the owner's status line already writes whenever a
+  Claude chat renders it: `{"at": <epoch seconds>, "rate_limits": {"five_hour": {...},
+  "seven_day": {...}}}` with `used_percentage` and `resets_at`. The figures are as of `at`.
+  A missing or invalid file shows Claude as “unknown”. Nothing in the status line needs changing.
 
-To feed the Claude snapshot, add one line to the owner's own status-line script, after the line
-that reads Claude Code's JSON from stdin into `$input`:
-
-```bash
-printf '%s' "$input" | "$HOME/.local/bin/usage-snapshot"
-```
-
-`usage-snapshot` keeps only `rate_limits.five_hour` and `seven_day` (`used_percentage`,
-`resets_at`) plus the time, in mode-0600 `~/.local/state/homelab-usage/claude.json`. It never
-prints and always exits 0, so it cannot change or break the status line; input without both
-windows leaves the previous snapshot. Usage values stay on the Mac and out of git.
+Each source reports `age_seconds` from its own timestamp, and the menu shows it beside the
+“as of” time. Usage values stay on the Mac and out of git.
 
 **Night window.** Off by default. Set it in the menu (start, end, days, *Save*; the switch turns
 it on or off) or with `schedule`; it is stored in private `~/.config/homelab/night-window.json`.
@@ -679,9 +672,8 @@ rm "$HOME/Library/LaunchAgents/org.homelab.menu.plist"
 rm -rf "$HOME/Applications/HomeLab.app"
 ```
 
-Remove the `usage-snapshot` line from the status line, then optionally
-`rm "$HOME/.local/bin/usage-snapshot"` and `rm -r "$HOME/.local/state/homelab-usage"`. The profile
-agent and its idle return and jobs keep working without the app.
+The profile agent and its idle return and jobs keep working without the app. The app wrote
+nothing for usage, so there is nothing else to remove.
 
 ## Mac action listener
 
