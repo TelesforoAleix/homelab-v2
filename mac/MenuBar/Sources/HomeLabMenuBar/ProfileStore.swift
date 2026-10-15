@@ -50,7 +50,8 @@ final class ProfileStore: ObservableObject {
             waitingError = nil
         } else {
             waiting = nil
-            waitingError = "Waiting work unavailable: the node could not be read."
+            // The command names which node read failed.
+            waitingError = result.message
         }
     }
 

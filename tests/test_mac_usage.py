@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -51,7 +53,7 @@ MODEL_INFO = {
 def test_waiting_counts_blocked_audit_lines_and_estimates_only_published_timings(monkeypatch):
     commands = []
 
-    def node(command):
+    def node(command, what, **kwargs):
         commands.append(command)
         return json.dumps(MODEL_INFO) if "model/info" in command else AUDIT
 
@@ -80,7 +82,8 @@ def test_waiting_counts_blocked_audit_lines_and_estimates_only_published_timings
         ],
     }
     audit = next(c for c in commands if "journalctl" in c)
-    assert "-u homelab.service" in audit and "--since '24 hours ago'" in audit
+    assert "CONTAINER_NAME=homelab-litellm-1" in audit
+    assert "-u homelab.service" not in audit and "--since '24 hours ago'" in audit
     assert all(word not in " ".join(commands) for word in ("rm ", "tee", ">", "restart", "POST"))
 
 
@@ -91,13 +94,59 @@ def test_waiting_reads_the_node_only_through_the_agent_account(monkeypatch):
         "run",
         lambda args, **kwargs: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
     )
-    profile.node("true")
+    profile.node("true", "test read")
     assert calls[0][0] == "/usr/bin/ssh" and calls[0][-2:] == ["homelab-agent", "true"]
     assert "BatchMode=yes" in calls[0]
 
 
 def test_waiting_with_nothing_blocked():
     assert profile.waiting_purposes("", {}) == []
+
+
+def test_waiting_empty_journal_exit_one_means_no_refusals(monkeypatch):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args[-1])
+        if args[-1] == profile.MODEL_INFO_COMMAND:
+            return subprocess.CompletedProcess(args, 0, json.dumps(MODEL_INFO), "")
+        return subprocess.CompletedProcess(args, 1, "", "")
+
+    monkeypatch.setattr(profile.subprocess, "run", run)
+    assert profile.waiting_report() == {"since_hours": 24, "purposes": []}
+    assert calls == [profile.MODEL_INFO_COMMAND, profile.AUDIT_COMMAND]
+
+
+@pytest.mark.parametrize(
+    "command,stage",
+    [
+        (profile.AUDIT_COMMAND, "reading gateway audit lines"),
+        (profile.MODEL_INFO_COMMAND, "reading /v1/model/info"),
+    ],
+)
+@pytest.mark.parametrize(
+    "exit_code,stdout,stderr", [(1, "", "denied"), (1, "unexpected", ""), (255, "", "ssh error")]
+)
+def test_waiting_node_failures_name_the_call_without_output(
+    monkeypatch, command, stage, exit_code, stdout, stderr
+):
+    def run(args, **kwargs):
+        if args[-1] == command:
+            return subprocess.CompletedProcess(args, exit_code, stdout, stderr)
+        return subprocess.CompletedProcess(args, 0, json.dumps(MODEL_INFO), "")
+
+    monkeypatch.setattr(profile.subprocess, "run", run)
+    with pytest.raises(profile.ProfileRefusal, match=stage) as failure:
+        profile.waiting_report()
+    assert "denied" not in str(failure.value)
+    assert "unexpected" not in str(failure.value)
+    assert "ssh error" not in str(failure.value)
+
+
+def test_waiting_bad_model_metadata_names_the_call(monkeypatch):
+    monkeypatch.setattr(profile, "node", lambda *args, **kwargs: "not json")
+    with pytest.raises(profile.ProfileRefusal, match="/v1/model/info returned invalid JSON"):
+        profile.waiting_report()
 
 
 def write_session(path, entries):
@@ -158,6 +207,37 @@ def test_codex_usage_falls_back_to_older_files_and_reports_missing(tmp_path):
     write_session(root / "b.jsonl", [{"timestamp": "2026-10-15T10:00:00Z", "payload": {}}])
     os.utime(root / "a.jsonl", (1, 1))
     assert profile.codex_usage(root)["five_hour"]["used_percentage"] == 5
+
+
+@pytest.mark.parametrize("window", ["primary", "secondary"])
+def test_codex_usage_skips_newest_null_window(tmp_path, window):
+    complete = codex_entry("2026-10-15T15:00:00Z", 5, 6)
+    newest = codex_entry("2026-10-15T16:00:00Z", 100, 100)
+    newest["payload"]["rate_limits"][window] = None
+    write_session(tmp_path / "session.jsonl", [complete, newest])
+    result = profile.codex_usage(tmp_path)
+    assert result["as_of"] == "2026-10-15T15:00:00+00:00"
+    assert result["five_hour"]["used_percentage"] == 5
+    assert result["seven_day"]["used_percentage"] == 6
+
+
+@pytest.mark.parametrize("window", ["primary", "secondary"])
+def test_codex_usage_only_null_windows_are_unknown(tmp_path, window):
+    entry = codex_entry("2026-10-15T16:00:00Z", 100, 100)
+    entry["payload"]["rate_limits"][window] = None
+    write_session(tmp_path / "session.jsonl", [entry])
+    assert profile.codex_usage(tmp_path) is None
+
+
+def test_codex_usage_null_entry_falls_back_to_complete_older_file(tmp_path):
+    old = tmp_path / "old.jsonl"
+    new = tmp_path / "new.jsonl"
+    write_session(old, [codex_entry("2026-10-15T15:00:00Z", 5, 6)])
+    entry = codex_entry("2026-10-15T16:00:00Z", 100, 100)
+    entry["payload"]["rate_limits"] = None
+    write_session(new, [entry])
+    os.utime(old, (1, 1))
+    assert profile.codex_usage(tmp_path)["five_hour"]["used_percentage"] == 5
 
 
 CLAUDE_NOW = {

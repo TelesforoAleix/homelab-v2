@@ -730,9 +730,11 @@ def schedule_off():
 
 
 NODE_SSH = ("/usr/bin/ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "homelab-agent")
+# Docker's journald driver files the gateway's audit lines under its container, not the unit.
+# --grep exits 1 when nothing matches; -q keeps that case silent so it reads as zero refusals.
 AUDIT_COMMAND = (
-    "sudo journalctl -u homelab.service --since '24 hours ago' -o cat --no-pager "
-    "--grep 'profile_blocked=true'"
+    "sudo journalctl CONTAINER_NAME=homelab-litellm-1 --since '24 hours ago' -o cat --no-pager "
+    "-q --grep 'profile_blocked=true'"
 )
 # /v1/model/info is public metadata; LiteLLM publishes no host port, so ask from its container.
 MODEL_INFO_COMMAND = (
@@ -745,18 +747,35 @@ MODEL_INFO_COMMAND = (
 )
 
 
-def node(command):
-    return subprocess.run(
-        [*NODE_SSH, command], capture_output=True, text=True, timeout=60, check=True
-    ).stdout
+def node(command, what, *, no_match_ok=False):
+    """Run one read-only command as homelab-agent; failures name the call, never its output."""
+    try:
+        result = subprocess.run(
+            [*NODE_SSH, command], capture_output=True, text=True, timeout=60, check=False
+        )
+    except subprocess.TimeoutExpired:
+        raise ProfileRefusal(f"waiting unavailable: {what} on the node timed out") from None
+    except OSError:
+        raise ProfileRefusal(f"waiting unavailable: {what} could not start ssh") from None
+    if result.returncode == 0:
+        return result.stdout
+    if no_match_ok and result.returncode == 1 and not result.stdout and not result.stderr:
+        return ""
+    reason = "ssh could not connect" if result.returncode == 255 else f"exit {result.returncode}"
+    raise ProfileRefusal(f"waiting unavailable: {what} on the node failed ({reason})")
 
 
 def waiting_report():
+    try:
+        info = json.loads(node(MODEL_INFO_COMMAND, "reading /v1/model/info"))
+    except json.JSONDecodeError:
+        raise ProfileRefusal("waiting unavailable: /v1/model/info returned invalid JSON") from None
     timings = {}
-    for row in json.loads(node(MODEL_INFO_COMMAND)).get("data", []):
+    for row in info.get("data", []) if isinstance(info, dict) else []:
         if isinstance(row, dict) and isinstance(row.get("model_info"), dict):
             timings[row.get("model_name")] = row["model_info"].get("seconds_per_image")
-    return {"since_hours": 24, "purposes": waiting_purposes(node(AUDIT_COMMAND), timings)}
+    audit = node(AUDIT_COMMAND, "reading gateway audit lines", no_match_ok=True)
+    return {"since_hours": 24, "purposes": waiting_purposes(audit, timings)}
 
 
 def waiting_purposes(audit, timings):
@@ -807,8 +826,14 @@ def usage_window(row, percent_key):
     return {"used_percentage": used, "resets_at": iso(row.get("resets_at"))}
 
 
+def codex_window(limits, name):
+    """A rate-limit window with its length in minutes, or None (Codex writes null at its limit)."""
+    window = limits.get(name) if isinstance(limits, dict) else None
+    return window if isinstance(window, dict) else None
+
+
 def codex_usage(root=None):
-    """The newest five-hour/seven-day rate_limits entry in Codex's session logs."""
+    """The newest entry carrying both five-hour and seven-day windows in Codex's session logs."""
     root = root or CODEX_SESSIONS
     files = sorted(root.rglob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
     for path in files:
@@ -817,21 +842,23 @@ def codex_usage(root=None):
             for line in handle:
                 if '"rate_limits"' not in line:
                     continue
-                with contextlib.suppress(ValueError):
+                with contextlib.suppress(ValueError, TypeError, KeyError, AttributeError):
                     entry = json.loads(line)
                     limits = entry["payload"]["rate_limits"]
-                    windows = (
-                        limits["primary"]["window_minutes"],
-                        limits["secondary"]["window_minutes"],
-                    )
+                    primary = codex_window(limits, "primary")
+                    secondary = codex_window(limits, "secondary")
+                    if not primary or not secondary:
+                        continue  # a null window is unknown, not an error: look further back
+                    windows = (primary.get("window_minutes"), secondary.get("window_minutes"))
                     stamp = iso(entry["timestamp"])
-                    if windows == (300, 10080) and stamp and (not newest or stamp >= newest[0]):
-                        newest = (stamp, limits)
+                    five = usage_window(primary, "used_percent")
+                    seven = usage_window(secondary, "used_percent")
+                    if windows != (300, 10080) or not (stamp and five and seven):
+                        continue
+                    if not newest or stamp >= newest["as_of"]:
+                        newest = {"as_of": stamp, "five_hour": five, "seven_day": seven}
         if newest:
-            five = usage_window(newest[1]["primary"], "used_percent")
-            seven = usage_window(newest[1]["secondary"], "used_percent")
-            if five and seven:
-                return {"as_of": newest[0], "five_hour": five, "seven_day": seven}
+            return newest
     return None
 
 

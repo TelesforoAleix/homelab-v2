@@ -630,17 +630,20 @@ mac/homelab-profile schedule off
 ```
 
 **Waiting work.** `waiting` runs two read-only commands over `ssh homelab-agent` (batch mode,
-10-second connect limit): `journalctl -u homelab.service --since '24 hours ago'` filtered to
-`profile_blocked=true` audit lines, and the public `GET /v1/model/info` from inside the LiteLLM
+10-second connect limit): `journalctl CONTAINER_NAME=homelab-litellm-1 --since '24 hours ago'`
+filtered to `profile_blocked=true` audit lines, and the public `GET /v1/model/info` from inside the LiteLLM
 container (it publishes no host port). It counts `model_call` lines per purpose. An estimate is
 count × the purpose's `seconds_per_image`; purposes publishing none (today `vision` and the
 embeddings) show the count with “estimate unavailable”. Nothing is written on the node or
-locally, and there is no queue. Unreachable node: the menu says waiting work is unavailable.
+locally, and there is no queue. An empty journal query (exit 1) means no refusals. The container
+selector excludes proof containers and sudo audit entries. If a node read fails, the command
+and menu name the failing read without displaying its output.
 
 **Usage, on *Refresh*.** `usage` reads local files only, without writing any:
 
 - Codex: the newest `rate_limits` entry in `~/.codex/sessions/**/*.jsonl` with `primary` 300 and
   `secondary` 10,080 window minutes (other limit families are ignored), newest files first.
+  Null or missing windows are skipped; without a complete entry usage is unknown.
   `used_percent` and `resets_at` become the 5-hour and 7-day figures, as of the entry's timestamp.
 - Claude: `~/.claude/usage-now.json`, which the owner's status line already writes whenever a
   Claude chat renders it: `{"at": <epoch seconds>, "rate_limits": {"five_hour": {...},

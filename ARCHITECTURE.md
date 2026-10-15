@@ -169,7 +169,8 @@ command recorded in its bundle and renders its JSON (status, `plan-inference`, t
 refusal, `waiting`, `usage`, `schedule`), holding no profile rules. It is ad hoc signed into
 `~/Applications` and started at login by the `org.homelab.menu` user LaunchAgent; it uses only
 Apple's SDK. `waiting` makes two read-only calls over the node-only `homelab-agent` SSH account:
-the last 24 hours of `homelab.service` journal lines with `profile_blocked=true`, and public
+the last 24 hours of `CONTAINER_NAME=homelab-litellm-1` journal lines with
+`profile_blocked=true`, and public
 `/v1/model/info` from inside the LiteLLM container. It returns counts per purpose, with an
 estimate only where `seconds_per_image` is published, and keeps nothing; there is no queue.
 `usage` only reads local files: Codex's session logs and `~/.claude/usage-now.json`, which the
