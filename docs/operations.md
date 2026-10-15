@@ -913,6 +913,8 @@ SSH accounts work through Tailscale.
    ssh homelab-agent 'id'
    ```
 
+   Before applying SSH hardening, create `dictation-backup` and its root-controlled, restricted `authorized_keys` using the [mac-dictation repository's documentation](https://github.com/TelesforoAleix/mac-dictation); account and key provisioning belong there.
+
 6. **Apply `node/` with its recorded modes.** Before the encrypted-volume clone exists,
    download the public merged `main` source archive to the owner's home. This is a bootstrap
    copy of committed files, not an installer script. Inspect each difference before copying;

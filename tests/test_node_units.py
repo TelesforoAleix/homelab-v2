@@ -103,6 +103,26 @@ def test_firewall_restricts_both_physical_interfaces_for_ipv4_and_ipv6():
             assert f"-A DOCKER-USER -i {interface} -j DROP" in rules
 
 
+def test_ssh_admits_only_admin_agent_and_restricted_dictation_backup():
+    config = (ROOT / "node/etc/ssh/sshd_config.d/10-homelab-hardening.conf").read_text()
+    lines = [
+        line.strip() for line in config.splitlines() if line.strip() and not line.startswith("#")
+    ]
+    assert [line.split()[1:] for line in lines if line.lower().startswith("allowusers ")] == [
+        ["aleix", "homelab-agent", "dictation-backup"]
+    ]
+    match = lines.index("Match User dictation-backup")
+    assert lines[match + 1 :] == [
+        "AllowTcpForwarding no",
+        "AllowAgentForwarding no",
+        "AllowStreamLocalForwarding no",
+        "PermitTTY no",
+        "X11Forwarding no",
+        "PermitTunnel no",
+        "ForceCommand /usr/bin/rrsync -wo /srv/homelab/voice-data/originals/dictation",
+    ]
+
+
 def test_notifier_has_exactly_current_alert_aliases():
     aliases = dict(re.findall(r'^\s*(\S+)\)\s+unit="([^"]+)"\s*;;', NOTIFIER.read_text(), re.M))
     assert aliases == ALERT_UNITS
