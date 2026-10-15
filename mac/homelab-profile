@@ -216,14 +216,17 @@ def vscode_work(rows=None):
         if "Visual Studio Code.app/" in cmd or re.search(r"\bCode Helper\b", cmd)
     }
     family = descendants(rows, roots)
+    # GPU use cannot be established from ps. Conservatively include runtimes that may
+    # own GPU work, including scripts whose filename does not advertise inference.
     pattern = (
-        r"\bcodex\s+exec\b|\bllama-server\b|\bmlx[_ .-]|\bollama\s+serve\b|"
-        r"\bvllm\b|\b(?:python\S*\s+.*(?:train|infer|gpu))"
+        r"\bcodex(?:\s+\S+)*?\s+exec\b|\bllama-server\b|\bmlx[_ .-]|"
+        r"\bollama\b|\bvllm\b|\b(?:python[\d.]*|uv|torchrun|accelerate|"
+        r"node|bun|deno|julia|Rscript|swift|metal|ffmpeg)(?:\s|$)"
     )
     return [
         {"pid": pid, "command": rows[pid][1]}
         for pid in sorted(family)
-        if re.search(pattern, rows[pid][1], re.I)
+        if pid != os.getpid() and re.search(pattern, rows[pid][1], re.I)
     ]
 
 

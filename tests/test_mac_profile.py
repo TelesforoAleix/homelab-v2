@@ -143,8 +143,10 @@ def test_vscode_descendants_and_unrelated_work():
         7: (3, "python -m mlx_lm.server"),
         8: (3, "python train.py"),
         9: (0, "unrelated"),
+        10: (3, "python scripts/ordinary.py"),
+        11: (3, "codex --model example exec task"),
     }
-    assert {row["pid"] for row in p.vscode_work(rows)} == {4, 5, 7, 8}
+    assert {row["pid"] for row in p.vscode_work(rows)} == {4, 5, 7, 8, 10, 11}
 
 
 @pytest.mark.parametrize("active", ["loaded", "loading", "sleeping", "unloaded"])

@@ -423,7 +423,8 @@ image presets are excluded. Inference permits both router purposes, stops dictat
 quits the configured apps, selects High Power, disables system sleep and sets GPU wired memory
 to 45056 MB. Only an explicit owner `switch inference` enters it. Before any side effect,
 that command lists recognised `codex exec`, model servers and GPU jobs descending from
-VS Code and refuses; `--confirm-kill` is the owner's explicit override. Never use that override
+VS Code and refuses. Python and other possible GPU runtimes are conservatively included even
+when their script names do not mention inference. `--confirm-kill` is the owner's explicit override. Never use that override
 with the production app list from a chat terminal. Jobs inherit a marker that refuses entry
 into Inference, even with the confirmation flag. Registered job executables are owner-trusted
 code, not a sandbox for untrusted programs.
