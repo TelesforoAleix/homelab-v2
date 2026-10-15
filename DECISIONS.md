@@ -380,3 +380,16 @@ fields under `aspect_ratios` and `resolutions` or `qualities`. Existing GPT and 
 2.1 profiles already satisfy that rule and stay unchanged.
 
 **2026-10-14 — Estimate GPT Image 2.5 reference cost from measured Flare usage.** One versus two synthetic 2048 px references on Flare used 1,521 additional image tokens; at OpenAI's $8/M image-input rate ([OpenAI pricing](https://developers.openai.com/api/docs/pricing)), this estimates $0.0122/reference. Sunburst uses the same estimate by assumption.
+
+
+**2026-10-15 — One native Mac router loads vision and bulk embeddings on request.** Replace
+the two hand-started servers with llama.cpp router mode and per-model INI presets preserving
+their exact inference flags, projector and gateway model names. A generated user LaunchAgent
+keeps the lightweight router available at login on the existing node-only Tailscale port 8090;
+8092 is freed. Both private node URLs point at the router. Native autoload and idle sleep
+(default 600 seconds, configured once) own the model lifecycle, rather than adding start/stop
+actions to the backup listener or building model management ourselves. The listener on 8091
+and cleanup server on 8095 stay independent. No profiles, allow-lists, app quitting or system
+settings are introduced. Preserve embedding vectors, real-model reporting, 3-second connect
+limits and 300-second request limits. Runtime paths and addresses stay private; content logs
+are disabled. The retired vision pointer retains address discovery for the unchanged listener.

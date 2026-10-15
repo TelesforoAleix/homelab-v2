@@ -1,0 +1,26 @@
+; Rendered to private state at installation. Keys are native llama.cpp arguments.
+version = 1
+
+[*]
+load-on-startup = false
+log-disable = true
+
+[vision]
+model = @VISION_MODEL@
+mmproj = @PROJECTOR@
+ngl = 99
+c = 16384
+np = 1
+cache-ram = 0
+flash-attn = on
+
+[Qwen3-Embedding-4B]
+model = @EMBED_MODEL@
+ngl = 99
+embeddings = true
+pooling = last
+embd-normalize = 2
+c = 8192
+b = 2048
+ub = 2048
+t = 4
