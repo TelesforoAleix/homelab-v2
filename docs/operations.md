@@ -435,8 +435,11 @@ the LaunchAgent returns to Working. A private, atomic recovery record under
 `~/.local/state/homelab-profile/` records apps and services stopped by the switch; the return
 reopens only those. Apps/services already stopped remain stopped (so the resulting profile may
 be `custom`). A failed/cancelled quit retains the recovery record; explicitly `switch working`
-to recover. Apps must support macOS quit/session restoration; a failed restore is an error,
-never a force quit. The listener on 8091, the cleanup plist and VoiceInk settings are untouched.
+to recover. The command relaunches apps; window and tab restoration follows each app’s own
+settings. In Chrome, choose “Continue where you left off” if desired. macOS’s “Close windows
+when quitting an application” controls session restoration for apps using the system behaviour.
+VS Code restores windows by default. The owner chooses these settings; the command changes
+none of them and never force-quits an app. The listener on 8091, the cleanup plist and VoiceInk settings are untouched.
 
 The allow-list is a private router `allowed.json`; rendering omits disallowed presets without
 changing any model flags. Native `/models?reload=1` reconciles the presets and unloads removed
@@ -458,8 +461,9 @@ successfully without doing work. `job run` also uses launchd and the same gates.
 the main agent preserves job agents and state.
 
 **One-time privileged installation, after merge, by the owner:** inspect the script and
-sudoers template first. Verify `/usr/local` and `/usr/local/sbin` are root-owned and not
-writable by the owner; do not install this grant in a user-writable directory. From the merged
+sudoers template first. Verify `/usr/local` is root-owned and not writable by the owner.
+The first command creates `/usr/local/sbin` if absent; verify it is root-owned and not writable
+by the owner before installing the helper. Do not install this grant in a user-writable directory. From the merged
 clone, typing the password:
 
 ```bash
@@ -496,10 +500,14 @@ with `--skip-settings`. From the orchestrator terminal, `check-work` and an unco
 Inference switch must list the running chat and refuse without changing anything. After that
 proof, only with the test app list verified, use `switch inference --skip-settings --confirm-kill`;
 VS Code and Chrome are excluded. Check the stopped apps/services, wait for the automatic
-return and confirm the saved document, VoiceInk and cleanup restore. No app state may be lost.
+return and confirm TextEdit, VoiceInk and cleanup relaunch. Acceptance checks app relaunch,
+not document/window restoration; that follows the owner’s app and macOS settings.
 Restore the private configuration afterwards; leave services in Working and report actual
 settings (which may make the production profile `custom` until privileged installation).
 `--skip-settings` persists across the automatic return and is reported explicitly in status.
+To rerun only the cycle from production configuration, use
+`uv run python tests/mac_profile_acceptance.py cycle`; it prepares the safe TextEdit-only test
+configuration and restores the original configuration afterwards, without repeating the guard proof.
 
 ## Mac action listener
 

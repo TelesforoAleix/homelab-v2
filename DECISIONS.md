@@ -416,3 +416,12 @@ with the owner's password and protected root-owned parent directories. launchd o
 jobs and deferred idle launches; one pending bit coalesces missed runs, without a work queue.
 A job context marker and worker-ancestry check reject Inference entry, including through
 wrappers that strip environment variables; jobs execute outside the VS Code process tree. The public example contains no owner's app list or paths.
+
+
+**2026-10-15 — Profile return guarantees app relaunch, not document restoration.**
+Mac acceptance proved graceful quits and automatic relaunch of TextEdit and dictation.
+TextEdit did not reopen its saved document with macOS’s default “Close windows when quitting
+an application” behaviour. The orchestrator resolved this escalation: acceptance checks app
+relaunch; window and tab restoration belongs to each app’s settings. Document Chrome’s
+“Continue where you left off” and the macOS option for the owner to choose, without changing
+any app or system preference.

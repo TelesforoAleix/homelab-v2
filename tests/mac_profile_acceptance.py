@@ -2,7 +2,8 @@
 
 prepare: capture settings, install safe test profiles, and establish Working.
 guard: prove the chat's codex exec is listed and unconfirmed switching refuses.
-cycle: stop dictation/TextEdit, wait for launchd return, prove the saved document reopens.
+cycle: stop dictation/TextEdit, wait for launchd return, prove each app relaunches.
+       From production config, prepares and restores the safe test config automatically.
 restore: restore the original private config; leaves model availability in Working.
 Never includes VS Code or Chrome in a quit list. Never invokes sudo.
 """
@@ -43,6 +44,14 @@ def safe_config():
 
 
 def main(stage):
+    if stage == "cycle" and not BACKUP.exists():
+        main("prepare")
+        try:
+            main("cycle")
+        finally:
+            if not p.load(p.STATE / "session.json", {}).get("return_pending"):
+                main("restore")
+        return
     if stage == "prepare":
         assert not BACKUP.exists(), "acceptance backup already exists; restore before rerunning"
         assert not p.load(p.STATE / "session.json", {}).get("return_pending"), (
@@ -94,11 +103,6 @@ def main(stage):
         before = p.snapshot(cfg)
         assert before["profile"] == "working"
         assert p.app_running("com.apple.TextEdit")
-        assert p.run(
-            "/usr/bin/osascript",
-            "-e",
-            'tell application id "com.apple.TextEdit" to get name of every document',
-        )
         # The explicit override is safe here only because safe_config verified the test list.
         cli("switch", "inference", "--skip-settings", "--confirm-kill")
         now = p.snapshot(cfg)
@@ -112,15 +116,9 @@ def main(stage):
         after = p.snapshot(cfg)
         assert after["profile"] == "working" and not after["return_pending"], after
         assert p.app_running("com.apple.TextEdit")
-        documents = p.run(
-            "/usr/bin/osascript",
-            "-e",
-            'tell application id "com.apple.TextEdit" to get name of every document',
-        )
-        assert FIXTURE.name in documents, "ESCALATE: TextEdit did not restore the saved document"
         assert FIXTURE.read_text() == "Harmless profile acceptance document.\n"
         cli("status")
-        print("cycle=passed document_restored=true dictation_restored=true settings_unchanged=true")
+        print("cycle=passed apps_relaunched=true dictation_restored=true settings_unchanged=true")
     elif stage == "restore":
         assert not p.load(p.STATE / "session.json", {}).get("return_pending"), (
             "recover Working first"
