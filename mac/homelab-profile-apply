@@ -9,10 +9,35 @@ import subprocess
 import sys
 
 DEFAULTS = {
-    "working": {"powermode": 1, "sleep": 1, "gpu_limit_mb": 0},
+    "working": {"sleep": 1, "gpu_limit_mb": 0},
     "inference": {"powermode": 2, "sleep": 0, "gpu_limit_mb": 45056},
 }
 BOUNDS = {"powermode": (0, 2), "sleep": (0, 180), "gpu_limit_mb": (0, 45056)}
+
+
+def read_private(path, uid):
+    # Neither profile configuration nor recorded recovery state is trusted root code.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd) as handle:
+        info = os.fstat(handle.fileno())
+        if info.st_uid != uid or not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+            raise ValueError("invalid private file")
+        value = json.loads(handle.read(65537))
+    if not isinstance(value, dict):
+        raise ValueError("invalid private file")
+    return value
+
+
+def run(argv, capture=False):
+    return subprocess.run(
+        argv,
+        check=True,
+        stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+        timeout=30,
+        text=True,
+    )
 
 
 def apply(profile):
@@ -22,38 +47,44 @@ def apply(profile):
     home = pwd.getpwuid(uid).pw_dir
     path = home + "/.config/homelab/profiles.json"
     values = DEFAULTS[profile].copy()
-    # Never follow a final symlink or expose data from a root-readable file.
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd) as handle:
-        info = os.fstat(handle.fileno())
-        if info.st_uid != uid or not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
-            raise ValueError("invalid configuration file")
-        config = json.loads(handle.read(65537))
-        if not isinstance(config, dict) or not isinstance(config.get("profiles", {}), dict):
-            raise ValueError("invalid configuration")
-        entry = config.get("profiles", {}).get(profile, {})
-        if not isinstance(entry, dict) or not isinstance(entry.get("settings", {}), dict):
-            raise ValueError("invalid settings")
-        values.update(entry.get("settings", {}))
-    if set(values) != set(BOUNDS):
+    config = read_private(path, uid)
+    if not isinstance(config.get("profiles", {}), dict):
+        raise ValueError("invalid configuration")
+    entry = config.get("profiles", {}).get(profile, {})
+    if not isinstance(entry, dict) or not isinstance(entry.get("settings", {}), dict):
         raise ValueError("invalid settings")
-    for key, (low, high) in BOUNDS.items():
-        if type(values[key]) is not int or not low <= values[key] <= high:
+    values.update(entry.get("settings", {}))
+    if profile == "working":
+        values.pop("powermode", None)  # Ignore the legacy Working field.
+        try:
+            record = read_private(home + "/.local/state/homelab-profile/session.json", uid)
+        except FileNotFoundError:
+            record = {}
+        if record.get("return_pending") is True:
+            mode = record.get("previous_powermode")
+            if type(mode) is not int or mode not in (0, 1, 2):
+                raise ValueError("invalid recorded power mode")
+            values["powermode"] = mode
+    elif values.get("powermode") != 2 or type(values["powermode"]) is not int:
+        raise ValueError("Inference requires High Power")
+    if set(values) - set(BOUNDS) or not {"sleep", "gpu_limit_mb"} <= set(values):
+        raise ValueError("invalid settings")
+    for key, value in values.items():
+        low, high = BOUNDS[key]
+        if type(value) is not int or not low <= value <= high:
             raise ValueError("setting outside approved bounds")
+    if profile == "inference":
+        source = run(["/usr/bin/pmset", "-g", "batt"], capture=True).stdout
+        if not source.startswith("Now drawing from 'AC Power'"):
+            raise ValueError("Inference requires AC power")
     # No shell, user executable, environment lookup, arbitrary sysctl or extra flags.
+    if "powermode" in values:
+        run(["/usr/bin/pmset", "-a", "powermode", str(values["powermode"])])
     for argv in (
-        ["/usr/bin/pmset", "-a", "powermode", str(values["powermode"])],
         ["/usr/bin/pmset", "-a", "sleep", str(values["sleep"])],
         ["/usr/sbin/sysctl", "-w", "iogpu.wired_limit_mb=" + str(values["gpu_limit_mb"])],
     ):
-        subprocess.run(
-            argv,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
-            timeout=30,
-        )
+        run(argv)
 
 
 if __name__ == "__main__":

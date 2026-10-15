@@ -41,6 +41,8 @@ def safe_config():
     assert cfg["profiles"]["working"]["close_apps"] == []
     assert cfg["profiles"]["inference"]["close_apps"] == ["com.apple.TextEdit"]
     assert cfg["return_seconds"] == 15
+    assert "powermode" not in cfg["profiles"]["working"]["settings"]
+    assert cfg["profiles"]["inference"]["settings"]["powermode"] == 2
     return cfg
 
 
@@ -54,6 +56,7 @@ def main(stage):
                 main("restore")
         return
     if stage == "prepare":
+        assert p.on_ac_power(), "Inference acceptance requires the charger"
         assert not BACKUP.exists(), "acceptance backup already exists; restore before rerunning"
         assert not p.load(p.STATE / "session.json", {}).get("return_pending"), (
             "recover Working first"
@@ -63,7 +66,11 @@ def main(stage):
         cfg = {"profiles": p.config()["profiles"], "return_seconds": 15}
         observed = p.settings()
         for name, profile in cfg["profiles"].items():
-            profile["settings"] = observed
+            profile["settings"] = {
+                key: value for key, value in observed.items() if key != "powermode"
+            }
+            if name == "inference":
+                profile["settings"]["powermode"] = 2
             profile["close_apps"] = ["com.apple.TextEdit"] if name == "inference" else []
             profile["jobs"] = False
         p.save(p.CONFIG, cfg)
@@ -109,7 +116,14 @@ def main(stage):
         # The explicit override is safe here only because safe_config verified the test list.
         cli("switch", "inference", "--skip-settings", "--confirm-kill")
         now = p.snapshot(cfg)
-        assert now["profile"] == "inference"
+        # Skipping settings never claims High Power was set if the owner chose another mode.
+        expected = "inference" if before["settings"]["powermode"] == 2 else "custom"
+        assert now["profile"] == expected
+        assert now["return_pending"] and now["settings_skipped"]
+        assert (
+            p.load(p.STATE / "session.json", {})["previous_powermode"]
+            == (before["settings"]["powermode"])
+        )
         assert not now["services"]["cleanup"]["running"]
         assert not now["services"]["voiceink"]["running"]
         assert not p.app_running("com.apple.TextEdit")
@@ -118,6 +132,7 @@ def main(stage):
             time.sleep(2)
         after = p.snapshot(cfg)
         assert after["profile"] == "working" and not after["return_pending"], after
+        assert after["settings"] == before["settings"]
         assert p.app_running("com.apple.TextEdit")
         assert FIXTURE.read_text() == "Harmless profile acceptance document.\n"
         cli("status")

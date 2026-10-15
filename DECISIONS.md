@@ -425,3 +425,16 @@ an application” behaviour. The orchestrator resolved this escalation: acceptan
 relaunch; window and tab restoration belongs to each app’s settings. Document Chrome’s
 “Continue where you left off” and the macOS option for the owner to choose, without changing
 any app or system preference.
+
+
+**2026-10-15 — G14: Working follows the owner’s power mode; Inference requires AC.**
+Remove power mode from Working’s defaults, settings application and matching; legacy private
+fields are ignored without rewriting the owner’s file. Inference requires AC before any
+switching side effect and selects High Power; the privileged helper rechecks AC before writes.
+Record the observed power mode before entry and restore it on every return, including idle
+and unplug returns. The existing 30-second launchd check prioritises unplug return even while
+models or jobs are active, reopening precisely the recorded apps/services. Sleep prevention
+and the 45056 MB GPU limit remain unchanged. Keep the two exact sudoers argument forms:
+the standalone helper validates the invoking owner’s private recovery record, accepting only
+integer modes 0–2, rather than accepting extra command arguments. Ordinary Working invocation
+with no pending return leaves power mode alone.

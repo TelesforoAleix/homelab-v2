@@ -26,7 +26,7 @@ DEFAULTS = {
     "working": {
         "services": ["embed-large-bulk", "cleanup", "voiceink"],
         "close_apps": [],
-        "settings": {"powermode": 1, "sleep": 1, "gpu_limit_mb": 0},
+        "settings": {"sleep": 1, "gpu_limit_mb": 0},
         "jobs": True,
     },
     "inference": {
@@ -68,7 +68,7 @@ def config():
         ):
             raise ValueError("invalid profile configuration")
         profiles[name].update(overrides)
-    for profile in profiles.values():
+    for name, profile in profiles.items():
         if (
             not isinstance(profile["services"], list)
             or not all(isinstance(s, str) for s in profile["services"])
@@ -82,7 +82,10 @@ def config():
         for app in profile["close_apps"]:
             if not isinstance(app, str) or not re.fullmatch(r"[A-Za-z0-9.-]+", app):
                 raise ValueError("apps must be bundle identifiers")
-        validate_settings(profile["settings"])
+        if name == "working" and isinstance(profile["settings"], dict):
+            # Private files installed before G14 may retain this now-ignored field.
+            profile["settings"].pop("powermode", None)
+        validate_settings(profile["settings"], inference=name == "inference")
     for key in ("return_seconds", "idle_seconds"):
         if type(value.get(key, 900 if key == "return_seconds" else 300)) is not int:
             raise ValueError("idle intervals must be integer seconds")
@@ -91,13 +94,38 @@ def config():
     return {**value, "profiles": profiles}
 
 
-def validate_settings(settings):
-    bounds = {"powermode": (0, 2), "sleep": (0, 180), "gpu_limit_mb": (0, 45056)}
+def validate_settings(settings, *, inference=False):
+    bounds = {"sleep": (0, 180), "gpu_limit_mb": (0, 45056)}
+    if inference:
+        bounds["powermode"] = (2, 2)
     if not isinstance(settings, dict) or set(settings) != set(bounds):
         raise ValueError("invalid system settings")
     for key, (low, high) in bounds.items():
         if type(settings[key]) is not int or not low <= settings[key] <= high:
             raise ValueError("system setting outside approved bounds")
+
+
+class ProfileRefusal(ValueError):
+    """Fixed, safe-to-display reason for refusing a profile operation."""
+
+
+def on_ac_power():
+    source = re.search(
+        r"^Now drawing from '(AC Power|Battery Power)'",
+        run("/usr/bin/pmset", "-g", "batt"),
+        re.M,
+    )
+    if source is None:
+        raise ProfileRefusal("Cannot determine power source; profile operation refused")
+    return source[1] == "AC Power"
+
+
+def settings_match(name, observed, expected):
+    return all(
+        observed.get(key) == value
+        for key, value in expected.items()
+        if name != "working" or key != "powermode"
+    )
 
 
 def router():
@@ -297,7 +325,8 @@ def snapshot(cfg):
         )
         if (
             services_match
-            and observed == profile["settings"]
+            and settings_match(name, observed, profile["settings"])
+            and (name != "inference" or on_ac_power())
             and not any(apps[bundle] for bundle in profile["close_apps"])
         ):
             matches.append(name)
@@ -320,6 +349,10 @@ def switch(name, cfg, confirm=False, skip=False, automatic=False):
     if name == "inference":
         if automatic or job_context():
             raise ValueError("automatic entry into Inference is forbidden")
+        if not on_ac_power():
+            raise ProfileRefusal(
+                "Inference requires AC power; connect the charger before switching"
+            )
         work = vscode_work()
         if work and not confirm:
             print(json.dumps({"refused": "VS Code descendant work would be killed", "work": work}))
@@ -328,12 +361,16 @@ def switch(name, cfg, confirm=False, skip=False, automatic=False):
     if name == "inference" and record.get("return_pending"):
         raise ValueError("return to Working before another Inference switch")
     if name == "inference":
+        previous_powermode = settings()["powermode"]
+        if type(previous_powermode) is not int or previous_powermode not in (0, 1, 2):
+            raise ValueError("power mode could not be recorded")
         record = {
             "return_pending": True,
             "closed": [],
             "stopped": [],
             "last_active": time.time(),
             "skip_settings": skip,
+            "previous_powermode": previous_powermode,
         }
         save(STATE / "session.json", record)
     # Record recovery intent before quitting: cancellation/crashes retain a recovery record.
@@ -355,8 +392,15 @@ def switch(name, cfg, confirm=False, skip=False, automatic=False):
     skip = skip or (name == "working" and record.get("skip_settings", False))
     if not skip:
         run("/usr/bin/sudo", "-n", "/usr/local/sbin/homelab-profile-apply", name)
-        if settings() != target["settings"]:
+        observed = settings()
+        if not settings_match(name, observed, target["settings"]):
             raise ValueError("system settings do not match; recovery record retained")
+        if (
+            name == "working"
+            and record.get("return_pending")
+            and observed["powermode"] != record.get("previous_powermode")
+        ):
+            raise ValueError("previous power mode was not restored; recovery record retained")
     if name == "working":
         for svc in record.get("stopped", []):
             service(svc, True)
@@ -372,7 +416,7 @@ def eligible(cfg):
     return (
         current in cfg["profiles"]
         and cfg["profiles"][current]["jobs"]
-        and "AC Power" in run("/usr/bin/pmset", "-g", "batt")
+        and on_ac_power()
         and idle_seconds() >= cfg.get("idle_seconds", 300)
     )
 
@@ -387,13 +431,18 @@ def idle_seconds():
 def tick(cfg):
     record = load(STATE / "session.json", {})
     if record.get("return_pending"):
-        active = any(state not in ("sleeping", "unloaded") for state in router_models().values())
-        active |= any(job_live(job) for job in jobs().values())
-        if active:
-            record["last_active"] = time.time()
-            save(STATE / "session.json", record)
-        elif time.time() - record["last_active"] >= cfg.get("return_seconds", 900):
+        if not on_ac_power():
             switch("working", cfg, automatic=True)
+        else:
+            active = any(
+                state not in ("sleeping", "unloaded") for state in router_models().values()
+            )
+            active |= any(job_live(job) for job in jobs().values())
+            if active:
+                record["last_active"] = time.time()
+                save(STATE / "session.json", record)
+            elif time.time() - record["last_active"] >= cfg.get("return_seconds", 900):
+                switch("working", cfg, automatic=True)
     if any(job.get("pending") for job in jobs().values()) and eligible(cfg):
         for name, job in jobs().items():
             if job.get("pending") and not job_live(job):
@@ -553,6 +602,8 @@ def main():
                     "kickstart",
                     f"gui/{os.getuid()}/org.homelab.profile.job.{args.name}",
                 )
+    except ProfileRefusal as exc:
+        parser.exit(1, str(exc) + "\n")
     except (OSError, ValueError, KeyError, subprocess.SubprocessError):
         parser.exit(
             1,

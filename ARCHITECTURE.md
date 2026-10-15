@@ -136,15 +136,21 @@ footprint. The router itself installs no wake lock.
 
 `mac/homelab-profile` observes services, app bundle ids and settings, reporting Working,
 Inference or custom as JSON. Private editable profiles and an atomic recovery record live
-outside git. Working allows bulk embeddings and dictation, Low Power and default GPU memory;
-Inference permits router services, stops dictation, politely quits configured apps, selects
-High Power, disables sleep and raises the GPU wired limit to 45056 MB. Only the owner enters
+outside git. Working allows bulk embeddings and dictation, default GPU memory and the owner’s
+power-mode choice; power mode is excluded from its settings and matching. Inference requires
+AC power, permits router services, stops dictation, politely quits configured apps, selects
+High Power, disables sleep and raises the GPU wired limit to 45056 MB. Entry records the
+previous power mode; every return restores it from private recovery state. Only the owner enters
 Inference; a VS Code descendant-work guard requires explicit confirmation before side effects.
 The root-owned `homelab-profile-apply` accepts only the two profile names through exact sudoers
-arguments, validates bounded numeric settings from the invoking user's private file and calls
+arguments, validates bounded numeric settings from the invoking user's private files and calls
 only fixed pmset/sysctl commands with an isolated interpreter. No user code executes as root.
 A user LaunchAgent checks inactivity every 30 seconds and returns to Working after 900 seconds
-without loaded router models or jobs, reopening precisely the recorded apps/services.
+without loaded router models or jobs, or immediately on the first check after unplugging,
+reopening precisely the recorded apps/services. Unplug return takes priority over model/job
+activity. Ordinary Working application leaves power mode alone; the helper changes it only
+for Inference or to restore the bounded recorded mode on return. Legacy Working configuration
+fields naming a power mode are ignored.
 Manual changes are compared to observed profiles, rather than trusting a selected-name flag.
 
 The router's private preset allow-list omits disallowed services; native preset reload unloads

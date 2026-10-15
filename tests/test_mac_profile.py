@@ -32,7 +32,8 @@ def world(monkeypatch, tmp_path):
     cfg["profiles"]["inference"]["close_apps"] = ["com.apple.TextEdit"]
     live = {"cleanup": True, "voiceink": True, "com.apple.TextEdit": True}
     models = {"Qwen3-Embedding-4B": "unloaded"}
-    power = p.DEFAULTS["working"]["settings"].copy()
+    power = {"powermode": 1, **p.DEFAULTS["working"]["settings"]}
+    monkeypatch.setattr(p, "on_ac_power", lambda: True)
     monkeypatch.setattr(p, "registered", lambda label: live["cleanup"])
     monkeypatch.setattr(p, "cleanup_running", lambda: live["cleanup"])
     monkeypatch.setattr(
@@ -52,15 +53,17 @@ def world(monkeypatch, tmp_path):
             models.update({p.MODELS[s]: "unloaded" for s in allowed if s in p.MODELS}),
         ),
     )
-    monkeypatch.setattr(
-        p,
-        "run",
-        lambda *args, **kwargs: (
-            power.update(cfg["profiles"][args[-1]]["settings"])
-            if args[0] == "/usr/bin/sudo"
-            else ""
-        ),
-    )
+
+    def run(*args, **kwargs):
+        if args[0] == "/usr/bin/sudo":
+            name = args[-1]
+            power.update(cfg["profiles"][name]["settings"])
+            record = p.load(p.STATE / "session.json", {})
+            if name == "working" and record.get("return_pending"):
+                power["powermode"] = record["previous_powermode"]
+        return ""
+
+    monkeypatch.setattr(p, "run", run)
     return cfg, live, models, power
 
 
@@ -214,6 +217,7 @@ def test_config_editable_private_and_no_app_injection(world):
 def test_job_gates(world, monkeypatch, profile, power, idle, expected):
     monkeypatch.setattr(p, "snapshot", lambda cfg: {"profile": profile})
     monkeypatch.setattr(p, "run", lambda *a: power)
+    monkeypatch.setattr(p, "on_ac_power", lambda: power == "AC Power")
     monkeypatch.setattr(p, "idle_seconds", lambda: idle)
     assert p.eligible(world[0]) is expected
 
@@ -279,9 +283,15 @@ def test_root_helper_exact_commands(world, monkeypatch, tmp_path):
         helper.pwd, "getpwuid", lambda uid: type("User", (), {"pw_dir": str(tmp_path)})
     )
     calls = []
-    monkeypatch.setattr(helper.subprocess, "run", lambda *a, **kw: calls.append((a, kw)))
+
+    def execute(*args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0, "Now drawing from 'AC Power'\n")
+
+    monkeypatch.setattr(helper.subprocess, "run", execute)
     helper.apply("inference")
     assert [call[0][0] for call in calls] == [
+        ["/usr/bin/pmset", "-g", "batt"],
         ["/usr/bin/pmset", "-a", "powermode", "2"],
         ["/usr/bin/pmset", "-a", "sleep", "0"],
         ["/usr/sbin/sysctl", "-w", "iogpu.wired_limit_mb=45056"],
@@ -294,7 +304,7 @@ def test_root_helper_exact_commands(world, monkeypatch, tmp_path):
     )
     with pytest.raises(ValueError):
         helper.apply("inference")
-    assert len(calls) == 3
+    assert len(calls) == 4
 
 
 def test_root_helper_rejects_symlink(world, monkeypatch, tmp_path):
@@ -390,3 +400,204 @@ def test_worker_ancestry_prevents_switch_when_environment_is_stripped(world, mon
     )
     with pytest.raises(ValueError, match="forbidden"):
         p.switch("inference", world[0], confirm=True)
+
+
+@pytest.mark.parametrize("mode", [0, 1, 2])
+def test_working_ignores_owner_power_mode_and_legacy_setting(world, mode):
+    cfg, _, _, power = world
+    power["powermode"] = mode
+    cfg["profiles"]["working"]["settings"]["powermode"] = 1
+    assert p.snapshot(cfg)["profile"] == "working"
+
+
+@pytest.mark.parametrize("mode", [0, 1, 2])
+def test_ordinary_working_switch_preserves_owner_power_mode(world, mode):
+    cfg, _, _, power = world
+    power["powermode"] = mode
+    p.switch("working", cfg)
+    assert power["powermode"] == mode
+    assert p.snapshot(cfg)["profile"] == "working"
+
+
+def test_legacy_private_working_power_mode_removed_from_resolved_config(world):
+    p.save(
+        p.CONFIG,
+        {
+            "profiles": {
+                "working": {
+                    "settings": {
+                        "powermode": 1,
+                        "sleep": 1,
+                        "gpu_limit_mb": 0,
+                    }
+                }
+            }
+        },
+    )
+    assert p.config()["profiles"]["working"]["settings"] == {"sleep": 1, "gpu_limit_mb": 0}
+    assert p.load(p.CONFIG, {})["profiles"]["working"]["settings"]["powermode"] == 1
+
+
+@pytest.mark.parametrize("mode", [0, 1, 2])
+def test_idle_return_restores_recorded_power_mode(world, monkeypatch, mode):
+    cfg, _, _, power = world
+    power["powermode"] = mode
+    p.switch("inference", cfg)
+    assert power["powermode"] == 2
+    record = p.load(p.STATE / "session.json", {})
+    assert record["previous_powermode"] == mode
+    monkeypatch.setattr(p.time, "time", lambda: record["last_active"] + 20)
+    p.tick(cfg)
+    assert power["powermode"] == mode
+    assert p.snapshot(cfg)["profile"] == "working"
+    assert not p.snapshot(cfg)["return_pending"]
+
+
+def test_battery_refusal_is_clear_and_precedes_side_effects(world, monkeypatch, capsys):
+    cfg, live, models, power = world
+    before = copy.deepcopy((live, models, power))
+    monkeypatch.setattr(p, "on_ac_power", lambda: False)
+    monkeypatch.setattr(p.sys, "argv", [str(p.SCRIPT), "switch", "inference", "--confirm-kill"])
+    with pytest.raises(SystemExit) as exc:
+        p.main()
+    assert exc.value.code == 1
+    assert "Inference requires AC power; connect the charger" in capsys.readouterr().err
+    assert (live, models, power) == before
+    assert not (p.STATE / "session.json").exists()
+
+
+def test_unplug_returns_even_while_models_and_jobs_are_active(world, monkeypatch):
+    cfg, live, models, power = world
+    p.switch("inference", cfg)
+    models["vision"] = "loaded"
+    p.save(p.STATE / "jobs.json", {"example": {"pid": 1}})
+    monkeypatch.setattr(p, "job_live", lambda record: True)
+    monkeypatch.setattr(p, "on_ac_power", lambda: False)
+    assert p.snapshot(cfg)["profile"] == "custom"
+    p.tick(cfg)
+    assert power["powermode"] == 1
+    assert live["cleanup"] and live["voiceink"] and live["com.apple.TextEdit"]
+    assert p.snapshot(cfg)["profile"] == "working"
+    assert not p.snapshot(cfg)["return_pending"]
+
+
+def test_failed_power_restoration_retains_recovery_record(world, monkeypatch):
+    cfg, _, _, power = world
+    p.switch("inference", cfg)
+    monkeypatch.setattr(
+        p, "run", lambda *args: power.update(cfg["profiles"]["working"]["settings"])
+    )
+    with pytest.raises(ValueError, match="previous power mode was not restored"):
+        p.switch("working", cfg)
+    assert p.load(p.STATE / "session.json", {})["previous_powermode"] == 1
+    assert p.snapshot(cfg)["return_pending"]
+
+
+@pytest.mark.parametrize("source,expected", [("AC Power", True), ("Battery Power", False)])
+def test_power_source_parsed_from_pmset(monkeypatch, source, expected):
+    calls = []
+
+    def run(*args):
+        calls.append(args)
+        return f"Now drawing from '{source}'\n -InternalBattery-0 100%; charged;\n"
+
+    monkeypatch.setattr(p, "run", run)
+    assert p.on_ac_power() is expected
+    assert calls == [("/usr/bin/pmset", "-g", "batt")]
+
+
+def test_unknown_power_source_refuses_inference(monkeypatch):
+    monkeypatch.setattr(p, "run", lambda *args: "unrecognised power report")
+    with pytest.raises(p.ProfileRefusal, match="Cannot determine power source"):
+        p.on_ac_power()
+
+
+@pytest.fixture
+def root_world(monkeypatch, tmp_path):
+    private = tmp_path / ".config/homelab"
+    private.mkdir(parents=True)
+    config_path = private / "profiles.json"
+    config_path.write_text("{}")
+    state = tmp_path / ".local/state/homelab-profile"
+    state.mkdir(parents=True)
+    monkeypatch.setattr(helper.os, "geteuid", lambda: 0)
+    monkeypatch.setenv("SUDO_UID", str(os.getuid()))
+    monkeypatch.setattr(
+        helper.pwd, "getpwuid", lambda uid: type("User", (), {"pw_dir": str(tmp_path)})
+    )
+    calls = []
+
+    def execute(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "Now drawing from 'AC Power'\n")
+
+    monkeypatch.setattr(helper.subprocess, "run", execute)
+    return config_path, state / "session.json", calls
+
+
+@pytest.mark.parametrize("legacy_mode", [None, 1, 2])
+def test_root_working_preserves_owner_mode_without_return(root_world, legacy_mode):
+    config_path, _, calls = root_world
+    settings = {"sleep": 1, "gpu_limit_mb": 0}
+    if legacy_mode is not None:
+        settings["powermode"] = legacy_mode
+    config_path.write_text(json.dumps({"profiles": {"working": {"settings": settings}}}))
+    helper.apply("working")
+    assert calls == [
+        ["/usr/bin/pmset", "-a", "sleep", "1"],
+        ["/usr/sbin/sysctl", "-w", "iogpu.wired_limit_mb=0"],
+    ]
+
+
+@pytest.mark.parametrize("mode", [0, 1, 2])
+def test_root_return_restores_only_bounded_recorded_mode(root_world, mode):
+    _, session, calls = root_world
+    session.write_text(json.dumps({"return_pending": True, "previous_powermode": mode}))
+    helper.apply("working")
+    assert calls == [
+        ["/usr/bin/pmset", "-a", "powermode", str(mode)],
+        ["/usr/bin/pmset", "-a", "sleep", "1"],
+        ["/usr/sbin/sysctl", "-w", "iogpu.wired_limit_mb=0"],
+    ]
+
+
+@pytest.mark.parametrize("mode", [-1, 3, True, "2", None])
+def test_root_rejects_invalid_recorded_mode_before_settings(root_world, mode):
+    _, session, calls = root_world
+    session.write_text(json.dumps({"return_pending": True, "previous_powermode": mode}))
+    with pytest.raises(ValueError, match="invalid recorded power mode"):
+        helper.apply("working")
+    assert not calls
+
+
+def test_root_does_not_follow_recovery_symlink(root_world):
+    config_path, session, calls = root_world
+    session.symlink_to(config_path)
+    with pytest.raises(OSError):
+        helper.apply("working")
+    assert not calls
+
+
+def test_root_rechecks_ac_before_applying_inference(root_world, monkeypatch):
+    _, _, calls = root_world
+
+    def execute(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "Now drawing from 'Battery Power'\n")
+
+    monkeypatch.setattr(helper.subprocess, "run", execute)
+    with pytest.raises(ValueError, match="Inference requires AC power"):
+        helper.apply("inference")
+    assert calls == [["/usr/bin/pmset", "-g", "batt"]]
+
+
+def test_inference_requires_high_power_in_private_configuration(world, root_world):
+    config_path, _, calls = root_world
+    values = {**p.DEFAULTS["inference"]["settings"], "powermode": 1}
+    p.save(p.CONFIG, {"profiles": {"inference": {"settings": values}}})
+    with pytest.raises(ValueError):
+        p.config()
+    config_path.write_text(json.dumps({"profiles": {"inference": {"settings": values}}}))
+    with pytest.raises(ValueError, match="Inference requires High Power"):
+        helper.apply("inference")
+    assert not calls
