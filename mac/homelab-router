@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""Login-managed llama.cpp router; native models load on request and sleep when idle."""
+
+import argparse
+import ctypes
+import fcntl
+import ipaddress
+import json
+import os
+import plistlib
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+STATE = Path.home() / ".local/state/homelab-router"
+SCRIPT = Path(__file__).resolve()
+PLIST = Path.home() / "Library/LaunchAgents/org.homelab.router.plist"
+LABEL = "org.homelab.router"
+BINARY = "/opt/homebrew/bin/llama-server"
+PORT = 8090
+IDLE_SECONDS = 600
+VISION = Path.home() / "vision-bench-outputs/models/Qwen3-VL-8B-Instruct-GGUF"
+EMBED = Path.home() / "homelab-models/Qwen3-Embedding-4B-GGUF"
+
+
+def check_address(value):
+    address = ipaddress.IPv4Address(value.strip())
+    # Construct the network numerically so public sources contain no tailnet address.
+    if address not in ipaddress.IPv4Network((0x64400000, 10)):
+        raise ValueError("Tailscale IPv4 required")
+    return str(address)
+
+
+def tailscale_address():
+    # launchd's PATH omits both common CLI locations. The app binary is a last resort.
+    candidates = dict.fromkeys(
+        [
+            "/usr/local/bin/tailscale",
+            "/opt/homebrew/bin/tailscale",
+            shutil.which("tailscale"),
+            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        ]
+    )
+    for cli in candidates:
+        if cli is None:
+            continue
+        try:
+            result = subprocess.run([cli, "ip", "-4"], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                return check_address(result.stdout)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+    result = subprocess.run(["/sbin/ifconfig"], capture_output=True, text=True, timeout=5)
+    addresses = set()
+    interface = ""
+    for line in result.stdout.splitlines():
+        if line and not line[0].isspace():
+            interface = line.split(":", 1)[0]
+        match = re.search(r"\binet (\S+)", line)
+        if interface.startswith("utun") and match:
+            try:
+                addresses.add(check_address(match[1]))
+            except ValueError:
+                pass
+    if len(addresses) != 1:
+        raise ValueError("Tailscale is down or its IPv4 is ambiguous")
+    return addresses.pop()
+
+
+def identity(pid):
+    result = subprocess.run(
+        ["/bin/ps", "-p", str(pid), "-o", "stat=", "-o", "lstart="],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    fields = result.stdout.strip().split(maxsplit=1)
+    return fields[1] if result.returncode == 0 and len(fields) == 2 and "Z" not in fields[0] else ""
+
+
+def running(record):
+    return bool(record and record["identity"] and identity(record["pid"]) == record["identity"])
+
+
+def record():
+    path = STATE / "server.json"
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def api(address, path):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(f"http://{check_address(address)}:{PORT}{path}", timeout=2) as response:
+        return json.load(response)
+
+
+def healthy(saved):
+    if not running(saved):
+        return False
+    try:
+        return api(saved["address"], "/health").get("status") == "ok"
+    except (OSError, ValueError, urllib.error.URLError):
+        return False
+
+
+def write_presets():
+    weights = VISION / "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
+    projector = VISION / "mmproj-F16.gguf"
+    embed = EMBED / "Qwen3-Embedding-4B-Q8_0.gguf"
+    if not all(path.is_file() for path in (weights, projector, embed)):
+        raise ValueError("model or projector missing; no download is attempted")
+    # INI paths are literal, with no shell expansion or quoting.
+    if any(any(c in str(path) for c in "\n\r") for path in (weights, projector, embed)):
+        raise ValueError("model paths cannot contain line breaks")
+    template = SCRIPT.with_name("router-models.ini.in").read_text()
+    for key, path in (("VISION_MODEL", weights), ("PROJECTOR", projector), ("EMBED_MODEL", embed)):
+        template = template.replace("@" + key + "@", str(path))
+    (STATE / "models.ini").write_text(template)
+
+
+def router_args(address):
+    return [
+        BINARY,
+        "--models-preset",
+        str(STATE / "models.ini"),
+        "--models-autoload",
+        "--sleep-idle-seconds",
+        str(IDLE_SECONDS),
+        "--host",
+        check_address(address),
+        "--port",
+        str(PORT),
+        "--log-disable",
+    ]
+
+
+class StartupError(ValueError):
+    """A fixed, content-free startup stage; never carries upstream exception text."""
+
+
+def record_failure(reason):
+    with (STATE / "startup-failures.log").open("a") as handle:
+        handle.write(reason + "\n")
+
+
+def serve():
+    reason = "tailscale address unavailable"
+    try:
+        address = tailscale_address()
+        reason = "model preset preparation failed"
+        write_presets()
+        env = {key: value for key, value in os.environ.items() if not key.startswith("LLAMA_ARG_")}
+        # Keep unrelated llama.cpp cache entries out of this service's model discovery.
+        cache = STATE / "cache"
+        cache.mkdir(mode=0o700, exist_ok=True)
+        env["LLAMA_CACHE"] = str(cache)
+        reason = "router state preparation failed"
+        saved = {"pid": os.getpid(), "identity": identity(os.getpid()), "address": address}
+        (STATE / "server.json").write_text(json.dumps(saved))
+        reason = "router executable launch failed"
+        # No shell, supervisor, queue or idle timer of ours: launchd and llama.cpp own them.
+        os.execve(BINARY, router_args(address), env)
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        raise StartupError(reason) from None
+
+
+def launchctl(*args):
+    return subprocess.run(["/bin/launchctl", *args], capture_output=True, timeout=40)
+
+
+def stop():
+    saved = record()
+    service = f"gui/{os.getuid()}/{LABEL}"
+    result = launchctl("bootout", service)
+    if result.returncode and (running(saved) or launchctl("print", service).returncode == 0):
+        raise ValueError("agent could not be stopped; installation retained")
+    deadline = time.monotonic() + 30
+    while running(saved):
+        if time.monotonic() >= deadline:
+            raise ValueError("router has not stopped; installation retained")
+        time.sleep(0.2)
+    # Removing the plist also prevents the deliberately stopped service returning at login.
+    PLIST.unlink(missing_ok=True)
+    (STATE / "server.json").unlink(missing_ok=True)
+    print("router stopped; start reinstalls login agent")
+
+
+def start():
+    if healthy(record()):
+        print("router already serving on Tailscale port 8090")
+        return
+    for name in ("homelab-vision", "homelab-embed"):
+        path = Path.home() / ".local/state" / name / "server.json"
+        if path.exists() and running(json.loads(path.read_text())):
+            raise ValueError("legacy server running; stop it with the previous launcher first")
+    address = tailscale_address()
+    with socket.socket() as probe:
+        try:
+            probe.bind((address, PORT))
+        except OSError:
+            raise ValueError("Tailscale address unavailable or port 8090 taken") from None
+    write_presets()
+    service = f"gui/{os.getuid()}/{LABEL}"
+    if launchctl("print", service).returncode == 0:
+        raise ValueError("router agent already registered but unhealthy; stop then start")
+    PLIST.parent.mkdir(parents=True, exist_ok=True)
+    settings = {
+        "Label": LABEL,
+        "ProgramArguments": [sys.executable, str(SCRIPT), "serve"],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": 10,
+        "Umask": 0o077,
+        # Discard all native output, including failures that might contain content/paths.
+        "StandardOutPath": "/dev/null",
+        "StandardErrorPath": "/dev/null",
+        "EnvironmentVariables": {"PYTHONDONTWRITEBYTECODE": "1"},
+    }
+    with PLIST.open("wb") as handle:
+        plistlib.dump(settings, handle)
+    if launchctl("bootstrap", f"gui/{os.getuid()}", str(PLIST)).returncode:
+        raise ValueError("router agent could not be installed")
+    deadline = time.monotonic() + 120
+    try:
+        while time.monotonic() < deadline:
+            if healthy(record()):
+                print("router serving on Tailscale port 8090; login agent installed")
+                return
+            time.sleep(0.2)
+        raise StartupError("router health check timed out")
+    except BaseException:
+        stop()
+        raise
+
+
+def footprint(pid):
+    # rusage_info_v2 current physical footprint includes Metal; never use lifetime peak.
+    buffer = (ctypes.c_uint64 * 20)()
+    lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    lib.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+    if lib.proc_pid_rusage(pid, 2, ctypes.byref(buffer)) != 0:
+        raise ValueError("current physical footprint unavailable")
+    return buffer[9]
+
+
+def memory(pid):
+    result = subprocess.run(
+        ["/bin/ps", "-axo", "pid=,ppid=,rss="], capture_output=True, text=True, timeout=5
+    )
+    result.check_returncode()
+    rows = [tuple(map(int, line.split())) for line in result.stdout.splitlines()]
+    family = {pid}
+    while True:
+        expanded = family | {child for child, parent, _ in rows if parent in family}
+        if expanded == family:
+            break
+        family = expanded
+    return {
+        "router_rss_bytes": next(rss * 1024 for child, _, rss in rows if child == pid),
+        "family_rss_bytes": sum(rss * 1024 for child, _, rss in rows if child in family),
+        "family_physical_footprint_bytes": sum(footprint(child) for child in family),
+    }
+
+
+def status():
+    saved = record()
+    if not healthy(saved):
+        print("router not serving")
+        return 1
+    models = api(saved["address"], "/models")["data"]
+    # Never print upstream path/preset/arguments or the address.
+    states = {
+        row["id"]: row["status"]["value"]
+        for row in models
+        if row["id"] in ("vision", "Qwen3-Embedding-4B")
+    }
+    print(json.dumps({"models": states, **memory(saved["pid"])}))
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=["start", "stop", "status", "serve"])
+    args = parser.parse_args()
+    os.umask(0o077)
+    STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        # The exec'ed router must not inherit the command lock.
+        if args.command == "serve":
+            serve()
+        else:
+            with (STATE / "command.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                if args.command == "start":
+                    start()
+                elif args.command == "stop":
+                    stop()
+                else:
+                    return status()
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        if args.command in ("start", "serve"):
+            # No exception text, CLI output, model data, addresses or paths enter this log.
+            reason = str(exc) if isinstance(exc, StartupError) else "router start failed"
+            record_failure(reason)
+        parser.exit(1, "router command failed; see private startup-failures.log\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

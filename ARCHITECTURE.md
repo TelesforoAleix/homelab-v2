@@ -94,7 +94,7 @@ it invokes the existing Mac copy command and waits at most 180 seconds, killing 
 group on timeout. It parses only the final confirmation report for file name and encrypted
 bytes; no content passes through the listener. launchd runs it at login and restarts it after
 exit; private state/logs remain in the owner's home. This host channel publishes no container
-port and does not change the loopback API boundary or the on-demand vision lifecycle.
+port and does not change the loopback API boundary or the independent model router lifecycle.
 
 The two embedding models are the only resident local models. The `local` queue has concurrency 1.
 
@@ -108,15 +108,33 @@ cache is `models/embed-large` on the encrypted volume. It joins only the default
 and publishes no port. LiteLLM depends on both embedding containers being started.
 
 `embed-large-bulk` serves the same official GGUF and vector space from the owner’s Mac for
-bulk ingest; questions keep using the always-on node’s `embed-large`. Its hand-started
-`mac/homelab-embed` server uses the node’s pooling, normalisation, context and batch flags
-plus Metal `-ngl 99`, binding only the runtime Tailscale IPv4 on TCP 8092. The node-only
-tailnet grant gates access without a key. Its URL lives only in `HOMELAB_MAC_EMBED_URL`
-beside vision’s variable in the node’s private `.env`, with the same closed Compose default.
-The deployment hook applies a 3-second connect limit and 300-second request limit; no retries,
-fallback or stopped-Mac alerts. No login/boot service or wake lock; PID start-time checks,
-private state and content-disabled logs follow vision under `~/.local/state/homelab-embed/`.
-It reports the same real model and uses the same role wording as `embed-large`.
+bulk ingest; questions keep using the always-on node’s `embed-large`. Both Mac purposes share
+one native llama.cpp router,
+managed at login by `org.homelab.router` through `mac/homelab-router`. It binds only the runtime
+Tailscale IPv4 on TCP 8090 under the existing node-only grant; 8092 is freed. The private
+`HOMELAB_MAC_EMBED_URL` and `HOMELAB_MAC_VISION_URL` point at the same router, with closed
+Compose defaults. Native presets retain the exact model/projector and inference flags:
+vision uses context 16,384, one slot, cache RAM 0, flash attention and Metal `-ngl 99`;
+embeddings use last-token pooling, L2 normalisation, context 8192, batch/microbatch 2048,
+four threads and Metal `-ngl 99`. Preset names `vision` and `Qwen3-Embedding-4B` match the
+gateway's upstream names. Embeddings report the same real model and role wording as
+`embed-large`, preserving its vector space.
+
+Autoload is enabled, with neither preset loaded at startup. Native idle sleep releases model
+weights and KV memory after 600 seconds by default, configured once in the command. Sleeping
+children remain ready to reload. launchd owns process restart; llama.cpp owns model loading,
+cache discovery and idle sleep, using a private cache under router state. No custom model
+manager, profiles, allow-lists or listener
+actions are added. The action listener on 8091 and dictation cleanup server on 8095 stay
+independent. The retired Mac launchers are pointers, with vision's address-discovery export
+retained for the unchanged listener. Legacy state is unused; historical embedding files remain.
+Generated presets and the LaunchAgent contain runtime paths only in private user state.
+Content logging is disabled and native output is discarded. Failed launcher invocations retain
+only a fixed startup-stage line in private state, never exception text or CLI output.
+`status` exposes only preset states and current router/family RSS and Darwin physical
+footprint. No wake lock is installed.
+The deployment hook keeps each purpose's 3-second connect and 300-second request limits,
+without retries, fallback or stopped-Mac alerts.
 
 Embedding requests optionally accept `input_type` (`query` or `passage`). Prefixes live in
 `model_info.input_prefixes` per purpose: Nemotron uses `query: ` / `passage: `; Qwen uses a
@@ -130,7 +148,7 @@ through Vercel AI Gateway's `deepseek/deepseek-v4.1-flash`, at low, medium and h
 effort respectively, and `embed` through the unchanged local `llama-nemotron-embed-1b-v2`.
 `grade` makes yes/no relevance judgements per candidate passage, with exactly `chat`'s model and low-effort settings.
 `translate` translates passages on request, with exactly `chat`'s model and low-effort settings.
-`vision` reaches the owner’s on-demand Metal llama.cpp server over Tailscale, serving
+`vision` reaches the owner’s login-managed Metal llama.cpp router over Tailscale, serving
 Qwen3-VL-8B-Instruct Q4_K_M with mmproj-F16 and context 16,384. `vision:xhigh` reaches the
 same gateway model as chat, without a configured reasoning effort. There is no `vision:high`.
 The Mac binds only its runtime Tailscale IPv4 on TCP 8090; the tailnet policy allows only the
@@ -140,8 +158,8 @@ local vision fail; Compose uses a closed loopback endpoint. The deployment hook 
 HTTPX timeout with a 3-second connect limit and 300-second page request limit. Stopped serving
 is normal: errors are generic OpenAI-shaped 4xx/5xx, without retries, fallback or alerts.
 Clients keep pages queued and supply prompts, DPI, temperature and completion limits.
-No Mac login/boot service or wake lock is installed. PID and content-disabled log stay private
-in the owner’s home. Image inputs must be `data:` URLs.
+The user LaunchAgent keeps the router available at login, with models loaded only on request.
+State stays private in the owner’s home. Image inputs must be `data:` URLs.
 
 Three hosted image purposes use the gateway through OpenAI-path entries:
 `image-nano-banana-2.1`, `image-gpt-2.5-flare`,
@@ -195,8 +213,8 @@ and uses `no-new-privileges`. Only LiteLLM mounts `/run/secrets/gateway_api_key`
 `root:10001` `0440`. Its entrypoint reads the file into the process environment at startup;
 no gateway key appears in Compose, env files or config. Telemetry, third-party callbacks,
 admin UI and remote model-price fetching are disabled; tokenizer assets are bundled and
-remote image URLs are refused. External model destinations are the gateway and the on-demand
-Mac; the local embedding destinations stay on the private network. Tests run the real pinned
+remote image URLs are refused. External model destinations are the gateway and the login-managed
+Mac router; the local embedding destinations stay on the private network. Tests run the real pinned
 image without external networking, synthetic credentials and loopback upstreams, checking
 for attempted external connections as well as the endpoint contract.
 

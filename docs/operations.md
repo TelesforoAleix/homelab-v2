@@ -275,83 +275,116 @@ networks:
 
 ## Mac vision serving
 
-The owner starts and stops native Homebrew llama.cpp on demand; nothing runs at login or boot
-and the script does not keep the Mac awake. From this checkout:
+Vision and bulk embeddings share one native Homebrew llama.cpp router on the Mac. From
+this checkout, outside the Codex sandbox (which cannot see Metal):
 
 ```bash
-mac/homelab-vision start
-mac/homelab-vision status
-mac/homelab-vision stop
+mac/homelab-router start
+mac/homelab-router status
+mac/homelab-router stop
 ```
 
-`start` reads the Tailscale IPv4 at runtime using the CLI (or a `utun` address), refuses a
-missing address or occupied port, then waits up to 120 seconds for `/health`. The server binds
-only that address on TCP 8090. The owner’s tailnet policy permits only the node to reach it;
-there is no server API key. On first start, allow incoming connections for `llama-server` if
-macOS asks. `status` exits 0 only while the managed process is healthy; `stop` sends SIGTERM
-and waits up to 30 seconds. Commands serialize through a lock and check PID start time before
-signalling. PID, lock and content-disabled server log live in `~/.local/state/homelab-vision/`.
+`start` installs a user LaunchAgent (`org.homelab.router`) and waits up to 120 seconds for
+health. It runs at login and launchd restarts it after exit. It discovers the Tailscale IPv4
+using the CLI (checking `/usr/local/bin` and `/opt/homebrew/bin` even under launchd's minimal
+PATH) or an unambiguous `utun` address, binds only that address on TCP 8090, and
+refuses an occupied port. The owner's existing node-only tailnet grant gates access without
+an API key. No new port is needed; 8092 is freed. Allow incoming connections for `llama-server`
+if macOS asks. No wake lock is installed. The action listener (8091) and dictation cleanup
+server (8095) keep their independent services and lifecycles.
 
-The existing files under `~/vision-bench-outputs/models/Qwen3-VL-8B-Instruct-GGUF/` must contain
-`Qwen3-VL-8B-Instruct-Q4_K_M.gguf` and `mmproj-F16.gguf`. No download is attempted. Serving uses
-Metal, context 16,384, one slot, flash attention and no prompt cache, matching the benchmark.
-Temperature, completion limit, transcription prompt and page DPI belong to the client.
+The native router loads the requested model on the first call. With no requests, llama.cpp
+unloads its model weights and KV cache after `IDLE_SECONDS` in `mac/homelab-router` (600 seconds
+by default). `/models` then reports `sleeping` (or `unloaded` before the first request); a
+sleeping child process remains and reloads on demand. Startup loads neither preset. The
+preset template is `mac/router-models.ini.in`; absolute model paths are rendered privately
+at installation, never committed. A private cache under router state keeps unrelated cached
+models out of native discovery. llama.cpp owns model management; this slice adds no profiles
+or allow-lists.
 
-Set `HOMELAB_MAC_VISION_URL` only in the node clone’s private, root-owned `.env`, to the Mac’s
-Tailscale HTTP URL on port 8090 ending in `/v1`. Never put the address or tailnet name in git.
-Compose supplies a closed loopback endpoint when the variable is empty or unset: LiteLLM
-still starts, and local vision fails. Before deployment, check med-ask processes and recent
-`embed` and `embed-large` audit calls; wait for any ingest to finish before restarting
-`homelab.service`.
+`status` prints only the two preset names/states and current memory in bytes: router RSS,
+router plus descendants' RSS, and their summed Darwin physical footprint (including Metal).
+It calls `/health` and `/models`, which do not wake models. Compare the current family
+physical footprint after inference with the same field after the idle interval; lifetime peak
+memory cannot establish release. `status` exits 0 only for a healthy managed process and
+checks PID start time. Output excludes addresses, paths and upstream arguments.
+`stop` unloads the LaunchAgent, waits up to 30 seconds for the managed process, and removes
+its plist so it stays stopped across login; `start` reinstalls it. Commands serialize with a
+lock. State and generated presets are private under `~/.local/state/homelab-router/`; the
+private plist is under `~/Library/LaunchAgents/`. Native content logging is disabled and
+stdout/stderr go to `/dev/null`. Launcher failures append one fixed, content-free stage line
+per failed invocation to `startup-failures.log` in router state (creation mode `0600`). For
+example, `tailscale address unavailable` records discovery failure without CLI output,
+exception text, addresses or paths. The record survives failed-start cleanup and `stop`;
+launchd retries can produce additional lines. A failed health wait records a fixed timeout
+line, covering native startup failures without retaining native output. No model download is
+attempted.
+
+Vision keeps the existing files under
+`~/vision-bench-outputs/models/Qwen3-VL-8B-Instruct-GGUF/`:
+`Qwen3-VL-8B-Instruct-Q4_K_M.gguf` and `mmproj-F16.gguf`. Its `vision` preset retains Metal
+`-ngl 99`, context 16,384, one slot, flash attention and cache RAM 0. Temperature, completion
+limit, prompt and page DPI belong to clients. Image inputs must be `data:` URLs.
+
+The retired `mac/homelab-vision` and `mac/homelab-embed` commands only point here. Before
+installing the router for the first time, stop both old processes with the previous launchers
+(their `stop` commands check PID start time), then leave their old state unused.
+The old vision state folder has been removed; retain `~/.local/state/homelab-embed/` because
+it also contains historical download/compare files outside this slice. `start` refuses
+any live legacy process. Model files stay in place. The vision pointer preserves address
+discovery for the unchanged action listener.
+
+Set **both** `HOMELAB_MAC_VISION_URL` and `HOMELAB_MAC_EMBED_URL` in the node clone's private,
+root-owned `.env` to the **same** Mac Tailscale HTTP URL on port **8090**, ending in `/v1`.
+Never put the address or tailnet name in git, logs or PRs. Empty or unset values retain
+Compose's closed loopback default, so LiteLLM starts independently of the Mac. Both purposes
+keep the 3-second connect limit and 300-second request limit, without retries, fallback or
+stopped-Mac alerts. Cold model loading is included in the request limit.
 
 ## Mac bulk embedding serving
 
-From this checkout, the owner starts and stops the server by hand, outside the Codex sandbox
-where Metal is unavailable:
-
-```bash
-mac/homelab-embed start
-mac/homelab-embed status
-mac/homelab-embed stop
-```
-
-The command follows the vision lifecycle: runtime Tailscale IPv4 only, port 8092, a node-only
-tailnet grant, no API key, no login/boot service or wake lock. Vision on 8090 and the action
-listener on 8091 can run alongside it. `start` refuses a missing model, unavailable address or
-occupied port and waits up to 120 seconds for health. `status` exits 0 only while the managed
-process is healthy. Commands lock and check PID start time before signalling; `stop` waits up
-to 30 seconds. Private PID, lock and content-disabled log are under
-`~/.local/state/homelab-embed/`.
+`embed-large-bulk` uses the same router described in [Mac vision serving](#mac-vision-serving).
+The native preset name remains `Qwen3-Embedding-4B`, matching the gateway's upstream model.
+Both node URLs point at port 8090; nothing listens on 8092 for bulk embeddings anymore.
 
 Download the official GGUF once to `~/homelab-models/Qwen3-Embedding-4B-GGUF/` from
 `https://huggingface.co/Qwen/Qwen3-Embedding-4B-GGUF/resolve/f4602530db1d980e16da9d7d3a70294cf5c190be/Qwen3-Embedding-4B-Q8_0.gguf`.
 Verify SHA256 `b60ae5ce2dd6a0b77f82cadf21def1f310a3e10cde380ad0081b07a9d416949d`
-before starting; the command never downloads. It uses the node’s last-token pooling, L2
-normalisation, context 8192, batch/microbatch 2048 and four threads, plus Metal `-ngl 99`.
-The purpose reports `Qwen3-Embedding-4B` like `embed-large`, with identical optional
-`input_type` wording (plain passages). Clients can ingest through the bulk purpose and query
-through the node purpose without changing vector spaces.
+before starting. Its preset preserves last-token pooling, L2 normalisation, context 8192,
+batch/microbatch 2048, four threads and Metal `-ngl 99`. The purpose reports
+`Qwen3-Embedding-4B` like `embed-large`, with identical optional `input_type` wording
+(plain passages). Bulk ingest and node queries stay in the same vector space.
 
-Set `HOMELAB_MAC_EMBED_URL` beside `HOMELAB_MAC_VISION_URL` only in the node clone’s private,
-root-owned `.env`, using the Mac’s Tailscale HTTP URL on port 8092 ending in `/v1`.
-Keep addresses and tailnet names out of git, logs and PRs. The same closed loopback default
-keeps LiteLLM startup independent of the Mac. Bulk calls have a 3-second connect limit and
-300-second request limit, with no retry, fallback or stopped-Mac alert.
-
-Before any stack restart, inspect med-ask processes and recent embedding audit metadata:
+Before any stack restart, inspect med-ask processes and recent audit metadata:
 
 ```bash
 ssh homelab-agent 'sudo docker ps --format "{{.Names}}"'
 ssh homelab-agent 'sudo ps -eo pid,comm,cgroup | rg "med-ask|ingest"'
-ssh homelab-agent 'sudo journalctl --since "10 minutes ago" -o cat | rg "model_call purpose=embed(-large)? " | tail -n 30'
+ssh homelab-agent 'sudo journalctl --since "10 minutes ago" -o cat | rg "model_call purpose=(vision|embed|embed-large|embed-large-bulk) " | tail -n 30'
 ```
 
-Inspect the med-ask container’s process names with `sudo docker top <container> -eo pid,comm`
-and its ingest status without printing arguments or content. Recent continuous embedding calls
+Inspect the med-ask container's process names with `sudo docker top <container> -eo pid,comm`
+and its ingest status without printing arguments or content. Recent continuous model calls
 or a running ingest mean wait for completion; do not restart `homelab.service`.
-After deploying, test plain and `input_type: passage` bulk calls from `homelab-models`, compare
-with `embed-large`, and check the real model and `/v1/models`. Stop the Mac, time a bulk failure,
-and confirm the existing `embed-large`, `embed` and `vision` purposes still behave as before.
+Before merge, prove a cold synthetic-image vision call directly from the node, compare
+20 generic sentence embeddings against the node's `embed-large` (lowest cosine at least
+0.999), then record status and physical footprint before/after the full idle interval.
+The direct probe uses the container's private vision URL for both models, before changing
+node configuration:
+
+```bash
+ssh homelab-agent 'sudo docker exec -i homelab-litellm-1 python -' < tests/mac_router_probe.py
+```
+
+It requires both models initially unloaded or sleeping, sends only synthetic inputs, verifies
+the real embedding model and dimensions, and prints timings/cosine without URLs or vectors.
+Run `mac/homelab-router status` on the Mac immediately after the probe and again after at
+least the idle interval with no inference calls; neither status call wakes a model.
+
+After the approved merge and deployment, test vision and bulk through `homelab-models`
+without starting a model by hand; stop the router and time both failures (about 3 seconds).
+Restart the router outside the sandbox, then check `embed-large`, `embed`, `chat` and image
+routes. Leave the router running.
 
 ## Mac action listener
 
@@ -717,8 +750,9 @@ SSH accounts work through Tailscale.
     in the password manager, and a new Telegram bot token through BotFather. Enter keys and
     the password only at hidden prompts; never put them in shell arguments or history.
     `.env` holds the database password and four volume paths and is `root:root` `0600`.
-    Optional `HOMELAB_MAC_VISION_URL` (8090) and `HOMELAB_MAC_EMBED_URL` (8092) also live
-    only in this private `.env`, each ending in `/v1`; leave them unset for closed defaults.
+    Optional `HOMELAB_MAC_VISION_URL` and `HOMELAB_MAC_EMBED_URL` both point to the Mac
+    router on port 8090 and live only in this private `.env`, each ending in `/v1`; leave
+    them unset for closed defaults.
     Restore them from the owner’s Mac serving configuration, never from Git.
     Create a separate gateway key used only for images and set its $20 monthly budget in
     Vercel. Both gateway keys are `root:10001` `0440`, mounted only into LiteLLM and read
