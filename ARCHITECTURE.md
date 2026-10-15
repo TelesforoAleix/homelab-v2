@@ -136,11 +136,13 @@ footprint. The router itself installs no wake lock.
 
 `mac/homelab-profile` observes services, app bundle ids and settings, reporting Working,
 Inference or custom as JSON. Private editable profiles and an atomic recovery record live
-outside git. Working allows bulk embeddings and dictation, default GPU memory and the owner’s
-power-mode choice; power mode is excluded from its settings and matching. Inference requires
+outside git. Working allows bulk embeddings and dictation and leaves the owner’s system
+settings alone; system settings are excluded from its profile matching. Inference requires
 AC power, permits router services, stops dictation, politely quits configured apps, selects
-High Power, disables sleep and raises the GPU wired limit to 45056 MB. Entry records the
-previous power mode; every return restores it from private recovery state. Only the owner enters
+High Power and disables sleep only for AC (`pmset -c`), and raises the global GPU wired limit
+to 45056 MB. Entry reads per-source settings from `pmset -g custom` and records the AC power
+mode, AC sleep and GPU limit; every return restores those exact bounded values from private
+recovery state. Battery power and display settings are never written. Only the owner enters
 Inference; a VS Code descendant-work guard requires explicit confirmation before side effects.
 The root-owned `homelab-profile-apply` accepts only the two profile names through exact sudoers
 arguments, validates bounded numeric settings from the invoking user's private files and calls
@@ -155,9 +157,10 @@ idle return; the Mac waits for AC or an explicit Working switch. Replug automati
 High Power before the allow-list, preserving the original recovery record and restarting the
 15-minute idle window. A native static JSON file on the existing router port publishes only
 a pause boolean, so gateway refusals name the battery pause and audit `profile_paused=true`.
-No profile contents, app lists or paths are served. Ordinary Working application leaves power mode alone; the helper changes it only
-for Inference or to restore the bounded recorded mode on return. Legacy Working configuration
-fields naming a power mode are ignored.
+No profile contents, app lists or paths are served. Ordinary Working application writes no
+power settings; without a pending recovery record it only resets a nonzero orphan GPU limit
+to zero. The helper refuses Inference without a complete bounded recovery record. Legacy
+Working settings are validated, then ignored without rewriting the private configuration.
 Manual changes are compared to observed profiles, rather than trusting a selected-name flag.
 
 The router's private preset allow-list omits disallowed services; native preset reload unloads

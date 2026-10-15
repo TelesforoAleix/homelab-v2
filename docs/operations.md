@@ -395,7 +395,9 @@ sandbox. `status` emits one JSON object: `profile` (`working`, `inference`, or `
 `pause_reason: on_battery`; manual differences can still make the observed profile custom.
 It observes launchd, running apps, power settings and native router presets rather than
 trusting the last selected profile. Starting/stopping a service or editing a setting makes
-it `custom` unless it exactly matches a configured profile. Model loading/sleep is activity,
+it `custom` unless it exactly matches a configured profile. Working excludes the owner’s
+system settings from matching. The JSON `settings` power mode/sleep describe AC settings,
+even while on battery; GPU limit is global. Model loading/sleep is activity,
 not a profile change. An unavailable router reports its model services disallowed.
 
 ```bash
@@ -419,14 +421,15 @@ identifiers. Keep the owner's edited app list and paths only in the private file
 Profiles contain `services`, `close_apps` (bundle identifiers), `settings` and `jobs` (boolean).
 `return_seconds` defaults to 900; `idle_seconds` for jobs defaults to 300.
 
-Working allows bulk embeddings, cleanup and VoiceInk, closes no apps, selects sleep after
-one minute of inactivity and the default GPU limit. It neither sets nor matches power mode;
-the owner chooses it (usually High Power on the charger and Low Power on battery). Power-mode
-changes alone never make Working custom. Remove the old `powermode` key from Working’s
-private settings when convenient; old files remain readable and that field is ignored.
-Vision and unregistered future image presets are excluded. Inference permits both router purposes, stops dictation, politely
-quits the configured apps, selects High Power, disables system sleep and sets GPU wired memory
-to 45056 MB. Inference requires AC power: `pmset -g batt` is checked before any switching
+Working allows bulk embeddings, cleanup and VoiceInk and closes no apps. Its `settings`
+are empty: it applies no sleep or power-mode default and does not match the owner’s system
+settings. The owner keeps separate choices for AC and Battery. Legacy Working power-mode,
+sleep and GPU fields remain readable: they are checked against the numeric bounds, then
+ignored without rewriting the private file. Vision and unregistered future image presets
+are excluded. Inference permits both router purposes, stops dictation, politely quits the
+configured apps, selects High Power and disables sleep **only for AC** (`pmset -c`), and
+sets the global GPU wired limit to 45056 MB. Battery power mode/sleep and both sources’
+display settings are untouched. Inference requires AC power: `pmset -g batt` is checked before any switching
 side effect, with the clear refusal `Inference requires AC power; connect the charger before
 switching`. The helper rechecks AC before applying Inference settings. Its power mode must
 be 2 (High Power). Only an explicit owner `switch inference` enters it. Before any side effect,
@@ -449,15 +452,17 @@ changes on battery do not make the owner-entered Inference session custom.
 Paused Inference waits for power or the owner; it never returns to Working merely because the
 idle timeout elapses. Replugging resets the battery timer and automatically resumes the same
 Inference session, applying High Power before restoring its allow-list. Resumption starts a
-fresh 15-minute idle window without replacing the original app/service or prior-mode record.
+fresh 15-minute idle window without replacing the original app/service or settings record.
 If replugging is observed before ten minutes, the grace timer resets; the ordinary idle rule
 still applies during this grace period. The owner can `switch working` at any time, including
 while paused on battery, to restore everything. If that return fails partway through, the
 existing check retries Working restoration instead of resuming Inference on AC. A private,
 atomic recovery record at `~/.local/state/homelab-profile/session.json` records apps and
-services stopped by the switch and `previous_powermode` before any change; the return reopens only those and restores that
-recorded power mode. An ordinary Working switch with no pending return leaves power mode
-alone. The root helper reads the record while it is pending; it is cleared only after
+services stopped by the switch, `previous_powermode`, `previous_sleep` (both AC), and
+`previous_gpu_limit_mb` (global) before any change. AC values come from `pmset -g custom`,
+not the active-source `pmset -g` view. The return reopens only those apps/services and restores
+all three recorded values exactly. An ordinary Working switch with no pending return writes
+no power settings; it only resets a nonzero orphan GPU limit to zero. The root helper reads the record while it is pending; it is cleared only after
 settings and app/service restoration succeed. Apps/services already stopped remain stopped
 (so the resulting profile may be `custom`). A failed/cancelled quit retains the recovery record; explicitly `switch working`
 to recover. The command relaunches apps; window and tab restoration follows each app’s own
@@ -516,33 +521,44 @@ pmset command is granted. The root-owned script uses `/usr/bin/python3 -I` and f
 executables, no imports from the checkout and no shell. It reads only the invoking sudo user’s
 private profile file and (for a pending Working return) `session.json`, rejecting final symlinks,
 foreign ownership, nonregular/oversize files and nonnumeric settings. Inference always sets
-High Power; a return accepts only a recorded integer power mode 0–2. Ordinary Working does
-not apply power mode. Sleep remains bounded to 0–180 minutes and GPU wired limit to
-0–45056 MB. Those settings are editable without widening sudo access. Zero GPU limit restores
-the system default; it also resets at reboot. When power mode is applied or restored it uses
-all power sources, as does sleep.
+High Power; a return accepts only recorded integer power modes 0–2, AC sleep 0–180 minutes
+and GPU wired limits 0–45056 MB. Inference requires a complete pending recovery record
+before writes. Ordinary Working does not apply configuration defaults; without a pending
+return it only clears a nonzero orphan GPU limit. All pmset writes use `-c`; Battery settings
+are never written. Zero GPU limit restores the system default; it also resets at reboot.
 A partial system-setting failure retains the recovery record; returning to Working retries.
-
-After installation, verify both names with:
+Older pending records containing only a power mode are refused, rather than inventing sleep
+or GPU recovery values. Finish an existing return before updating the command/helper.
+The sudoers file needs no change when reinstalling the corrected helper:
 
 ```bash
-sudo -k -n /usr/local/sbin/homelab-profile-apply inference
-sudo -k -n /usr/local/sbin/homelab-profile-apply working
+sudo install -o root -g wheel -m 0755 mac/homelab-profile-apply /usr/local/sbin/homelab-profile-apply
 ```
 
-Read `pmset -g` and `sysctl iogpu.wired_limit_mb` after each.
-A direct helper restoration test needs a pending recovery record with the original
-`previous_powermode` (0, 1 or 2); without one, Working deliberately leaves power mode alone.
-For an isolated helper test, pause the profile LaunchAgent, preserve its existing session
-record, create the bounded test record, then restore that record and reload the agent after
-verifying settings. The orchestrator supplies these Mac-only commands after installation.
-An unknown argument must fail with `sudo -k -n`, as must an unrelated command if no independent grant allows it.
-Do not test by running a production Inference switch that quits VS Code while chats run.
+After reinstalling from the merged checkout, the orchestrator runs this **outside the sandbox**
+as the owner, on AC, with Working services and no pending return or running jobs:
+
+```bash
+uv run python tests/mac_profile_privileged_acceptance.py
+```
+
+This uses the helper directly, never a production Inference switch or app quit. It checks
+that the installed helper matches the checkout before any writes, pauses the profile agent,
+saves the original private session and per-source settings, and creates a complete bounded
+recovery record. `sudo -k -n` verifies both names without cached credentials or a prompt;
+missing, unknown and extra arguments must fail. Readback uses `pmset -g custom` and sysctl:
+Inference must select AC mode 2, AC sleep 0 and GPU 45056, leaving every Battery setting and
+other AC setting unchanged. Working must restore the captured AC mode, AC sleep and GPU
+limit exactly, with the full per-source readback identical to the original. The proof restores
+private session state and reloads the agent in cleanup. A restoration failure retains the
+recovery record and `~/.local/state/homelab-profile/privileged-acceptance-backup.json`, leaves
+the profile agent paused, and must be relayed to the orchestrator. Never use a production
+Inference switch from a chat terminal while VS Code must survive.
 
 **Unprivileged acceptance test before merge:** save the private profile file first. Use only
 TextEdit (`com.apple.TextEdit`) in the test Inference app list and copy the observed settings
-into both test profiles, omitting Working’s power mode and retaining Inference’s fixed
-High Power requirement. Keep the Mac on the charger throughout the cycle. The test skips
+into the test Inference profile, keeping Working settings empty and retaining Inference’s
+fixed High Power requirement. Keep the Mac on the charger throughout the cycle. The test skips
 settings; if the owner’s observed mode is not High Power, the inference phase correctly
 reports `custom` while services and restoration are still verified. Set `return_seconds` to 15. Open
 TextEdit with a disposable saved document, start VoiceInk and cleanup, then switch Working

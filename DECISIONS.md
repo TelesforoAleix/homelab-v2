@@ -458,3 +458,18 @@ request rewriting, custom HTTP server, listener change, queue or new sudoers arg
 resume retains paused state and its published reason; the existing check retries transitions.
 An explicit Working return records its intent before restoration, so a failure is retried
 instead of resuming Inference when AC returns.
+
+
+**2026-10-15 — G14 correction: preserve separate AC and Battery settings exactly.**
+The owner’s AC sleep is never while Battery sleep is one minute. The former `pmset -a`
+application and Working sleep default would overwrite those choices; they are superseded.
+Inference records AC power mode and AC sleep from `pmset -g custom`, plus the global GPU
+limit, before any switch side effect. Only AC mode/sleep are changed (`pmset -c`); Battery
+and display settings are never written. Return to Working restores all three recorded
+values exactly, with existing numeric bounds and complete-record validation before writes.
+Working owns no system-setting defaults or matching requirements. Legacy Working fields
+are bounded and ignored; without a pending return the helper writes no pmset settings and
+only resets an orphan nonzero GPU limit to zero. Missing recovery fields cause refusal,
+rather than guessed restoration. The two exact sudoers arguments stay unchanged. Reinstall
+the corrected root-owned helper after merge; privileged acceptance captures both power
+sources and proves exact restoration without switching apps or quitting VS Code.

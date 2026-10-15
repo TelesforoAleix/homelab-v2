@@ -73,11 +73,7 @@ def main(stage):
         cfg = {"profiles": p.config()["profiles"], "return_seconds": 15}
         observed = p.settings()
         for name, profile in cfg["profiles"].items():
-            profile["settings"] = {
-                key: value for key, value in observed.items() if key != "powermode"
-            }
-            if name == "inference":
-                profile["settings"]["powermode"] = 2
+            profile["settings"] = {} if name == "working" else {**observed, "powermode": 2}
             profile["close_apps"] = ["com.apple.TextEdit"] if name == "inference" else []
             profile["jobs"] = False
         p.save(p.CONFIG, cfg)
