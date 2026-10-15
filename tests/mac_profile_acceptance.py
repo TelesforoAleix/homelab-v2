@@ -26,6 +26,7 @@ p = importlib.util.module_from_spec(spec)
 loader.exec_module(p)
 BACKUP = p.STATE / "acceptance-original.json"
 FIXTURE = p.STATE / "profile-acceptance.txt"
+TEXTEDIT_LAUNCHED = p.STATE / "acceptance-textedit-launched"
 
 
 def cli(*args, success=True):
@@ -82,6 +83,8 @@ def main(stage):
                 )
                 with opener.open(request, timeout=120) as response:
                     assert response.status == 200
+        if not p.app_running("com.apple.TextEdit"):
+            TEXTEDIT_LAUNCHED.write_text("yes\n")
         FIXTURE.write_text("Harmless profile acceptance document.\n")
         p.run("/usr/bin/open", "-b", "com.apple.TextEdit", str(FIXTURE))
         cli("switch", "working", "--skip-settings")
@@ -124,6 +127,14 @@ def main(stage):
             "recover Working first"
         )
         assert BACKUP.exists()
+        if TEXTEDIT_LAUNCHED.exists() and p.app_running("com.apple.TextEdit"):
+            p.run(
+                "/usr/bin/osascript",
+                "-e",
+                'tell application id "com.apple.TextEdit" to quit saving no',
+            )
+        TEXTEDIT_LAUNCHED.unlink(missing_ok=True)
+        FIXTURE.unlink(missing_ok=True)
         p.save(p.CONFIG, p.load(BACKUP, {}))
         BACKUP.unlink()
         cli("status")
