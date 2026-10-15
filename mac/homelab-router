@@ -2,6 +2,7 @@
 """Login-managed llama.cpp router; native models load on request and sleep when idle."""
 
 import argparse
+import configparser
 import ctypes
 import fcntl
 import ipaddress
@@ -93,9 +94,9 @@ def record():
     return json.loads(path.read_text()) if path.exists() else None
 
 
-def api(address, path):
+def api(address, path, timeout=2):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(f"http://{check_address(address)}:{PORT}{path}", timeout=2) as response:
+    with opener.open(f"http://{check_address(address)}:{PORT}{path}", timeout=timeout) as response:
         return json.load(response)
 
 
@@ -120,7 +121,23 @@ def write_presets():
     template = SCRIPT.with_name("router-models.ini.in").read_text()
     for key, path in (("VISION_MODEL", weights), ("PROJECTOR", projector), ("EMBED_MODEL", embed)):
         template = template.replace("@" + key + "@", str(path))
-    (STATE / "models.ini").write_text(template)
+    policy = STATE / "allowed.json"
+    if policy.exists():
+        allowed = set(json.loads(policy.read_text()))
+        presets = configparser.ConfigParser()
+        header, sections = template.split("[*]", 1)
+        presets.read_string("[*]" + sections)
+        for name in presets.sections():
+            if name != "*" and name not in allowed:
+                presets.remove_section(name)
+        import io
+
+        rendered = io.StringIO()
+        presets.write(rendered)
+        template = header + rendered.getvalue()
+    temp = STATE / "models.ini.tmp"
+    temp.write_text(template)
+    temp.replace(STATE / "models.ini")
 
 
 def router_args(address):

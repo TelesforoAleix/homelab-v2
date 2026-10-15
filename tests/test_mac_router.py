@@ -384,3 +384,17 @@ def test_manual_start_failure_is_recorded_and_survives_stop(monkeypatch, tmp_pat
     monkeypatch.setattr(router, "launchctl", lambda *a: subprocess.CompletedProcess(a, 1))
     router.stop()
     assert (router.STATE / "startup-failures.log").read_text() == "router health check timed out\n"
+
+
+def test_allowlist_omits_disallowed_and_future_presets(monkeypatch, tmp_path):
+    state = setup_paths(monkeypatch, tmp_path)
+    (state / "allowed.json").write_text('["Qwen3-Embedding-4B"]')
+    router.write_presets()
+    text = (state / "models.ini").read_text()
+    assert "[vision]" not in text and "mmproj" not in text
+    assert "[Qwen3-Embedding-4B]" in text
+    assert "ngl = 99" in text and "embd-normalize = 2" in text
+    (state / "allowed.json").write_text("[]")
+    router.write_presets()
+    text = (state / "models.ini").read_text()
+    assert "[vision]" not in text and "[Qwen3-Embedding-4B]" not in text

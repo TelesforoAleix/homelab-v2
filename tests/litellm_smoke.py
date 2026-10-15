@@ -55,6 +55,21 @@ class Upstream(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(
+            json.dumps(
+                {
+                    "data": [
+                        {"id": model}
+                        for model in getattr(self.server, "models", ["vision", REAL_LARGE])
+                    ]
+                }
+            ).encode()
+        )
+
     def do_POST(self):
         raw = self.rfile.read(int(self.headers["Content-Length"]))
         if self.headers["Content-Type"].startswith("multipart/form-data"):
@@ -654,6 +669,28 @@ def run(unset=False):
                             and timeout.read == 300
                             for timeout in sdk_timeouts
                         ), "SDK did not receive the separate vision connect timeout"
+                        for purpose, endpoint, payload in (
+                            ("vision", "/v1/chat/completions", {"messages": []}),
+                            ("embed-large-bulk", "/v1/embeddings", {"input": CONTENT}),
+                        ):
+                            vision_upstream.models = []
+                            before_refusal = len(requests)
+                            response = client.post(
+                                endpoint, headers=headers, json={"model": purpose, **payload}
+                            )
+                            calls += 1
+                            assert response.status_code == 503, response.text
+                            assert response.json()["error"]["message"] == (
+                                f"{purpose} is not available until Inference"
+                            )
+                            assert len(requests) == before_refusal
+                            assert any(
+                                f"purpose={purpose} " in line
+                                and "profile_blocked=true" in line
+                                and "upstream=false" in line
+                                for line in output.getvalue().splitlines()
+                            )
+                        vision_upstream.models = ["vision", REAL_LARGE]
                         vision_upstream.shutdown()
                         vision_upstream.server_close()
                         before_stopped = len(requests)

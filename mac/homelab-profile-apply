@@ -1,0 +1,65 @@
+#!/usr/bin/python3 -I
+"""Root-owned, isolated interpreter; only bounded numeric system settings are accepted."""
+
+import json
+import os
+import pwd
+import stat
+import subprocess
+import sys
+
+DEFAULTS = {
+    "working": {"powermode": 1, "sleep": 1, "gpu_limit_mb": 0},
+    "inference": {"powermode": 2, "sleep": 0, "gpu_limit_mb": 45056},
+}
+BOUNDS = {"powermode": (0, 2), "sleep": (0, 180), "gpu_limit_mb": (0, 45056)}
+
+
+def apply(profile):
+    if profile not in DEFAULTS or os.geteuid() != 0:
+        raise ValueError("invalid invocation")
+    uid = int(os.environ["SUDO_UID"])
+    home = pwd.getpwuid(uid).pw_dir
+    path = home + "/.config/homelab/profiles.json"
+    values = DEFAULTS[profile].copy()
+    # Never follow a final symlink or expose data from a root-readable file.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd) as handle:
+        info = os.fstat(handle.fileno())
+        if info.st_uid != uid or not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+            raise ValueError("invalid configuration file")
+        config = json.loads(handle.read(65537))
+        if not isinstance(config, dict) or not isinstance(config.get("profiles", {}), dict):
+            raise ValueError("invalid configuration")
+        entry = config.get("profiles", {}).get(profile, {})
+        if not isinstance(entry, dict) or not isinstance(entry.get("settings", {}), dict):
+            raise ValueError("invalid settings")
+        values.update(entry.get("settings", {}))
+    if set(values) != set(BOUNDS):
+        raise ValueError("invalid settings")
+    for key, (low, high) in BOUNDS.items():
+        if type(values[key]) is not int or not low <= values[key] <= high:
+            raise ValueError("setting outside approved bounds")
+    # No shell, user executable, environment lookup, arbitrary sysctl or extra flags.
+    for argv in (
+        ["/usr/bin/pmset", "-a", "powermode", str(values["powermode"])],
+        ["/usr/bin/pmset", "-a", "sleep", str(values["sleep"])],
+        ["/usr/sbin/sysctl", "-w", "iogpu.wired_limit_mb=" + str(values["gpu_limit_mb"])],
+    ):
+        subprocess.run(
+            argv,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+            timeout=30,
+        )
+
+
+if __name__ == "__main__":
+    try:
+        if len(sys.argv) != 2:
+            raise ValueError("one profile required")
+        apply(sys.argv[1])
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        sys.exit("profile settings refused or failed")

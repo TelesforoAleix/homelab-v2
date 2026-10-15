@@ -123,16 +123,40 @@ gateway's upstream names. Embeddings report the same real model and role wording
 Autoload is enabled, with neither preset loaded at startup. Native idle sleep releases model
 weights and KV memory after 600 seconds by default, configured once in the command. Sleeping
 children remain ready to reload. launchd owns process restart; llama.cpp owns model loading,
-cache discovery and idle sleep, using a private cache under router state. No custom model
-manager, profiles, allow-lists or listener
-actions are added. The action listener on 8091 and dictation cleanup server on 8095 stay
-independent. The retired Mac launchers are pointers, with vision's address-discovery export
+cache discovery and idle sleep, using a private cache under router state. The usage profile
+command controls preset availability through native reload; no custom model runtime or
+listener actions are added. The action listener on 8091 and dictation cleanup server on 8095
+stay independent. The retired Mac launchers are pointers, with vision's address-discovery export
 retained for the unchanged listener. Legacy state is unused; historical embedding files remain.
 Generated presets and the LaunchAgent contain runtime paths only in private user state.
 Content logging is disabled and native output is discarded. Failed launcher invocations retain
 only a fixed startup-stage line in private state, never exception text or CLI output.
 `status` exposes only preset states and current router/family RSS and Darwin physical
-footprint. No wake lock is installed.
+footprint. The router itself installs no wake lock.
+
+`mac/homelab-profile` observes services, app bundle ids and settings, reporting Working,
+Inference or custom as JSON. Private editable profiles and an atomic recovery record live
+outside git. Working allows bulk embeddings and dictation, Low Power and default GPU memory;
+Inference permits router services, stops dictation, politely quits configured apps, selects
+High Power, disables sleep and raises the GPU wired limit to 45056 MB. Only the owner enters
+Inference; a VS Code descendant-work guard requires explicit confirmation before side effects.
+The root-owned `homelab-profile-apply` accepts only the two profile names through exact sudoers
+arguments, validates bounded numeric settings from the invoking user's private file and calls
+only fixed pmset/sysctl commands with an isolated interpreter. No user code executes as root.
+A user LaunchAgent checks inactivity every 30 seconds and returns to Working after 900 seconds
+without loaded router models or jobs, reopening precisely the recorded apps/services.
+Manual changes are compared to observed profiles, rather than trusting a selected-name flag.
+
+The router's private preset allow-list omits disallowed services; native preset reload unloads
+removed children without request rewriting or changes to model flags. The gateway checks the
+Mac's native model list before inference. An absent preset receives a fixed purpose-specific
+HTTP 503 naming Inference; the existing content-free audit adds `profile_blocked=true` so
+refusals are countable per purpose. Generic failures remain sanitised. Clients own waiting work.
+Light Mac jobs use individual launchd calendar agents and run only in an exact permitting
+profile, on AC power with idle input. Missed runs coalesce into a pending bit, retried through
+launchd at the next eligible idle check. Jobs never enter Inference and never run under a
+VS Code terminal. These owner-trusted local commands are independent of the node's durable
+Procrastinate jobs; no Mac work queue or menu bar app is introduced.
 The deployment hook keeps each purpose's 3-second connect and 300-second request limits,
 without retries, fallback or stopped-Mac alerts.
 

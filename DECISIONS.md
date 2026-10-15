@@ -393,3 +393,26 @@ and cleanup server on 8095 stay independent. No profiles, allow-lists, app quitt
 settings are introduced. Preserve embedding vectors, real-model reporting, 3-second connect
 limits and 300-second request limits. Runtime paths and addresses stay private; content logs
 are disabled. The retired vision pointer retains address discovery for the unchanged listener.
+
+
+**2026-10-15 — Owner-selected Mac usage profiles restrict native router presets.**
+Working and Inference are private editable configurations, with custom determined by observed
+service availability, app closures and system settings. Keep model lifecycle in llama.cpp:
+render only permitted presets and use native reload, verifying its resulting model list.
+The gateway reads that list before Mac calls and emits a fixed, sanitised HTTP 503 naming the
+purpose and Inference, with a boolean on the existing purpose audit line. No request rewriting,
+client queue or listener change. Only the owner enters Inference; recognised VS Code descendant
+work requires an explicit confirmation flag. Record closures before attempting graceful quits
+so a cancellation or crash leaves recovery information. Restore only recorded apps/services;
+previously stopped services stay stopped and can leave custom state after return. A 30-second
+launchd check returns after 900 seconds without loaded router models or jobs.
+
+The privilege boundary is one root-owned standalone script with two exact sudoers argument
+forms. An isolated system Python reads only bounded numeric settings from the invoking sudo
+user's private file, then calls fixed absolute pmset/sysctl binaries without a shell. This
+keeps settings editable without granting arbitrary commands; rejects symlinks, nonregular,
+oversize or foreign-owned files; and caps GPU wired memory at 44 GiB. Install only after merge
+with the owner's password and protected root-owned parent directories. launchd owns calendar
+jobs and deferred idle launches; one pending bit coalesces missed runs, without a work queue.
+A job context marker rejects Inference entry, and jobs execute outside the VS Code process
+tree. The public example contains no owner's app list or paths.
