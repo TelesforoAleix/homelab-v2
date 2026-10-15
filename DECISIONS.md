@@ -473,3 +473,30 @@ only resets an orphan nonzero GPU limit to zero. Missing recovery fields cause r
 rather than guessed restoration. The two exact sudoers arguments stay unchanged. Reinstall
 the corrected root-owned helper after merge; privileged acceptance captures both power
 sources and proves exact restoration without switching apps or quitting VS Code.
+
+**2026-10-15 — The Mac menu bar app stays a client of the profile command.** The SwiftUI
+`MenuBarExtra` runs the checkout's `homelab-profile` with the interpreter the installer records
+in its bundle, the same pair the profile LaunchAgent runs, rather than a copy that could drift.
+What it needs that the command lacked became tested subcommands: `plan-inference`, `waiting`,
+`usage` and `schedule`. Read-only reports skip the command lock, so a slow node read never
+delays a tick. It starts at login through a user LaunchAgent, which works ad hoc signed; it is
+not a login item. Inference asks once from the plan; the guard's own refusal, not the app,
+decides whether *Switch anyway* is offered.
+
+**2026-10-15 — The night window decides each night once, at its start.** It lives in the
+existing profile agent's tick, not in a job, and reaches Inference only through `switch`, which
+still refuses job context and repeats the AC and guard checks. The night is recorded before any
+side effect, so a skipped or failed start is not retried every 30 seconds. A first check more
+than five minutes after the start skips the night: waking a sleeping Mac in the morning must not
+quit the owner's apps. Saving the window inside its hours skips that night for the same reason.
+Manual actions end ownership but keep the night recorded, so a manual return is not re-entered.
+The 15-minute idle return still applies inside the window; the end only returns a session the
+window still owns. A night-window error never stops the rest of the tick.
+
+**2026-10-15 — Usage figures are read from local files only.** Codex's newest five-hour/weekly
+`rate_limits` entry is read from its session logs, newest files first, as of the entry's own
+timestamp. Claude's come read-only from `~/.claude/usage-now.json`, which the owner's status line
+already writes with the owner's approval, as of its `at` time; a missing or invalid file is
+unknown. The repository ships no status-line script and the app never writes usage. Each source
+reports its age. Waiting estimates use only published `seconds_per_image`; other purposes show
+their count with no estimate.

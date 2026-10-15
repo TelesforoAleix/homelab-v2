@@ -28,6 +28,7 @@ REAL_SERVICE = p.service
 def world(monkeypatch, tmp_path):
     monkeypatch.setattr(p, "STATE", tmp_path / "state")
     monkeypatch.setattr(p, "CONFIG", tmp_path / "profiles.json")
+    monkeypatch.setattr(p, "SCHEDULE", tmp_path / "night-window.json")
     p.STATE.mkdir()
     cfg = {"profiles": copy.deepcopy(p.DEFAULTS), "return_seconds": 15}
     cfg["profiles"]["inference"]["close_apps"] = ["com.apple.TextEdit"]
@@ -1053,3 +1054,213 @@ def test_privileged_proof_cleans_up_without_app_switches(world, monkeypatch, tmp
         assert restarted and not proof.BACKUP.exists()
         assert session.read_bytes() == original_session
         assert power == original_power
+
+
+def local(*args):
+    return p.datetime(*args).astimezone()
+
+
+MONDAY = local(2026, 10, 19, 22, 0)
+
+
+@pytest.fixture
+def night(world):
+    cfg = world[0]
+    p.save(p.SCHEDULE, {"enabled": True, "start": "22:00", "end": "07:00", "days": [0]})
+    return cfg
+
+
+def night_state():
+    return p.load(p.STATE / "night-window.json", {})
+
+
+def test_night_window_is_off_by_default(world):
+    assert p.schedule_report() == {**p.SCHEDULE_DEFAULT, "last": None}
+    p.schedule_tick(world[0], MONDAY)
+    assert p.snapshot(world[0])["profile"] == "working"
+    assert not (p.STATE / "night-window.json").exists()
+
+
+def test_night_window_enters_from_working_through_the_guarded_switch(night, world):
+    live = world[1]
+    p.schedule_tick(night, MONDAY + p.timedelta(minutes=1))
+    assert not live["cleanup"] and not live["com.apple.TextEdit"]
+    assert p.load(p.STATE / "session.json", {})["return_pending"]
+    assert night_state()["owned"] and night_state()["result"] == "entered"
+    assert night_state()["night"] == "2026-10-19"
+
+
+@pytest.mark.parametrize(
+    "condition, reason",
+    [
+        ("custom", "not working"),
+        ("battery", "on battery"),
+        ("work", "work running"),
+        ("job", "job context"),
+        ("late", "missed start"),
+    ],
+)
+def test_night_window_skips_the_whole_night(night, world, monkeypatch, condition, reason):
+    cfg, live, models, power = world
+    now = MONDAY
+    if condition == "custom":
+        live["cleanup"] = False
+    elif condition == "battery":
+        monkeypatch.setattr(p, "on_ac_power", lambda: False)
+    elif condition == "work":
+        monkeypatch.setattr(p, "vscode_work", lambda: [{"pid": 7, "command": "codex exec"}])
+    elif condition == "job":
+        monkeypatch.setenv("HOMELAB_PROFILE_JOB", "1")
+    else:
+        now = MONDAY + p.timedelta(minutes=6)
+    before = copy.deepcopy((live, models, power))
+    p.schedule_tick(cfg, now)
+    assert (live, models, power) == before
+    assert night_state() == {
+        "night": "2026-10-19",
+        "owned": False,
+        "end": local(2026, 10, 20, 7, 0).isoformat(),
+        "result": "skipped: " + reason,
+    }
+    # Conditions clearing later that night do not enter it.
+    live["cleanup"] = True
+    monkeypatch.setattr(p, "on_ac_power", lambda: True)
+    monkeypatch.setattr(p, "vscode_work", lambda: [])
+    monkeypatch.delenv("HOMELAB_PROFILE_JOB", raising=False)
+    p.schedule_tick(cfg, MONDAY + p.timedelta(minutes=2))
+    assert p.snapshot(cfg)["profile"] == "working"
+
+
+def test_night_window_honours_days_and_window(night, world):
+    cfg = world[0]
+    for now in (
+        local(2026, 10, 20, 22, 0),  # Tuesday: not selected
+        local(2026, 10, 19, 21, 59),  # before start
+        local(2026, 10, 19, 7, 0),  # Monday morning belongs to Sunday's night
+    ):
+        p.schedule_tick(cfg, now)
+        assert p.snapshot(cfg)["profile"] == "working"
+    assert not (p.STATE / "night-window.json").exists()
+
+
+def test_night_window_returns_at_end_only_while_it_owns_the_session(night, world):
+    cfg, live = world[0], world[1]
+    p.schedule_tick(cfg, MONDAY)
+    p.schedule_tick(cfg, local(2026, 10, 20, 6, 59))
+    assert p.load(p.STATE / "session.json", {})["return_pending"]
+    p.schedule_tick(cfg, local(2026, 10, 20, 7, 0))
+    assert not p.load(p.STATE / "session.json", {}).get("return_pending")
+    assert live["cleanup"] and live["com.apple.TextEdit"]
+    assert night_state()["owned"] is False
+
+
+@pytest.mark.parametrize("action", ["switch", "service"])
+def test_manual_action_ends_ownership_without_reentry(night, world, monkeypatch, action):
+    cfg = world[0]
+    p.schedule_tick(cfg, MONDAY)
+    if action == "switch":
+        p.switch("working", cfg, skip=True)
+        p.switch("inference", cfg, skip=True)
+    else:
+        monkeypatch.setattr(p.sys, "argv", [str(p.SCRIPT), "stop", "embed-large-bulk"])
+        p.main()
+    assert night_state()["owned"] is False
+    p.schedule_tick(cfg, local(2026, 10, 20, 7, 0))
+    assert p.load(p.STATE / "session.json", {})["return_pending"]
+
+
+def test_manual_working_return_is_not_reentered_that_night(night, world):
+    cfg = world[0]
+    p.schedule_tick(cfg, MONDAY)
+    p.switch("working", cfg, skip=True)
+    p.schedule_tick(cfg, MONDAY + p.timedelta(minutes=1))
+    assert p.snapshot(cfg)["profile"] == "working"
+
+
+def test_scheduled_switch_keeps_every_guard(world, monkeypatch, capsys):
+    cfg = world[0]
+    monkeypatch.setattr(p, "vscode_work", lambda: [{"pid": 7, "command": "codex exec"}])
+    with pytest.raises(ValueError, match="owner"):
+        p.switch("inference", cfg, scheduled=True)
+    assert "refused" in capsys.readouterr().out
+    monkeypatch.setattr(p, "vscode_work", lambda: [])
+    monkeypatch.setattr(p, "on_ac_power", lambda: False)
+    with pytest.raises(p.ProfileRefusal, match="AC power"):
+        p.switch("inference", cfg, scheduled=True)
+    monkeypatch.setattr(p, "on_ac_power", lambda: True)
+    monkeypatch.setenv("HOMELAB_PROFILE_JOB", "1")
+    with pytest.raises(ValueError, match="forbidden"):
+        p.switch("inference", cfg, scheduled=True)
+    assert not (p.STATE / "session.json").exists()
+
+
+def test_schedule_set_validates_and_never_enters_the_current_window(world, monkeypatch):
+    value = p.schedule_set("22:00", "07:00", "mon,sun", now=MONDAY + p.timedelta(minutes=1))
+    assert value == {"enabled": True, "start": "22:00", "end": "07:00", "days": [0, 6]}
+    assert night_state()["result"] == "skipped: set during window"
+    p.schedule_tick(world[0], MONDAY + p.timedelta(minutes=2))
+    assert p.snapshot(world[0])["profile"] == "working"
+    for args in (
+        ("24:00", "07:00", "mon"),
+        ("22:00", "22:00", "mon"),
+        ("22:00", "07:00", ""),
+        ("22:00", "07:00", "mon,mon"),
+        ("22:00", "07:00", "monday"),
+    ):
+        with pytest.raises(ValueError):
+            p.schedule_set(*args)
+    monkeypatch.setenv("HOMELAB_PROFILE_JOB", "1")
+    with pytest.raises(ValueError, match="jobs"):
+        p.schedule_set("22:00", "07:00", "mon")
+
+
+def test_schedule_off_ends_ownership(night, world):
+    p.schedule_tick(world[0], MONDAY)
+    assert p.schedule_off()["enabled"] is False
+    assert night_state()["owned"] is False
+    p.schedule_tick(world[0], local(2026, 10, 20, 7, 0))
+    assert p.load(p.STATE / "session.json", {})["return_pending"]
+
+
+def test_night_window_failure_does_not_stop_the_tick(world, monkeypatch):
+    p.SCHEDULE.write_text("{broken")
+    calls = []
+    monkeypatch.setattr(p, "jobs", lambda: calls.append("jobs") or {})
+    p.tick(world[0])
+    assert calls
+
+
+def test_inference_plan_lists_what_the_switch_would_stop(world, monkeypatch):
+    work = [{"pid": 7, "command": "codex exec"}]
+    monkeypatch.setattr(p, "vscode_work", lambda: work)
+    assert p.inference_plan(world[0]) == {
+        "apps_to_quit": ["com.apple.TextEdit"],
+        "services_to_stop": ["cleanup", "voiceink"],
+        "work": work,
+        "on_ac_power": True,
+        "refusal": None,
+    }
+    monkeypatch.setattr(p, "on_ac_power", lambda: False)
+    assert p.inference_plan(world[0])["refusal"].startswith("Inference requires AC power")
+
+
+def test_schedule_cli_prints_the_saved_window(world, monkeypatch, capsys):
+    argv = [str(p.SCRIPT), "schedule", "set", "--start", "23:30", "--end", "06:00"]
+    monkeypatch.setattr(p.sys, "argv", [*argv, "--days", "fri,sat"])
+    assert p.main() == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["enabled"] and shown["days"] == [4, 5] and shown["start"] == "23:30"
+    monkeypatch.setattr(p.sys, "argv", [*argv, "--days", "someday"])
+    with pytest.raises(SystemExit) as exit_:
+        p.main()
+    assert exit_.value.code == 1
+    assert p.schedule()["days"] == [4, 5]
+
+
+def test_night_window_records_a_refused_entry(night, world, monkeypatch):
+    calls = iter([[], [{"pid": 7, "command": "codex exec"}]])  # work appears between checks
+    monkeypatch.setattr(p, "vscode_work", lambda: next(calls))
+    with pytest.raises(ValueError):
+        p.schedule_tick(night, MONDAY)
+    assert night_state()["result"] == "failed"
+    assert not p.load(p.STATE / "session.json", {}).get("return_pending")

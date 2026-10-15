@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
-"""Mac usage profiles. Status is JSON; only an explicit switch can enter Inference."""
+"""Mac usage profiles. Status is JSON; only an owner switch or night window enters Inference."""
 
 import argparse
 import contextlib
 import copy
 import fcntl
 import json
+import math
 import os
 import plistlib
 import re
 import runpy
+import shlex
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime, timedelta
+from datetime import time as dtime
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve()
 CONFIG = Path.home() / ".config/homelab/profiles.json"
 STATE = Path.home() / ".local/state/homelab-profile"
+SCHEDULE = Path.home() / ".config/homelab/night-window.json"
 AGENTS = Path.home() / "Library/LaunchAgents"
 VOICE = "com.prakashjoshipax.VoiceInk"
 CLEANUP = "org.mac-dictation.cleanup"
@@ -369,7 +374,7 @@ def snapshot(cfg):
     }
 
 
-def switch(name, cfg, confirm=False, skip=False, automatic=False):
+def switch(name, cfg, confirm=False, skip=False, automatic=False, scheduled=False):
     target = cfg["profiles"][name]
     # Check BEFORE every side effect, even with a test list: make the guard easy to prove.
     if name == "inference":
@@ -404,6 +409,9 @@ def switch(name, cfg, confirm=False, skip=False, automatic=False):
         # A failed Working return must be retried, not reversed by an AC resume.
         record["return_requested"] = True
         save(STATE / "session.json", record)
+    # Any explicit profile action invalidates the night window's return ownership.
+    if not automatic and not scheduled:
+        clear_schedule_session()
     # Record recovery intent before quitting: cancellation/crashes retain a recovery record.
     for svc in ("cleanup", "voiceink"):
         present = cleanup_running() if svc == "cleanup" else app_running(VOICE)
@@ -465,6 +473,9 @@ def idle_seconds():
 
 
 def tick(cfg):
+    # A night-window failure must not stop the idle return, pause or job checks below.
+    with contextlib.suppress(OSError, ValueError, KeyError, subprocess.SubprocessError):
+        schedule_tick(cfg)
     record = load(STATE / "session.json", {})
     if record.get("return_pending") and record.get("return_requested"):
         switch("working", cfg, automatic=True)
@@ -577,6 +588,329 @@ def job_add(name, calendar, command):
     )
 
 
+SCHEDULE_DEFAULT = {"enabled": False, "start": "22:00", "end": "07:00", "days": [0, 1, 2, 3, 4]}
+# The window starts Inference only at its start time; a later first check skips that night.
+SCHEDULE_START_GRACE = timedelta(minutes=5)
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def clear_schedule_session():
+    # Ownership ends, but the night stays evaluated, so it is not entered again.
+    state = load(STATE / "night-window.json", {})
+    if state.get("owned"):
+        state["owned"] = False
+        save(STATE / "night-window.json", state)
+
+
+def validate_schedule(value):
+    if not isinstance(value, dict) or set(value) != {"enabled", "start", "end", "days"}:
+        raise ValueError("invalid night window")
+    if type(value["enabled"]) is not bool:
+        raise ValueError("invalid night window")
+    for field in ("start", "end"):
+        if not isinstance(value[field], str) or not re.fullmatch(
+            r"(?:[01]\d|2[0-3]):[0-5]\d", value[field]
+        ):
+            raise ValueError("times must use HH:MM")
+    if value["start"] == value["end"]:
+        raise ValueError("start and end must differ")
+    if (
+        not isinstance(value["days"], list)
+        or not value["days"]
+        or any(type(day) is not int or not 0 <= day <= 6 for day in value["days"])
+        or len(set(value["days"])) != len(value["days"])
+    ):
+        raise ValueError("days must be unique weekdays, Monday=0 through Sunday=6")
+    return value
+
+
+def schedule():
+    return validate_schedule(load(SCHEDULE, SCHEDULE_DEFAULT))
+
+
+def night_bounds(value, night):
+    # Naive local wall-clock times, resolved through the local zone (DST-safe).
+    start = dtime.fromisoformat(value["start"])
+    end = dtime.fromisoformat(value["end"])
+    end_day = night if end > start else night + timedelta(days=1)
+    return (
+        datetime.combine(night, start).astimezone(),
+        datetime.combine(end_day, end).astimezone(),
+    )
+
+
+def current_night(value, now):
+    """The night (dated by its start) whose window contains now, or None."""
+    for night in (now.date(), now.date() - timedelta(days=1)):
+        start, end = night_bounds(value, night)
+        if start <= now < end:
+            return night, start, end
+    return None
+
+
+def schedule_tick(cfg, now=None):
+    now = now or datetime.now().astimezone()
+    state = load(STATE / "night-window.json", {})
+    if state.get("owned") and now >= datetime.fromisoformat(state["end"]):
+        # Return only a session the window entered and nobody has touched by hand since.
+        if load(STATE / "session.json", {}).get("return_pending"):
+            switch("working", cfg, automatic=True)
+        state["owned"] = False
+        save(STATE / "night-window.json", state)
+    value = schedule()
+    current = current_night(value, now) if value["enabled"] else None
+    if current is None:
+        return
+    night, start, end = current
+    if state.get("night") == night.isoformat() or night.weekday() not in value["days"]:
+        return
+    # Decide once per night, before any side effect: a failure is not retried every tick.
+    state = {"night": night.isoformat(), "owned": False, "end": end.isoformat()}
+    if now - start > SCHEDULE_START_GRACE:
+        state["result"] = "skipped: missed start"
+    elif job_context():
+        state["result"] = "skipped: job context"
+    elif snapshot(cfg)["profile"] != "working":
+        state["result"] = "skipped: not working"
+    elif not on_ac_power():
+        state["result"] = "skipped: on battery"
+    elif vscode_work():
+        state["result"] = "skipped: work running"
+    else:
+        state.update(owned=True, result="entered")
+    save(STATE / "night-window.json", state)
+    if state["owned"]:
+        # switch() repeats the AC, job and VS Code work guards before any side effect. On
+        # failure, ownership stays so the end time still returns any partial session.
+        try:
+            switch("inference", cfg, scheduled=True)
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+            state["result"] = "failed"
+            save(STATE / "night-window.json", state)
+            raise
+
+
+def schedule_report():
+    state = load(STATE / "night-window.json", {})
+    last = {key: state[key] for key in ("night", "result", "owned") if key in state}
+    return {**schedule(), "last": last or None}
+
+
+def schedule_set(start, end, days, now=None):
+    if job_context():
+        raise ValueError("jobs cannot schedule Inference")
+    try:
+        numbers = [WEEKDAYS.index(day) for day in days.split(",")]
+    except ValueError:
+        raise ValueError("invalid day") from None
+    value = validate_schedule({"enabled": True, "start": start, "end": end, "days": numbers})
+    save(SCHEDULE, value)
+    # Enabling or editing inside a window never enters it at once: that night counts as skipped.
+    current = current_night(value, now or datetime.now().astimezone())
+    state = load(STATE / "night-window.json", {})
+    if current and not state.get("owned") and state.get("night") != current[0].isoformat():
+        night, _, end = current
+        save(
+            STATE / "night-window.json",
+            {
+                "night": night.isoformat(),
+                "owned": False,
+                "end": end.isoformat(),
+                "result": "skipped: set during window",
+            },
+        )
+    return value
+
+
+def schedule_off():
+    value = {**schedule(), "enabled": False}
+    save(SCHEDULE, value)
+    clear_schedule_session()
+    return value
+
+
+NODE_SSH = ("/usr/bin/ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "homelab-agent")
+# Docker's journald driver files the gateway's audit lines under its container, not the unit.
+# --grep exits 1 when nothing matches; -q keeps that case silent so it reads as zero refusals.
+AUDIT_COMMAND = (
+    "sudo journalctl CONTAINER_NAME=homelab-litellm-1 --since '24 hours ago' -o cat --no-pager "
+    "-q --grep 'profile_blocked=true'"
+)
+# /v1/model/info is public metadata; LiteLLM publishes no host port, so ask from its container.
+MODEL_INFO_COMMAND = (
+    "sudo docker compose -f /srv/homelab/homelab-v2/compose.yaml exec -T litellm python -c "
+    + shlex.quote(
+        "import urllib.request; "
+        "print(urllib.request.urlopen('http://127.0.0.1:4000/v1/model/info', timeout=10)"
+        ".read().decode())"
+    )
+)
+
+
+def node(command, what, *, no_match_ok=False):
+    """Run one read-only command as homelab-agent; failures name the call, never its output."""
+    try:
+        result = subprocess.run(
+            [*NODE_SSH, command], capture_output=True, text=True, timeout=60, check=False
+        )
+    except subprocess.TimeoutExpired:
+        raise ProfileRefusal(f"waiting unavailable: {what} on the node timed out") from None
+    except OSError:
+        raise ProfileRefusal(f"waiting unavailable: {what} could not start ssh") from None
+    if result.returncode == 0:
+        return result.stdout
+    if no_match_ok and result.returncode == 1 and not result.stdout and not result.stderr:
+        return ""
+    reason = "ssh could not connect" if result.returncode == 255 else f"exit {result.returncode}"
+    raise ProfileRefusal(f"waiting unavailable: {what} on the node failed ({reason})")
+
+
+def waiting_report():
+    try:
+        info = json.loads(node(MODEL_INFO_COMMAND, "reading /v1/model/info"))
+    except json.JSONDecodeError:
+        raise ProfileRefusal("waiting unavailable: /v1/model/info returned invalid JSON") from None
+    timings = {}
+    for row in info.get("data", []) if isinstance(info, dict) else []:
+        if isinstance(row, dict) and isinstance(row.get("model_info"), dict):
+            timings[row.get("model_name")] = row["model_info"].get("seconds_per_image")
+    audit = node(AUDIT_COMMAND, "reading gateway audit lines", no_match_ok=True)
+    return {"since_hours": 24, "purposes": waiting_purposes(audit, timings)}
+
+
+def waiting_purposes(audit, timings):
+    counts = {}
+    for line in audit.splitlines():
+        match = re.search(
+            r"\bmodel_call purpose=([A-Za-z0-9:._-]+) .*\bprofile_blocked=true\b", line
+        )
+        if match:
+            counts[match[1]] = counts.get(match[1], 0) + 1
+    purposes = []
+    for purpose, count in sorted(counts.items()):
+        seconds = timings.get(purpose)
+        valid = type(seconds) in (int, float) and math.isfinite(seconds) and seconds > 0
+        purposes.append(
+            {
+                "purpose": purpose,
+                "count": count,
+                "seconds_per_request": seconds if valid else None,
+                "estimated_seconds": count * seconds if valid else None,
+            }
+        )
+    return purposes
+
+
+CODEX_SESSIONS = Path.home() / ".codex/sessions"
+# Written by the owner's Claude Code status line; read only.
+CLAUDE_USAGE = Path.home() / ".claude/usage-now.json"
+
+
+def iso(value):
+    """Epoch seconds or an ISO string, as whole-second UTC ISO; anything else is unknown."""
+    moment = None
+    if type(value) in (int, float) and math.isfinite(value):
+        moment = datetime.fromtimestamp(value, UTC)
+    elif isinstance(value, str):
+        with contextlib.suppress(ValueError):
+            moment = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    return moment.replace(microsecond=0).isoformat() if moment else None
+
+
+def usage_window(row, percent_key):
+    if not isinstance(row, dict):
+        return None
+    used = row.get(percent_key)
+    if type(used) not in (int, float) or not math.isfinite(used):
+        return None
+    return {"used_percentage": used, "resets_at": iso(row.get("resets_at"))}
+
+
+def codex_window(limits, name):
+    """A rate-limit window with its length in minutes, or None (Codex writes null at its limit)."""
+    window = limits.get(name) if isinstance(limits, dict) else None
+    return window if isinstance(window, dict) else None
+
+
+def codex_usage(root=None):
+    """The newest entry carrying both five-hour and seven-day windows in Codex's session logs."""
+    root = root or CODEX_SESSIONS
+    files = sorted(root.rglob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in files:
+        newest = None
+        with path.open(errors="replace") as handle:
+            for line in handle:
+                if '"rate_limits"' not in line:
+                    continue
+                with contextlib.suppress(ValueError, TypeError, KeyError, AttributeError):
+                    entry = json.loads(line)
+                    limits = entry["payload"]["rate_limits"]
+                    primary = codex_window(limits, "primary")
+                    secondary = codex_window(limits, "secondary")
+                    if not primary or not secondary:
+                        continue  # a null window is unknown, not an error: look further back
+                    windows = (primary.get("window_minutes"), secondary.get("window_minutes"))
+                    stamp = iso(entry["timestamp"])
+                    five = usage_window(primary, "used_percent")
+                    seven = usage_window(secondary, "used_percent")
+                    if windows != (300, 10080) or not (stamp and five and seven):
+                        continue
+                    if not newest or stamp >= newest["as_of"]:
+                        newest = {"as_of": stamp, "five_hour": five, "seven_day": seven}
+        if newest:
+            return newest
+    return None
+
+
+def claude_usage(path=None):
+    """{"at": epoch seconds, "rate_limits": {"five_hour": ..., "seven_day": ...}}, or unknown."""
+    path = path or CLAUDE_USAGE
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        saved = json.loads(path.read_text())
+        limits = saved.get("rate_limits")
+        five = usage_window(limits.get("five_hour"), "used_percentage")
+        seven = usage_window(limits.get("seven_day"), "used_percentage")
+        at = saved.get("at")
+        as_of = iso(at) if type(at) in (int, float) else None
+        if five and seven and as_of:
+            return {"as_of": as_of, "five_hour": five, "seven_day": seven}
+    return None
+
+
+def usage_report(now=None):
+    now = time.time() if now is None else now
+    codex = None
+    with contextlib.suppress(OSError):
+        codex = codex_usage()
+    sources = {"codex": codex, "claude": claude_usage()}
+    for source in filter(None, sources.values()):
+        # Age of the figures, from their own timestamp; never negative for a skewed clock.
+        read = datetime.fromisoformat(source["as_of"]).timestamp()
+        source["age_seconds"] = max(0, round(now - read))
+    return {"read_at": iso(now), **sources}
+
+
+def inference_plan(cfg):
+    status = snapshot(cfg)
+    inference = cfg["profiles"]["inference"]
+    apps = [bundle for bundle in inference["close_apps"] if status["apps"].get(bundle)]
+    stop_services = [
+        name
+        for name in ("cleanup", "voiceink")
+        if status["services"].get(name, {}).get("running") and name not in inference["services"]
+    ]
+    on_ac = on_ac_power()
+    return {
+        "apps_to_quit": apps,
+        "services_to_stop": stop_services,
+        "work": vscode_work(),
+        "on_ac_power": on_ac,
+        "refusal": None
+        if on_ac
+        else "Inference requires AC power; connect the charger before switching",
+    }
+
+
 def job_worker(name, cfg):
     if under_vscode():
         raise ValueError("jobs must run through launchd, outside VS Code")
@@ -632,6 +966,15 @@ def main():
     add.add_argument("--calendar", required=True, help="launchd StartCalendarInterval JSON")
     add.add_argument("argv", nargs="+")
     sub.add_parser("job-worker").add_argument("name")
+    for command in ("waiting", "usage", "plan-inference"):
+        sub.add_parser(command)
+    night = sub.add_parser("schedule").add_subparsers(dest="action", required=True)
+    night.add_parser("show")
+    night.add_parser("off")
+    night_set = night.add_parser("set")
+    night_set.add_argument("--start", required=True, help="local HH:MM")
+    night_set.add_argument("--end", required=True, help="local HH:MM")
+    night_set.add_argument("--days", required=True, help="comma-separated: " + ",".join(WEEKDAYS))
     args = parser.parse_args()
     os.umask(0o077)
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -639,6 +982,16 @@ def main():
         cfg = config()
         if args.command == "job-worker":
             job_worker(args.name, cfg)
+            return 0
+        # Read-only reports: no lock, so a slow node read never delays a tick or a switch.
+        if args.command == "waiting":
+            print(json.dumps(waiting_report()))
+            return 0
+        if args.command == "usage":
+            print(json.dumps(usage_report()))
+            return 0
+        if args.command == "schedule" and args.action == "show":
+            print(json.dumps(schedule_report()))
             return 0
         with lock():
             if args.command == "status":
@@ -651,6 +1004,7 @@ def main():
                 switch(args.profile, cfg, args.confirm_kill, args.skip_settings)
                 print(json.dumps(snapshot(cfg)))
             elif args.command in ("start", "stop"):
+                clear_schedule_session()
                 service(args.service, args.command == "start")
                 print(json.dumps(snapshot(cfg)))
             elif args.command == "tick":
@@ -659,6 +1013,14 @@ def main():
                 if not CONFIG.exists():
                     save(CONFIG, {"profiles": DEFAULTS})
                 install_agent("org.homelab.profile", ["tick"], StartInterval=30, RunAtLoad=True)
+            elif args.command == "plan-inference":
+                print(json.dumps(inference_plan(cfg)))
+            elif args.command == "schedule":
+                if args.action == "off":
+                    schedule_off()
+                else:
+                    schedule_set(args.start, args.end, args.days)
+                print(json.dumps(schedule_report()))
             elif args.action == "list":
                 print(json.dumps(jobs()))
             elif args.action == "add":
