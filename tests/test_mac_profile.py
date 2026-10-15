@@ -34,6 +34,7 @@ def world(monkeypatch, tmp_path):
     models = {"Qwen3-Embedding-4B": "unloaded"}
     power = p.DEFAULTS["working"]["settings"].copy()
     monkeypatch.setattr(p, "registered", lambda label: live["cleanup"])
+    monkeypatch.setattr(p, "cleanup_running", lambda: live["cleanup"])
     monkeypatch.setattr(
         p, "app_running", lambda app: live.get("voiceink" if app == p.VOICE else app, False)
     )
@@ -360,3 +361,16 @@ def test_job_worker_records_exit_and_propagates_context(world, monkeypatch):
     assert calls[0][1]["env"]["HOMELAB_PROFILE_JOB"] == "1"
     assert p.jobs()["example"]["last_exit"] == 0
     assert p.jobs()["example"]["pid"] is None
+
+
+@pytest.mark.parametrize(
+    "output,expected",
+    [
+        ("service = {\n\tstate = running\n}", True),
+        ("service = {\n\tstate = waiting\n}", False),
+        ("", False),
+    ],
+)
+def test_cleanup_state_uses_running_process_not_loaded_agent(monkeypatch, output, expected):
+    monkeypatch.setattr(p, "run", lambda *args, **kwargs: output)
+    assert p.cleanup_running() is expected

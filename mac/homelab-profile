@@ -141,6 +141,11 @@ def registered(label):
     )
 
 
+def cleanup_running():
+    output = run("/bin/launchctl", "print", f"gui/{os.getuid()}/{CLEANUP}", check=False)
+    return bool(re.search(r"^\s*state = running\s*$", output, re.M))
+
+
 def app_running(bundle):
     return (
         run("/usr/bin/osascript", "-e", f'application id "{bundle}" is running').strip() == "true"
@@ -166,12 +171,18 @@ def service(name, start):
     elif name == "voiceink":
         if app_running(VOICE) != start:
             app(VOICE, start)
-    elif registered(CLEANUP) != start:
+    elif (registered(CLEANUP) != start) or (start and not cleanup_running()):
         plist = AGENTS / f"{CLEANUP}.plist"
         if not plist.is_file():
             raise ValueError("cleanup LaunchAgent missing")
-        run("/bin/launchctl", "bootstrap" if start else "bootout", f"gui/{os.getuid()}", str(plist))
-        if registered(CLEANUP) != start:
+        if registered(CLEANUP):
+            run("/bin/launchctl", "bootout", f"gui/{os.getuid()}", str(plist))
+        if start:
+            run("/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist))
+            deadline = time.monotonic() + 30
+            while not cleanup_running() and time.monotonic() < deadline:
+                time.sleep(0.2)
+        if registered(CLEANUP) != start or (start and not cleanup_running()):
             raise ValueError("cleanup did not change state")
 
 
@@ -252,7 +263,7 @@ def snapshot(cfg):
         name: {"allowed": model in models, "state": models.get(model, "disallowed")}
         for name, model in MODELS.items()
     }
-    states["cleanup"] = {"running": registered(CLEANUP)}
+    states["cleanup"] = {"running": cleanup_running()}
     states["voiceink"] = {"running": app_running(VOICE)}
     observed = settings()
     record = load(STATE / "session.json", {})
@@ -310,7 +321,7 @@ def switch(name, cfg, confirm=False, skip=False, automatic=False):
         save(STATE / "session.json", record)
     # Record recovery intent before quitting: cancellation/crashes retain a recovery record.
     for svc in ("cleanup", "voiceink"):
-        present = registered(CLEANUP) if svc == "cleanup" else app_running(VOICE)
+        present = cleanup_running() if svc == "cleanup" else app_running(VOICE)
         desired = svc in target["services"]
         if name == "working" and record.get("return_pending"):
             desired = svc in record.get("stopped", [])
