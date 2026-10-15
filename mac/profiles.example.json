@@ -3,7 +3,7 @@
     "working": {
       "services": ["embed-large-bulk", "cleanup", "voiceink"],
       "close_apps": [],
-      "settings": {"sleep": 1, "gpu_limit_mb": 0},
+      "settings": {},
       "jobs": true
     },
     "inference": {

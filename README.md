@@ -26,8 +26,9 @@ Solid parts are built; dashed parts are planned.
 - The [Mac profile command](docs/operations.md#mac-usage-profiles) selects Working or Inference,
   reports observed state as JSON, and returns to Working after idle inference. After 10
   continuous minutes on battery, Inference pauses its model services and resumes on AC.
-  Working follows the owner’s power-mode choice. Inference requires AC power and selects High
-  Power; its return restores the previously recorded mode. Relaunched apps
+  Working leaves the owner’s AC and Battery settings alone. Inference requires AC power,
+  changes only AC power mode/sleep and the global GPU limit, and restores their recorded
+  values on return. Relaunched apps
   restore windows and tabs according to their own settings: Chrome’s “Continue where you left
   off” and macOS’s “Close windows when quitting an application” are owner choices.
 - Knowledge endpoints: `POST /v1/knowledge/query` and `/v1/knowledge/answer`; jobs persist in Postgres.

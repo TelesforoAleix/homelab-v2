@@ -33,7 +33,7 @@ def world(monkeypatch, tmp_path):
     cfg["profiles"]["inference"]["close_apps"] = ["com.apple.TextEdit"]
     live = {"cleanup": True, "voiceink": True, "com.apple.TextEdit": True}
     models = {"Qwen3-Embedding-4B": "unloaded"}
-    power = {"powermode": 1, **p.DEFAULTS["working"]["settings"]}
+    power = {"powermode": 1, "sleep": 10, "gpu_limit_mb": 0}
     monkeypatch.setattr(p, "on_ac_power", lambda: True)
     monkeypatch.setattr(p, "registered", lambda label: live["cleanup"])
     monkeypatch.setattr(p, "cleanup_running", lambda: live["cleanup"])
@@ -61,7 +61,7 @@ def world(monkeypatch, tmp_path):
             power.update(cfg["profiles"][name]["settings"])
             record = p.load(p.STATE / "session.json", {})
             if name == "working" and record.get("return_pending"):
-                power["powermode"] = record["previous_powermode"]
+                power.update({key: record["previous_" + key] for key in power})
         return ""
 
     monkeypatch.setattr(p, "run", run)
@@ -76,7 +76,7 @@ def test_observed_matching_and_custom(world):
         assert p.snapshot(cfg)["profile"] == "custom"
         live[key] = True
     power["gpu_limit_mb"] = 10
-    assert p.snapshot(cfg)["profile"] == "custom"
+    assert p.snapshot(cfg)["profile"] == "working"
     power["gpu_limit_mb"] = 0
     models["vision"] = "unloaded"
     assert p.snapshot(cfg)["profile"] == "custom"
@@ -290,11 +290,23 @@ def test_root_helper_exact_commands(world, monkeypatch, tmp_path):
         return subprocess.CompletedProcess(args, 0, "Now drawing from 'AC Power'\n")
 
     monkeypatch.setattr(helper.subprocess, "run", execute)
+    state = tmp_path / ".local/state/homelab-profile"
+    state.mkdir(parents=True)
+    (state / "session.json").write_text(
+        json.dumps(
+            {
+                "return_pending": True,
+                "previous_powermode": 1,
+                "previous_sleep": 10,
+                "previous_gpu_limit_mb": 0,
+            }
+        )
+    )
     helper.apply("inference")
     assert [call[0][0] for call in calls] == [
         ["/usr/bin/pmset", "-g", "batt"],
-        ["/usr/bin/pmset", "-a", "powermode", "2"],
-        ["/usr/bin/pmset", "-a", "sleep", "0"],
+        ["/usr/bin/pmset", "-c", "powermode", "2"],
+        ["/usr/bin/pmset", "-c", "sleep", "0"],
         ["/usr/sbin/sysctl", "-w", "iogpu.wired_limit_mb=45056"],
     ]
     assert all(call[1]["env"]["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin" for call in calls)
@@ -435,21 +447,22 @@ def test_legacy_private_working_power_mode_removed_from_resolved_config(world):
             }
         },
     )
-    assert p.config()["profiles"]["working"]["settings"] == {"sleep": 1, "gpu_limit_mb": 0}
+    assert p.config()["profiles"]["working"]["settings"] == {}
     assert p.load(p.CONFIG, {})["profiles"]["working"]["settings"]["powermode"] == 1
 
 
 @pytest.mark.parametrize("mode", [0, 1, 2])
 def test_idle_return_restores_recorded_power_mode(world, monkeypatch, mode):
     cfg, _, _, power = world
-    power["powermode"] = mode
+    power.update(powermode=mode, sleep=17, gpu_limit_mb=16384)
+    before = power.copy()
     p.switch("inference", cfg)
     assert power["powermode"] == 2
     record = p.load(p.STATE / "session.json", {})
     assert record["previous_powermode"] == mode
     monkeypatch.setattr(p.time, "time", lambda: record["last_active"] + 20)
     p.tick(cfg)
-    assert power["powermode"] == mode
+    assert power == before
     assert p.snapshot(cfg)["profile"] == "working"
     assert not p.snapshot(cfg)["return_pending"]
 
@@ -489,7 +502,7 @@ def test_failed_power_restoration_retains_recovery_record(world, monkeypatch):
     monkeypatch.setattr(
         p, "run", lambda *args: power.update(cfg["profiles"]["working"]["settings"])
     )
-    with pytest.raises(ValueError, match="previous power mode was not restored"):
+    with pytest.raises(ValueError, match="previous settings were not restored"):
         p.switch("working", cfg)
     assert p.load(p.STATE / "session.json", {})["previous_powermode"] == 1
     assert p.snapshot(cfg)["return_pending"]
@@ -531,49 +544,91 @@ def root_world(monkeypatch, tmp_path):
 
     def execute(argv, **kwargs):
         calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "Now drawing from 'AC Power'\n")
+        output = (
+            "0\n" if argv[:2] == ["/usr/sbin/sysctl", "-n"] else "Now drawing from 'AC Power'\n"
+        )
+        return subprocess.CompletedProcess(argv, 0, output)
 
     monkeypatch.setattr(helper.subprocess, "run", execute)
-    return config_path, state / "session.json", calls
+    session = state / "session.json"
+    session.write_text(
+        json.dumps(
+            {
+                "return_pending": True,
+                "previous_powermode": 1,
+                "previous_sleep": 10,
+                "previous_gpu_limit_mb": 12345,
+            }
+        )
+    )
+    return config_path, session, calls
 
 
 @pytest.mark.parametrize("legacy_mode", [None, 1, 2])
-def test_root_working_preserves_owner_mode_without_return(root_world, legacy_mode):
-    config_path, _, calls = root_world
+def test_root_working_preserves_owner_settings_without_return(root_world, legacy_mode):
+    config_path, session, calls = root_world
+    session.unlink()
     settings = {"sleep": 1, "gpu_limit_mb": 0}
     if legacy_mode is not None:
         settings["powermode"] = legacy_mode
     config_path.write_text(json.dumps({"profiles": {"working": {"settings": settings}}}))
     helper.apply("working")
-    assert calls == [
-        ["/usr/bin/pmset", "-a", "sleep", "1"],
-        ["/usr/sbin/sysctl", "-w", "iogpu.wired_limit_mb=0"],
-    ]
+    assert calls == [["/usr/sbin/sysctl", "-n", "iogpu.wired_limit_mb"]]
 
 
 @pytest.mark.parametrize("mode", [0, 1, 2])
-def test_root_return_restores_only_bounded_recorded_mode(root_world, mode):
+@pytest.mark.parametrize("sleep,gpu", [(0, 0), (180, 45056), (15, 12345)])
+def test_root_return_restores_exact_bounded_ac_settings_and_gpu(root_world, mode, sleep, gpu):
     _, session, calls = root_world
-    session.write_text(json.dumps({"return_pending": True, "previous_powermode": mode}))
+    session.write_text(
+        json.dumps(
+            {
+                "return_pending": True,
+                "previous_powermode": mode,
+                "previous_sleep": sleep,
+                "previous_gpu_limit_mb": gpu,
+            }
+        )
+    )
     helper.apply("working")
     assert calls == [
-        ["/usr/bin/pmset", "-a", "powermode", str(mode)],
-        ["/usr/bin/pmset", "-a", "sleep", "1"],
-        ["/usr/sbin/sysctl", "-w", "iogpu.wired_limit_mb=0"],
+        ["/usr/bin/pmset", "-c", "powermode", str(mode)],
+        ["/usr/bin/pmset", "-c", "sleep", str(sleep)],
+        ["/usr/sbin/sysctl", "-w", "iogpu.wired_limit_mb=" + str(gpu)],
     ]
 
 
-@pytest.mark.parametrize("mode", [-1, 3, True, "2", None])
-def test_root_rejects_invalid_recorded_mode_before_settings(root_world, mode):
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("powermode", -1),
+        ("powermode", 3),
+        ("powermode", True),
+        ("powermode", "2"),
+        ("powermode", None),
+        ("sleep", -1),
+        ("sleep", 181),
+        ("sleep", True),
+        ("sleep", None),
+        ("gpu_limit_mb", -1),
+        ("gpu_limit_mb", 45057),
+        ("gpu_limit_mb", "0; id"),
+        ("gpu_limit_mb", None),
+    ],
+)
+def test_root_rejects_invalid_record_before_settings(root_world, field, value):
     _, session, calls = root_world
-    session.write_text(json.dumps({"return_pending": True, "previous_powermode": mode}))
-    with pytest.raises(ValueError, match="invalid recorded power mode"):
+    record = json.loads(session.read_text())
+    record["previous_" + field] = value
+    session.write_text(json.dumps(record))
+    with pytest.raises(ValueError):
         helper.apply("working")
     assert not calls
 
 
 def test_root_does_not_follow_recovery_symlink(root_world):
     config_path, session, calls = root_world
+    session.unlink()
     session.symlink_to(config_path)
     with pytest.raises(OSError):
         helper.apply("working")
@@ -851,3 +906,150 @@ def test_failed_owner_return_is_retried_instead_of_resuming_inference(
     assert not p.snapshot(cfg)["paused"] and not p.snapshot(cfg)["return_pending"]
     assert power["powermode"] == 1 and all(live.values())
     assert "vision" not in models
+
+
+@pytest.mark.parametrize("ac_sleep", [0, 10, 180])
+def test_settings_reads_ac_even_when_battery_source_has_different_values(monkeypatch, ac_sleep):
+    custom = (
+        "Battery Power:\n powermode 1\n sleep 1\n displaysleep 2\n"
+        f"AC Power:\n powermode 2\n sleep {ac_sleep}\n displaysleep 10\n"
+    )
+    calls = []
+
+    def run(*args):
+        calls.append(args)
+        return custom if args[0] == "/usr/bin/pmset" else "12345\n"
+
+    monkeypatch.setattr(p, "run", run)
+    assert p.settings() == {"powermode": 2, "sleep": ac_sleep, "gpu_limit_mb": 12345}
+    assert calls[0] == ("/usr/bin/pmset", "-g", "custom")
+
+
+def test_missing_ac_settings_cannot_capture_battery_as_recovery(monkeypatch):
+    monkeypatch.setattr(p, "run", lambda *args: "Battery Power:\n powermode 1\n sleep 1\n")
+    with pytest.raises(ValueError, match="AC power settings unavailable"):
+        p.settings()
+
+
+def test_root_inference_requires_complete_recovery_before_writes(root_world):
+    _, session, calls = root_world
+    session.unlink()
+    with pytest.raises(ValueError, match="requires recorded AC settings"):
+        helper.apply("inference")
+    assert not calls
+
+
+@pytest.mark.parametrize("pending", [None, False])
+def test_root_working_clears_only_orphan_gpu_limit(root_world, monkeypatch, pending):
+    _, session, calls = root_world
+    if pending is None:
+        session.unlink()
+    else:
+        session.write_text(json.dumps({"return_pending": pending}))
+
+    def execute(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "45056\n")
+
+    monkeypatch.setattr(helper.subprocess, "run", execute)
+    helper.apply("working")
+    assert calls == [
+        ["/usr/sbin/sysctl", "-n", "iogpu.wired_limit_mb"],
+        ["/usr/sbin/sysctl", "-w", "iogpu.wired_limit_mb=0"],
+    ]
+
+
+@pytest.mark.parametrize("field", ["sleep", "gpu_limit_mb"])
+def test_failed_exact_return_keeps_record_for_retry(world, monkeypatch, field):
+    cfg, _, _, power = world
+    p.switch("inference", cfg)
+    original = p.load(p.STATE / "session.json", {})
+
+    def incomplete(*args):
+        power.update({key: original["previous_" + key] for key in power if key != field})
+        power[field] = 99
+
+    monkeypatch.setattr(p, "run", incomplete)
+    with pytest.raises(ValueError, match="previous settings were not restored"):
+        p.switch("working", cfg)
+    retained = p.load(p.STATE / "session.json", {})
+    assert retained["return_pending"] and retained["return_requested"]
+    assert retained["previous_" + field] == original["previous_" + field]
+
+
+@pytest.mark.parametrize("failure", [None, "inference", "working"])
+def test_privileged_proof_cleans_up_without_app_switches(world, monkeypatch, tmp_path, failure):
+    proof_path = ROOT / "tests/mac_profile_privileged_acceptance.py"
+    spec = importlib.util.spec_from_file_location("privileged_proof_test", proof_path)
+    proof = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(proof)
+    monkeypatch.setattr(proof, "p", p)
+    monkeypatch.setattr(proof, "BACKUP", p.STATE / "proof-backup.json")
+    monkeypatch.setattr(proof.os, "geteuid", lambda: 501)
+    monkeypatch.setattr(p, "AGENTS", tmp_path / "agents")
+    p.AGENTS.mkdir()
+    (p.AGENTS / "org.homelab.profile.plist").write_text("test")
+    _, live, _, power = world
+    power.update(powermode=2, sleep=0, gpu_limit_mb=12345)
+    original_power = power.copy()
+    original_live = live.copy()
+    session = p.STATE / "session.json"
+    p.save(session, {"skip_settings": True, "owner_marker": "preserve"})
+    original_session = session.read_bytes()
+    events = []
+
+    class InstalledHelper:
+        def read_bytes(self):
+            return (ROOT / "mac/homelab-profile-apply").read_bytes()
+
+        def stat(self):
+            return type("Info", (), {"st_uid": 0, "st_mode": 0o755})()
+
+        def __str__(self):
+            return "/usr/local/sbin/homelab-profile-apply"
+
+    monkeypatch.setattr(proof, "HELPER", InstalledHelper())
+
+    def sources():
+        return {
+            "AC Power": {
+                "powermode": power["powermode"],
+                "sleep": power["sleep"],
+                "displaysleep": 10,
+            },
+            "Battery Power": {"powermode": 1, "sleep": 1, "displaysleep": 2},
+        }
+
+    monkeypatch.setattr(proof, "custom_settings", sources)
+
+    def run(*args):
+        events.append(args)
+        if args[0] == "/usr/bin/sudo":
+            name = args[-1]
+            if name == "inference":
+                power.update(powermode=2, sleep=0, gpu_limit_mb=45056)
+            if name == failure:
+                raise RuntimeError("simulated helper failure")
+            if name == "working":
+                record = p.load(session, {})
+                power.update({key: record["previous_" + key] for key in power})
+        return ""
+
+    monkeypatch.setattr(p, "run", run)
+    monkeypatch.setattr(
+        proof.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "refused")
+    )
+    if failure:
+        with pytest.raises(RuntimeError, match="simulated helper failure"):
+            proof.main()
+    else:
+        proof.main()
+    assert live == original_live
+    restarted = any(args[:2] == ("/bin/launchctl", "bootstrap") for args in events)
+    if failure == "working":
+        assert not restarted and proof.BACKUP.exists()
+        assert p.load(session, {})["return_pending"]
+    else:
+        assert restarted and not proof.BACKUP.exists()
+        assert session.read_bytes() == original_session
+        assert power == original_power

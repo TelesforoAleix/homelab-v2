@@ -26,7 +26,7 @@ DEFAULTS = {
     "working": {
         "services": ["embed-large-bulk", "cleanup", "voiceink"],
         "close_apps": [],
-        "settings": {"sleep": 1, "gpu_limit_mb": 0},
+        "settings": {},
         "jobs": True,
     },
     "inference": {
@@ -83,10 +83,10 @@ def config():
         for app in profile["close_apps"]:
             if not isinstance(app, str) or not re.fullmatch(r"[A-Za-z0-9.-]+", app):
                 raise ValueError("apps must be bundle identifiers")
-        if name == "working" and isinstance(profile["settings"], dict):
-            # Private files installed before G14 may retain this now-ignored field.
-            profile["settings"].pop("powermode", None)
         validate_settings(profile["settings"], inference=name == "inference")
+        if name == "working":
+            # Validate but ignore legacy defaults without rewriting private files.
+            profile["settings"] = {}
     for key in ("return_seconds", "idle_seconds"):
         if type(value.get(key, 900 if key == "return_seconds" else 300)) is not int:
             raise ValueError("idle intervals must be integer seconds")
@@ -96,13 +96,18 @@ def config():
 
 
 def validate_settings(settings, *, inference=False):
-    bounds = {"sleep": (0, 180), "gpu_limit_mb": (0, 45056)}
+    bounds = {"sleep": (0, 180), "gpu_limit_mb": (0, 45056), "powermode": (0, 2)}
     if inference:
         bounds["powermode"] = (2, 2)
-    if not isinstance(settings, dict) or set(settings) != set(bounds):
+    if (
+        not isinstance(settings, dict)
+        or set(settings) - set(bounds)
+        or (inference and set(settings) != set(bounds))
+    ):
         raise ValueError("invalid system settings")
-    for key, (low, high) in bounds.items():
-        if type(settings[key]) is not int or not low <= settings[key] <= high:
+    for key, value in settings.items():
+        low, high = bounds[key]
+        if type(value) is not int or not low <= value <= high:
             raise ValueError("system setting outside approved bounds")
 
 
@@ -122,11 +127,7 @@ def on_ac_power():
 
 
 def settings_match(name, observed, expected):
-    return all(
-        observed.get(key) == value
-        for key, value in expected.items()
-        if name != "working" or key != "powermode"
-    )
+    return name == "working" or all(observed.get(key) == value for key, value in expected.items())
 
 
 def router():
@@ -225,7 +226,11 @@ def service(name, start):
 
 
 def settings():
-    pm = run("/usr/bin/pmset", "-g")
+    custom = run("/usr/bin/pmset", "-g", "custom")
+    match = re.search(r"^AC Power:\s*\n(.*?)(?=^\S|\Z)", custom, re.M | re.S)
+    if not match:
+        raise ValueError("AC power settings unavailable")
+    pm = match[1]
 
     def number(key):
         match = re.search(r"^\s*" + key + r"\s+(\d+)", pm, re.M)
@@ -382,16 +387,17 @@ def switch(name, cfg, confirm=False, skip=False, automatic=False):
     if name == "inference" and record.get("return_pending"):
         raise ValueError("return to Working before another Inference switch")
     if name == "inference":
-        previous_powermode = settings()["powermode"]
-        if type(previous_powermode) is not int or previous_powermode not in (0, 1, 2):
-            raise ValueError("power mode could not be recorded")
+        previous = settings()
+        validate_settings(previous)
+        if set(previous) != {"powermode", "sleep", "gpu_limit_mb"}:
+            raise ValueError("AC settings and GPU limit could not be recorded")
         record = {
             "return_pending": True,
             "closed": [],
             "stopped": [],
             "last_active": time.time(),
             "skip_settings": skip,
-            "previous_powermode": previous_powermode,
+            **{"previous_" + key: value for key, value in previous.items()},
         }
         save(STATE / "session.json", record)
     elif record.get("return_pending"):
@@ -423,9 +429,12 @@ def switch(name, cfg, confirm=False, skip=False, automatic=False):
         if (
             name == "working"
             and record.get("return_pending")
-            and observed["powermode"] != record.get("previous_powermode")
+            and any(
+                observed[key] != record.get("previous_" + key)
+                for key in ("powermode", "sleep", "gpu_limit_mb")
+            )
         ):
-            raise ValueError("previous power mode was not restored; recovery record retained")
+            raise ValueError("previous settings were not restored; recovery record retained")
     if name == "working":
         for svc in record.get("stopped", []):
             service(svc, True)

@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 DEFAULTS = {
-    "working": {"sleep": 1, "gpu_limit_mb": 0},
+    "working": {},
     "inference": {"powermode": 2, "sleep": 0, "gpu_limit_mb": 45056},
 }
 BOUNDS = {"powermode": (0, 2), "sleep": (0, 180), "gpu_limit_mb": (0, 45056)}
@@ -40,6 +40,15 @@ def run(argv, capture=False):
     )
 
 
+def validate(values):
+    if set(values) - set(BOUNDS):
+        raise ValueError("invalid settings")
+    for key, value in values.items():
+        low, high = BOUNDS[key]
+        if type(value) is not int or not low <= value <= high:
+            raise ValueError("setting outside approved bounds")
+
+
 def apply(profile):
     if profile not in DEFAULTS or os.geteuid() != 0:
         raise ValueError("invalid invocation")
@@ -54,34 +63,39 @@ def apply(profile):
     if not isinstance(entry, dict) or not isinstance(entry.get("settings", {}), dict):
         raise ValueError("invalid settings")
     values.update(entry.get("settings", {}))
-    if profile == "working":
-        values.pop("powermode", None)  # Ignore the legacy Working field.
-        try:
-            record = read_private(home + "/.local/state/homelab-profile/session.json", uid)
-        except FileNotFoundError:
-            record = {}
-        if record.get("return_pending") is True:
-            mode = record.get("previous_powermode")
-            if type(mode) is not int or mode not in (0, 1, 2):
-                raise ValueError("invalid recorded power mode")
-            values["powermode"] = mode
-    elif values.get("powermode") != 2 or type(values["powermode"]) is not int:
+    # Check legacy Working settings, then ignore them: Working owns no defaults.
+    if profile == "inference" and (
+        values.get("powermode") != 2 or type(values["powermode"]) is not int
+    ):
         raise ValueError("Inference requires High Power")
-    if set(values) - set(BOUNDS) or not {"sleep", "gpu_limit_mb"} <= set(values):
-        raise ValueError("invalid settings")
-    for key, value in values.items():
-        low, high = BOUNDS[key]
-        if type(value) is not int or not low <= value <= high:
-            raise ValueError("setting outside approved bounds")
+    validate(values)
+    try:
+        record = read_private(home + "/.local/state/homelab-profile/session.json", uid)
+    except FileNotFoundError:
+        record = {}
+    if record.get("return_pending") is True:
+        previous = {key: record.get("previous_" + key) for key in BOUNDS}
+        validate(previous)
+        if profile == "working":
+            values = previous
+    elif profile == "inference":
+        # The unprivileged command captures recovery before any switching side effect.
+        raise ValueError("Inference requires recorded AC settings and GPU limit")
+    else:
+        # No pending return: leave both power sources alone, clear an orphan GPU limit.
+        current = run(["/usr/sbin/sysctl", "-n", "iogpu.wired_limit_mb"], capture=True).stdout
+        if int(current.strip()) != 0:
+            run(["/usr/sbin/sysctl", "-w", "iogpu.wired_limit_mb=0"])
+        return
     if profile == "inference":
         source = run(["/usr/bin/pmset", "-g", "batt"], capture=True).stdout
         if not source.startswith("Now drawing from 'AC Power'"):
             raise ValueError("Inference requires AC power")
     # No shell, user executable, environment lookup, arbitrary sysctl or extra flags.
     if "powermode" in values:
-        run(["/usr/bin/pmset", "-a", "powermode", str(values["powermode"])])
+        run(["/usr/bin/pmset", "-c", "powermode", str(values["powermode"])])
     for argv in (
-        ["/usr/bin/pmset", "-a", "sleep", str(values["sleep"])],
+        ["/usr/bin/pmset", "-c", "sleep", str(values["sleep"])],
         ["/usr/sbin/sysctl", "-w", "iogpu.wired_limit_mb=" + str(values["gpu_limit_mb"])],
     ):
         run(argv)
