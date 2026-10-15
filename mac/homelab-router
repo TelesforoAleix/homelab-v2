@@ -38,13 +38,24 @@ def check_address(value):
 
 
 def tailscale_address():
-    cli = shutil.which("tailscale") or "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
-    try:
-        result = subprocess.run([cli, "ip", "-4"], capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            return check_address(result.stdout)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    # launchd's PATH omits both common CLI locations. The app binary is a last resort.
+    candidates = dict.fromkeys(
+        [
+            "/usr/local/bin/tailscale",
+            "/opt/homebrew/bin/tailscale",
+            shutil.which("tailscale"),
+            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        ]
+    )
+    for cli in candidates:
+        if cli is None:
+            continue
+        try:
+            result = subprocess.run([cli, "ip", "-4"], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                return check_address(result.stdout)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
     result = subprocess.run(["/sbin/ifconfig"], capture_output=True, text=True, timeout=5)
     addresses = set()
     interface = ""
@@ -128,18 +139,34 @@ def router_args(address):
     ]
 
 
+class StartupError(ValueError):
+    """A fixed, content-free startup stage; never carries upstream exception text."""
+
+
+def record_failure(reason):
+    with (STATE / "startup-failures.log").open("a") as handle:
+        handle.write(reason + "\n")
+
+
 def serve():
-    address = tailscale_address()
-    write_presets()
-    env = {key: value for key, value in os.environ.items() if not key.startswith("LLAMA_ARG_")}
-    # Keep unrelated llama.cpp cache entries out of this service's model discovery.
-    cache = STATE / "cache"
-    cache.mkdir(mode=0o700, exist_ok=True)
-    env["LLAMA_CACHE"] = str(cache)
-    saved = {"pid": os.getpid(), "identity": identity(os.getpid()), "address": address}
-    (STATE / "server.json").write_text(json.dumps(saved))
-    # No shell, supervisor, queue or idle timer of ours: launchd and llama.cpp own them.
-    os.execve(BINARY, router_args(address), env)
+    reason = "tailscale address unavailable"
+    try:
+        address = tailscale_address()
+        reason = "model preset preparation failed"
+        write_presets()
+        env = {key: value for key, value in os.environ.items() if not key.startswith("LLAMA_ARG_")}
+        # Keep unrelated llama.cpp cache entries out of this service's model discovery.
+        cache = STATE / "cache"
+        cache.mkdir(mode=0o700, exist_ok=True)
+        env["LLAMA_CACHE"] = str(cache)
+        reason = "router state preparation failed"
+        saved = {"pid": os.getpid(), "identity": identity(os.getpid()), "address": address}
+        (STATE / "server.json").write_text(json.dumps(saved))
+        reason = "router executable launch failed"
+        # No shell, supervisor, queue or idle timer of ours: launchd and llama.cpp own them.
+        os.execve(BINARY, router_args(address), env)
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        raise StartupError(reason) from None
 
 
 def launchctl(*args):
@@ -205,7 +232,7 @@ def start():
                 print("router serving on Tailscale port 8090; login agent installed")
                 return
             time.sleep(0.2)
-        raise ValueError("router did not become healthy")
+        raise StartupError("router health check timed out")
     except BaseException:
         stop()
         raise
@@ -275,8 +302,12 @@ def main():
                     stop()
                 else:
                     return status()
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
-        parser.exit(1, "router command failed; check model files, Tailscale and agent status\n")
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        if args.command in ("start", "serve"):
+            # No exception text, CLI output, model data, addresses or paths enter this log.
+            reason = str(exc) if isinstance(exc, StartupError) else "router start failed"
+            record_failure(reason)
+        parser.exit(1, "router command failed; see private startup-failures.log\n")
     return 0
 
 

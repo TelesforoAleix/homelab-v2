@@ -300,6 +300,87 @@ def test_failed_start_unloads_agent(monkeypatch, tmp_path):
     monkeypatch.setattr(router.time, "monotonic", lambda: next(times))
     stopped = []
     monkeypatch.setattr(router, "stop", lambda: stopped.append(True))
-    with pytest.raises(ValueError, match="healthy"):
+    with pytest.raises(ValueError, match="health check"):
         router.start()
     assert stopped == [True]
+
+
+@pytest.mark.parametrize("available", ["/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale"])
+def test_address_discovery_with_launchd_minimal_path(monkeypatch, available):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+    monkeypatch.setattr(router.shutil, "which", lambda name: None)
+    address = str(router.ipaddress.IPv4Address(0x64400001))
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[0] == available:
+            return subprocess.CompletedProcess(args, 0, address)
+        assert args[0] == "/usr/local/bin/tailscale"
+        raise FileNotFoundError("CLI missing")
+
+    monkeypatch.setattr(router.subprocess, "run", run)
+    assert router.tailscale_address() == address
+    assert calls[-1] == [available, "ip", "-4"]
+
+
+def test_invalid_cli_output_falls_through_to_next_cli(monkeypatch):
+    address = str(router.ipaddress.IPv4Address(0x64400001))
+
+    def run(args, **kwargs):
+        output = address if args[0] == "/opt/homebrew/bin/tailscale" else "GUI failed"
+        return subprocess.CompletedProcess(args, 0, output)
+
+    monkeypatch.setattr(router.subprocess, "run", run)
+    assert router.tailscale_address() == address
+
+
+@pytest.mark.parametrize("stage", ["address", "presets", "exec"])
+def test_failed_agent_start_records_only_fixed_stage(monkeypatch, tmp_path, capsys, stage):
+    setup_paths(monkeypatch, tmp_path)
+    address = str(router.ipaddress.IPv4Address(0x64400001))
+    monkeypatch.setattr(router, "tailscale_address", lambda: address)
+    monkeypatch.setattr(router, "identity", lambda pid: "start")
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "serve"])
+    private_diagnostic = f"{address} {tmp_path} arbitrary upstream output"
+
+    def fail(*args, **kwargs):
+        raise ValueError(private_diagnostic)
+
+    target, message = {
+        "address": ("tailscale_address", "tailscale address unavailable"),
+        "presets": ("write_presets", "model preset preparation failed"),
+        "exec": ("execve", "router executable launch failed"),
+    }[stage]
+    monkeypatch.setattr(router.os if stage == "exec" else router, target, fail)
+    previous = router.os.umask(0o077)
+    try:
+        with pytest.raises(SystemExit) as error:
+            router.main()
+    finally:
+        router.os.umask(previous)
+    assert error.value.code == 1
+    path = router.STATE / "startup-failures.log"
+    assert path.read_text() == message + "\n"
+    assert path.stat().st_mode & 0o777 == 0o600
+    captured = capsys.readouterr()
+    assert private_diagnostic not in captured.out + captured.err
+
+
+def test_manual_start_failure_is_recorded_and_survives_stop(monkeypatch, tmp_path):
+    setup_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "start"])
+
+    def fail():
+        raise router.StartupError("router health check timed out")
+
+    monkeypatch.setattr(router, "start", fail)
+    previous = router.os.umask(0o077)
+    try:
+        with pytest.raises(SystemExit):
+            router.main()
+    finally:
+        router.os.umask(previous)
+    monkeypatch.setattr(router, "launchctl", lambda *a: subprocess.CompletedProcess(a, 1))
+    router.stop()
+    assert (router.STATE / "startup-failures.log").read_text() == "router health check timed out\n"

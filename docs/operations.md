@@ -286,7 +286,8 @@ mac/homelab-router stop
 
 `start` installs a user LaunchAgent (`org.homelab.router`) and waits up to 120 seconds for
 health. It runs at login and launchd restarts it after exit. It discovers the Tailscale IPv4
-using the CLI or an unambiguous `utun` address, binds only that address on TCP 8090, and
+using the CLI (checking `/usr/local/bin` and `/opt/homebrew/bin` even under launchd's minimal
+PATH) or an unambiguous `utun` address, binds only that address on TCP 8090, and
 refuses an occupied port. The owner's existing node-only tailnet grant gates access without
 an API key. No new port is needed; 8092 is freed. Allow incoming connections for `llama-server`
 if macOS asks. No wake lock is installed. The action listener (8091) and dictation cleanup
@@ -311,7 +312,13 @@ checks PID start time. Output excludes addresses, paths and upstream arguments.
 its plist so it stays stopped across login; `start` reinstalls it. Commands serialize with a
 lock. State and generated presets are private under `~/.local/state/homelab-router/`; the
 private plist is under `~/Library/LaunchAgents/`. Native content logging is disabled and
-stdout/stderr go to `/dev/null`. No model download is attempted.
+stdout/stderr go to `/dev/null`. Launcher failures append one fixed, content-free stage line
+per failed invocation to `startup-failures.log` in router state (creation mode `0600`). For
+example, `tailscale address unavailable` records discovery failure without CLI output,
+exception text, addresses or paths. The record survives failed-start cleanup and `stop`;
+launchd retries can produce additional lines. A failed health wait records a fixed timeout
+line, covering native startup failures without retaining native output. No model download is
+attempted.
 
 Vision keeps the existing files under
 `~/vision-bench-outputs/models/Qwen3-VL-8B-Instruct-GGUF/`:
@@ -321,8 +328,9 @@ limit, prompt and page DPI belong to clients. Image inputs must be `data:` URLs.
 
 The retired `mac/homelab-vision` and `mac/homelab-embed` commands only point here. Before
 installing the router for the first time, stop both old processes with the previous launchers
-(their `stop` commands check PID start time), then retire their old
-`~/.local/state/homelab-vision/` and `~/.local/state/homelab-embed/` folders. `start` refuses
+(their `stop` commands check PID start time), then leave their old state unused.
+The old vision state folder has been removed; retain `~/.local/state/homelab-embed/` because
+it also contains historical download/compare files outside this slice. `start` refuses
 any live legacy process. Model files stay in place. The vision pointer preserves address
 discovery for the unchanged action listener.
 

@@ -127,10 +127,12 @@ cache discovery and idle sleep, using a private cache under router state. No cus
 manager, profiles, allow-lists or listener
 actions are added. The action listener on 8091 and dictation cleanup server on 8095 stay
 independent. The retired Mac launchers are pointers, with vision's address-discovery export
-retained for the unchanged listener; their old state directories are retired during installation.
+retained for the unchanged listener. Legacy state is unused; historical embedding files remain.
 Generated presets and the LaunchAgent contain runtime paths only in private user state.
-Content logging is disabled, native output is discarded, and `status` exposes only preset
-states and current router/family RSS and Darwin physical footprint. No wake lock is installed.
+Content logging is disabled and native output is discarded. Failed launcher invocations retain
+only a fixed startup-stage line in private state, never exception text or CLI output.
+`status` exposes only preset states and current router/family RSS and Darwin physical
+footprint. No wake lock is installed.
 The deployment hook keeps each purpose's 3-second connect and 300-second request limits,
 without retries, fallback or stopped-Mac alerts.
 
