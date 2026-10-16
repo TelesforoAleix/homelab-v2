@@ -243,6 +243,69 @@ def test_job_calendar_is_launchd_and_no_shell(world, monkeypatch):
         p.job_add("invalid", {"Minute": 0}, ["true"])
 
 
+def test_job_remove_unloads_and_deletes_registered_job(world, monkeypatch, tmp_path):
+    label = "org.homelab.profile.job.example"
+    agent_dir = tmp_path / "LaunchAgents"
+    monkeypatch.setattr(p, "AGENTS", agent_dir)
+    p.save(p.STATE / "jobs.json", {"example": {"pid": None, "identity": ""}, "other": {}})
+    agent_dir.mkdir()
+    plist = agent_dir / f"{label}.plist"
+    plist.write_text("plist")
+    loaded = {True}
+    calls = []
+
+    def command(*args, **kwargs):
+        calls.append(args)
+        if args[1] == "print":
+            return "state = waiting\n" if loaded else ""
+        if args[1] == "bootout":
+            loaded.clear()
+            return ""
+
+    monkeypatch.setattr(p, "run", command)
+    monkeypatch.setattr(p, "registered", lambda _: bool(loaded))
+    monkeypatch.setattr(p.time, "sleep", lambda _: None)
+    p.job_remove("example")
+    assert calls == [
+        ("/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"),
+        ("/bin/launchctl", "bootout", f"gui/{os.getuid()}/{label}"),
+    ]
+    assert not plist.exists()
+    assert list(p.jobs()) == ["other"]
+
+
+def test_job_remove_unknown_and_running_job_refuse(world, monkeypatch):
+    with pytest.raises(p.ProfileRefusal, match="unknown job: missing"):
+        p.job_remove("missing")
+    p.save(p.STATE / "jobs.json", {"example": {"pid": None, "identity": ""}})
+    monkeypatch.setattr(p, "run", lambda *a, **k: "state = running\n")
+    with pytest.raises(p.ProfileRefusal, match="job is running: example"):
+        p.job_remove("example")
+    assert "example" in p.jobs()
+
+
+def test_job_remove_cli_holds_state_lock(world, monkeypatch):
+    locked = False
+
+    @p.contextlib.contextmanager
+    def observed_lock():
+        nonlocal locked
+        locked = True
+        try:
+            yield
+        finally:
+            locked = False
+
+    def remove(_name):
+        assert locked
+
+    monkeypatch.setattr(p, "lock", observed_lock)
+    monkeypatch.setattr(p, "job_remove", remove)
+    monkeypatch.setattr(sys, "argv", [str(p.SCRIPT), "job", "remove", "example"])
+    assert p.main() == 0
+    assert not locked
+
+
 def test_missed_job_runs_next_idle_without_switch(world, monkeypatch):
     cfg = world[0]
     p.save(p.STATE / "jobs.json", {"example": {"command": ["/usr/bin/true"], "pending": False}})
