@@ -806,8 +806,8 @@ A private sibling `~/.config/homelab/models.json` is the available-model registr
 
 Registry ids are unique ASCII letters/digits with dots, underscores or hyphens (1–96 chars).
 Paths are absolute and single-line; only the supported model/preset flags are accepted, never
-listener, logging or download flags. Memory is null or a positive integer in MB; measuring it
-and registering models are outside this command's current interface.
+listener, logging or download flags. Memory is null or a positive measured integer in MiB; see
+[registration and measurement](#registering-and-measuring-mac-models) below.
 
 Migration is explicit and idempotent. It saves original bytes once as
 `profiles.json.v1.bak` (`0600`), resolves old defaults, converts each allowed routed service
@@ -855,6 +855,106 @@ unallowed model to return the fixed 503. Finally it restores the real profiles, 
 Working policy, even on a failed probe. It never changes apps or system-setting expectations.
 If interrupted, run `uv run python tests/mac_profile_models_acceptance.py restore`; the private
 backup is retained until restoration succeeds. Do not start an ingest during the cycle.
+
+### Registering and measuring Mac models
+
+The installed command downloads and test-loads a new model before making it available:
+
+```bash
+"$MAC_TOOLS/homelab-profile" model add embed-large-bulk MODEL_ID \
+  --like EXISTING_ID --url https://huggingface.co/OWNER/REPO/resolve/main/MODEL.gguf
+# Vision also requires --projector-url https://huggingface.co/OWNER/REPO/resolve/main/PROJECTOR.gguf
+"$MAC_TOOLS/homelab-profile" model measure vision vision
+"$MAC_TOOLS/homelab-profile" model measure embed-large-bulk Qwen3-Embedding-4B
+"$MAC_TOOLS/homelab-profile" status
+```
+
+`--like` names an existing entry in the same service. Its exact preset flags are copied;
+vision's projector path is replaced with the new download. Files go into a new `MODEL_ID/`
+directory beside that entry's configured model file. The private registry supplies this path;
+there is no checkout path, download directory or model URL embedded in the application.
+Existing directories are never overwritten. Both files' published sizes are checked together
+before downloading: less than 20 GiB remaining refuses the operation. Each file must have a
+published SHA-256 in Hugging Face's linked ETag (or a SHA-256 ETag for a direct response).
+Missing hashes stop registration; a mismatched hash/size removes the partial download.
+
+The test load runs a separate llama-server on an ephemeral loopback port with those flags,
+a temporary isolated cache and disabled content logging. It does not unload, reload or edit
+any live router model. Once native health reports ready after warmup, the largest of three
+current process-family Darwin physical-footprint samples, 200 ms apart, is rounded up to MiB
+and stored in `memory_mb`. This includes Metal allocations; it is an observed load footprint,
+not a guarantee of memory needed by every later request. Test loading can need additional
+memory alongside live models. Run measurements when the Mac is idle; a failed load registers
+nothing. Its child is terminated on success, failure or interruption. `model measure` uses the
+same load to update an existing entry, leaving its old measurement intact on failure.
+
+The registry is still version 1 with the same entry fields; `memory_mb` now means measured MiB
+(the historical field name is retained). Registration writes it atomically under the profile
+state lock, after re-reading and validating current entries. Network and test-load work happens
+outside that lock. A failed operation removes only the new directory it created. A new entry
+is available in `status.model_registry`, with its memory, **allowed in no profile**. No live
+preset changes. The owner can later select it in profile policy. Restart the router after
+registry additions before using them, so native capacity covers the full registry.
+
+There is no remove command. To retire a model, first export profiles with `profiles-show`,
+remove its id from every allowed list (select a different default), save with `profiles-set`,
+and switch to the current desired profile through the normal command. Do not remove the last
+available/allowed model for a service. Back up `~/.config/homelab/models.json` privately, edit
+out the unused entry with the owner's editor, then run `profiles-show` to validate it and
+`status` to confirm it is absent. Retain its downloaded files until the owner chooses to
+remove them. Never remove an entry while a registration/measurement is in progress.
+
+### Profile memory budgets
+
+Version-2 profiles accept an optional positive integer `memory_budget_mb` in MiB. Omitted
+values resolve to 16384 for Working and 40960 for Inference. `migrate` explicitly adds these
+defaults to existing version-2 files, preserving the original bytes once in
+`profiles.json.budget.bak` with mode `0600`; repeat migration is a no-op. Version-1 migration
+retains its existing backup and also includes the budgets. No version bump is needed for
+this optional addition. For example (all ids and paths above are placeholders):
+
+```json
+{"memory_budget_mb": 16384, "services": {"vision": {"state": "on request", "allowed": ["model-a"], "default": "model-a"}}}
+```
+
+This fragment belongs inside a complete profile, retaining the other service/app/settings/job
+fields. Use `profiles-show` and `profiles-set` for edits. The checked amount is the sum of all
+allowed models of *on* services plus the largest allowed model across *on request* services;
+*off* services contribute nothing. `status.memory_budgets` reports each profile's limit,
+`required_mb`, `known_mb`, `unknown_models`, `over_budget` and `warning`. `required_mb` is null
+when any included model has unknown memory. `known_mb` is then only a lower bound; it can
+still prove a budget exceeded. No unknown model is guessed. Over-budget saves warn on stderr
+but succeed, and status carries the same warning for the menu client. Budgets never block
+switching or inference.
+
+The gateway translates the Mac router's native `model name=… failed to load` error to HTTP
+503: “The Mac could not load this model now (often for lack of memory); try later”. This is
+an honest generic load failure, not a diagnosis of memory pressure. At llama.cpp commit
+`d81235049`, child load failures share exit code 1; router HTTP errors do not distinguish
+allocation failure from other causes. The translation adds no memory precheck, retry, proxy
+or fallback. Unavailable-profile and battery-pause refusals retain their existing wording;
+unrelated upstream failures retain the sanitised generic error. Deploy this gateway change
+only after the orchestrator's med-ask ingest check.
+
+The post-merge memory-error acceptance test uses a disposable native router with the same
+presets, injecting `ENOMEM` only into native children's file mappings of at least 256 MiB.
+It exercises the real native load failure without exhausting RAM or changing a GPU limit.
+The normal login router is briefly unavailable; require exact Working, no running jobs,
+unloaded/sleeping models and the med-ask clearance. It verifies both an injection marker and
+the node's HTTP 503 answer, then restores the normal router in `finally`. Nothing is installed
+in launchd for the test. If interrupted, rollback first:
+
+```bash
+uv run python tests/mac_model_memory_acceptance.py restore
+# Only after clearance, run the test (it restores itself even on failure):
+uv run python tests/mac_model_memory_acceptance.py cycle
+"$MAC_TOOLS/homelab-profile" status
+```
+
+The shim and marker stay in private `~/.local/state/homelab-model-memory-acceptance/`;
+`recovery.json` is removed only after the normal router starts again. This simulates an
+allocation failure; it does not measure behaviour under actual system-wide pressure.
+
 
 ## Mac action listener
 

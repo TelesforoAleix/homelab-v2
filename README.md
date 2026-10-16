@@ -28,7 +28,8 @@ Solid parts are built; dashed parts are planned.
 - The [Mac profile command](docs/operations.md#mac-usage-profiles) selects Working or Inference,
   reports observed state as JSON, and returns to Working after idle inference. Each profile
   sets services to off, on request, or on, with allowed models and a default from a private
-  registry; see [profile model policy](docs/operations.md#per-profile-service-and-model-policy). After 10
+  registry. It can download, verify and test-load new models and reports warning-only
+  profile memory budgets; see [profile model policy](docs/operations.md#per-profile-service-and-model-policy). After 10
   continuous minutes on battery, Inference pauses its model services and resumes on AC.
   Working leaves the owner’s AC and Battery settings alone. Inference requires AC power,
   changes only AC power mode/sleep and the global GPU limit, and restores their recorded

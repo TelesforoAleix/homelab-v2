@@ -247,3 +247,129 @@ def test_acceptance_node_program_is_valid_python(monkeypatch):
     acceptance.node_probe(extra=True)
     for program in programs:
         compile(program, "node-probe", "exec")
+
+
+def test_budget_sums_all_on_and_largest_on_request_including_unknown(files):
+    _, cfg, registry = migrate()
+    policy = cfg["profiles"]["inference"]["services"]
+    vision = registry["services"]["vision"]
+    vision["vision"]["memory_mb"] = 5000
+    vision["small"] = {**copy.deepcopy(vision["vision"]), "memory_mb": 2000}
+    policy["vision"].update(state="on", allowed=["vision", "small"])
+    embed = registry["services"]["embed-large-bulk"]
+    embed["Qwen3-Embedding-4B"]["memory_mb"] = 4000
+    embed["other"] = {**copy.deepcopy(embed["Qwen3-Embedding-4B"]), "memory_mb": 3000}
+    embed["unknown"] = {**copy.deepcopy(embed["other"]), "memory_mb": None}
+    policy["embed-large-bulk"]["allowed"] += ["other", "unknown"]
+    report = m.budget(policy, registry, 10000)
+    assert report == {
+        "memory_budget_mb": 10000,
+        "required_mb": None,
+        "known_mb": 11000,
+        "unknown_models": ["embed-large-bulk-unknown"],
+        "over_budget": True,
+        "warning": "profile exceeds its memory budget",
+    }
+    embed["unknown"]["memory_mb"] = 6000
+    assert m.budget(policy, registry, 20000)["required_mb"] == 13000
+    policy["vision"]["state"] = "off"
+    assert m.budget(policy, registry, 20000)["required_mb"] == 6000
+
+
+def test_budget_migration_backup_and_warning_does_not_block_save(files, capsys):
+    _, cfg, registry = migrate()
+    for profile in cfg["profiles"].values():
+        profile.pop("memory_budget_mb")
+    p.save(p.CONFIG, cfg)
+    original = p.CONFIG.read_bytes()
+    p.migrate()
+    assert p.CONFIG.with_suffix(".json.budget.bak").read_bytes() == original
+    cfg = p.config()
+    assert cfg["profiles"]["working"]["memory_budget_mb"] == 16384
+    assert cfg["profiles"]["inference"]["memory_budget_mb"] == 40960
+    p.migrate()
+    assert p.CONFIG.with_suffix(".json.budget.bak").read_bytes() == original
+    registry["services"]["embed-large-bulk"]["Qwen3-Embedding-4B"]["memory_mb"] = 2000
+    p.save(p.REGISTRY, registry)
+    cfg["profiles"]["working"]["memory_budget_mb"] = 1
+    p.write_profiles(cfg)
+    assert "exceeds" in capsys.readouterr().err
+    assert p.config()["profiles"]["working"]["memory_budget_mb"] == 1
+    cfg["profiles"]["working"]["memory_budget_mb"] = True
+    before = p.CONFIG.read_bytes()
+    with pytest.raises(ValueError):
+        p.write_profiles(cfg)
+    assert p.CONFIG.read_bytes() == before
+
+
+def test_add_and_measure_are_isolated_and_commit_under_lock(files, monkeypatch):
+    from argparse import Namespace
+    from contextlib import contextmanager
+
+    _, cfg, registry = migrate()
+    original_profiles = p.CONFIG.read_bytes()
+    original_registry = p.REGISTRY.read_bytes()
+    locked = []
+
+    @contextmanager
+    def lock():
+        locked.append(True)
+        try:
+            yield
+        finally:
+            locked.pop()
+
+    monkeypatch.setattr(p, "lock", lock)
+    save = p.save
+
+    def save_locked(path, value):
+        assert locked
+        save(path, value)
+
+    monkeypatch.setattr(p, "save", save_locked)
+    args = Namespace(
+        action="add",
+        service="embed-large-bulk",
+        name="tiny",
+        like="Qwen3-Embedding-4B",
+        url="https://huggingface.co/example/model/resolve/main/model.gguf",
+        projector_url=None,
+    )
+    folder = files / "embed/tiny"
+
+    def prepare(template, name, url, projector_url):
+        assert not locked
+        folder.mkdir()
+        (folder / "model.gguf").touch()
+        return {**template, "model": str(folder / "model.gguf")}, folder
+
+    monkeypatch.setitem(p.registration, "prepare", prepare)
+
+    def failed(entry, router):
+        assert not locked
+        raise ValueError("load failed")
+
+    monkeypatch.setitem(p.registration, "test_load", failed)
+    with pytest.raises(ValueError):
+        p.model_operation(args)
+    assert not folder.exists()
+    assert p.REGISTRY.read_bytes() == original_registry
+
+    def measured(entry, router):
+        assert not locked
+        return 1024
+
+    monkeypatch.setitem(p.registration, "test_load", measured)
+    assert p.model_operation(args)["memory_mb"] == 1024
+    assert folder.exists()
+    saved = json.loads(p.REGISTRY.read_text())
+    assert saved["services"]["embed-large-bulk"]["tiny"]["memory_mb"] == 1024
+    assert all(
+        "tiny" not in profile["services"]["embed-large-bulk"]["allowed"]
+        for profile in cfg["profiles"].values()
+    )
+    assert p.CONFIG.read_bytes() == original_profiles
+    assert not (r.STATE / "allowed.json").exists()
+    args.action = "measure"
+    args.name = "Qwen3-Embedding-4B"
+    assert p.model_operation(args)["memory_mb"] == 1024
