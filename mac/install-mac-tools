@@ -8,6 +8,7 @@ import plistlib
 import runpy
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parent
@@ -37,6 +38,9 @@ DEPENDENCIES = {
     "router": {"homelab-router", "router-models.ini.in", "installed_tools.py"},
     "profile": {"homelab-profile", "homelab-router", "installed_tools.py"},
 }
+BOOTOUT_TIMEOUT = 10
+BOOTSTRAP_RETRY_SECONDS = 5
+POLL_SECONDS = 0.2
 
 
 def git(*args):
@@ -109,6 +113,31 @@ def manifest_update(**values):
     temporary.replace(path)
 
 
+def wait_for_bootout(service):
+    deadline = time.monotonic() + BOOTOUT_TIMEOUT
+    while True:
+        result = subprocess.run(
+            ["/bin/launchctl", "print", service], capture_output=True, timeout=5
+        )
+        if result.returncode != 0:
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"{service} has not unloaded; rerun installer after it exits")
+        time.sleep(POLL_SECONDS)
+
+
+def bootstrap(domain, path):
+    deadline = time.monotonic() + BOOTSTRAP_RETRY_SECONDS
+    while True:
+        try:
+            subprocess.run(["/bin/launchctl", "bootstrap", domain, str(path)], check=True)
+            return
+        except subprocess.CalledProcessError as error:
+            if error.returncode != 5 or time.monotonic() >= deadline:
+                raise
+            time.sleep(POLL_SECONDS)
+
+
 def refresh_agents(changed):
     domain = f"gui/{os.getuid()}"
     pending = set(json.loads((ROOT / "install.json").read_text()).get("pending_agents", []))
@@ -142,10 +171,11 @@ def refresh_agents(changed):
             manifest_update(pending_agents=sorted(pending))
         if active:
             subprocess.run(["/bin/launchctl", "bootout", service], check=True)
+            wait_for_bootout(service)
         path.write_bytes(plistlib.dumps(updated))
         path.chmod(0o600)
         if restart:
-            subprocess.run(["/bin/launchctl", "bootstrap", domain, str(path)], check=True)
+            bootstrap(domain, path)
             pending.remove(label)
             manifest_update(pending_agents=sorted(pending))
         print(f"updated {label}: {updated['ProgramArguments'][1]}")

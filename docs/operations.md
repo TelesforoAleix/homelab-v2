@@ -300,8 +300,10 @@ and tracked menu sources. It rewrites existing listener, router, profile and pro
 in place, preserving flags, calendars, job identities and each job's own command. Existing
 loaded agents restart only when their paths or code/dependencies changed; unloaded agents stay
 unloaded. It also builds/reinstalls the menu app when its code or recorded paths change.
-A failed refresh can be retried with the same command. Private profiles, jobs and state stay
-under `~/.config/homelab/` and `~/.local/state/`.
+A refresh waits up to 10 seconds for each unloaded service to disappear before loading its
+replacement, then retries bootstrap exit 5 for up to 5 seconds. A failed refresh retains its
+pending agents and can be retried with the same command, including after a manual recovery.
+Private profiles, jobs and state stay under `~/.config/homelab/` and `~/.local/state/`.
 
 For a first installation, after installing the privileged profile helper as described below:
 
