@@ -54,7 +54,7 @@ enum ProfileCommand {
             return CommandResult(status: -1, output: Data(), errors: "The profile command could not start.")
         }
         if let input {
-            stdin.fileHandleForWriting.write(input)
+            try? stdin.fileHandleForWriting.write(contentsOf: input)
             try? stdin.fileHandleForWriting.close()
         }
         // The command writes little to stderr, so reading stdout first cannot fill that pipe.

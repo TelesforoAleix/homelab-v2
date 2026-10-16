@@ -37,6 +37,10 @@ def main():
     candidate = copy.deepcopy(original)
     policy = candidate["profiles"]["working"]["services"][service]
     policy.update(state="on request", allowed=[model], default=model)
+    if policy == original["profiles"]["working"]["services"][service]:
+        raise RuntimeError(
+            "Small model is already the sole default; this check needs a different initial policy"
+        )
     router = runpy.run_path(str(tools / "homelab-router"))
 
     def native_models():
