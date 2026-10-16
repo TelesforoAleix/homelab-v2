@@ -153,10 +153,13 @@ def test_refresh_restarts_only_changed_agents_and_retains_jobs(installer, monkey
     jobs.write_text('{"dictation-recheck":{"command":["/other/repo/check"]}}')
     original = jobs.read_bytes()
     calls = []
+    unloaded = set()
 
     def run(args, **kwargs):
         calls.append(args)
-        return subprocess.CompletedProcess(args, 0)
+        if args[1] == "bootout":
+            unloaded.add(args[2])
+        return subprocess.CompletedProcess(args, int(args[1] == "print" and args[2] in unloaded))
 
     monkeypatch.setattr(installer.subprocess, "run", run)
     installer.refresh_agents({"homelab-profile"})
@@ -197,9 +200,14 @@ def test_install_snapshot_noop_update_and_branch_independence(installer, monkeyp
     files = installer.contents("/fixed/python3")
     monkeypatch.setattr(installer, "contents", lambda python: files.copy())
     calls = []
+    unloaded = set()
 
     def run(args, **kwargs):
         calls.append(args)
+        if len(args) > 1 and args[1] == "bootout":
+            unloaded.add(args[2])
+        if len(args) > 1 and args[1] == "bootstrap":
+            unloaded.discard(f"{args[2]}/{Path(args[3]).stem}")
         if args == [str(installer.ROOT / "install-menu-bar.sh")]:
             info = Path.home() / "Applications/HomeLab.app/Contents/Info.plist"
             info.parent.mkdir(parents=True, exist_ok=True)
@@ -211,7 +219,8 @@ def test_install_snapshot_noop_update_and_branch_independence(installer, monkeyp
                     }
                 )
             )
-        return subprocess.CompletedProcess(args, 0, b"state = waiting")
+        absent = len(args) > 1 and args[1] == "print" and args[2] in unloaded
+        return subprocess.CompletedProcess(args, int(absent), b"state = waiting")
 
     monkeypatch.setattr(installer.subprocess, "run", run)
     for kind in ("router", "listener", "profile"):
@@ -260,12 +269,18 @@ def test_failed_bootstrap_remains_pending_for_retry(installer, monkeypatch):
         )
     )
     calls = []
+    unloaded = False
 
     def fail(args, **kwargs):
+        nonlocal unloaded
         calls.append(args)
+        if args[1] == "bootout":
+            unloaded = True
         if args[1] == "bootstrap":
             raise subprocess.CalledProcessError(1, args)
-        return subprocess.CompletedProcess(args, 0, b"state = waiting")
+        return subprocess.CompletedProcess(
+            args, int(args[1] == "print" and unloaded), b"state = waiting"
+        )
 
     monkeypatch.setattr(installer.subprocess, "run", fail)
     with pytest.raises(subprocess.CalledProcessError):
@@ -309,3 +324,199 @@ def test_active_job_is_never_unloaded(installer, monkeypatch):
         installer.refresh_agents({"homelab-profile"})
     assert [args[1] for args in calls] == ["print"]
     assert path.read_bytes() == original
+
+
+@pytest.fixture
+def fake_clock(installer, monkeypatch):
+    clock = {"now": 0.0, "sleeps": []}
+
+    def sleep(seconds):
+        clock["now"] += seconds
+        clock["sleeps"].append(seconds)
+
+    monkeypatch.setattr(installer.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(installer.time, "sleep", sleep)
+    return clock
+
+
+def test_refresh_waits_for_removal_then_retries_bootstrap(installer, monkeypatch, fake_clock):
+    label = "org.homelab.listener"
+    path = installer.AGENTS / f"{label}.plist"
+    original = plistlib.dumps(
+        {"Label": label, "ProgramArguments": [str(ROOT / "mac/homelab-listener"), "serve"]}
+    )
+    path.write_bytes(original)
+    prints = iter([0, 0, 0, 1])
+    bootstraps = 0
+    calls = []
+
+    def run(args, **kwargs):
+        nonlocal bootstraps
+        operation = args[1]
+        calls.append(operation)
+        if operation == "print":
+            # Do not replace the plist or load it while launchd still sees the old service.
+            assert path.read_bytes() == original
+            return subprocess.CompletedProcess(args, next(prints))
+        if operation == "bootstrap":
+            assert plistlib.loads(path.read_bytes())["ProgramArguments"][:2] == [
+                "/fixed/python3",
+                str(installer.ROOT / "homelab-listener"),
+            ]
+            bootstraps += 1
+            if bootstraps < 3:
+                raise subprocess.CalledProcessError(5, args)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(installer.subprocess, "run", run)
+    installer.refresh_agents({"homelab-listener"})
+    assert calls == [
+        "print",
+        "bootout",
+        "print",
+        "print",
+        "print",
+        "bootstrap",
+        "bootstrap",
+        "bootstrap",
+    ]
+    assert fake_clock["sleeps"] == [installer.POLL_SECONDS] * 4
+    assert json.loads((installer.ROOT / "install.json").read_text())["pending_agents"] == []
+
+
+def test_bootout_timeout_keeps_agent_pending_without_bootstrap(installer, monkeypatch, fake_clock):
+    monkeypatch.setattr(installer, "BOOTOUT_TIMEOUT", 0.4)
+    label = "org.homelab.listener"
+    path = installer.AGENTS / f"{label}.plist"
+    original = plistlib.dumps(
+        {"Label": label, "ProgramArguments": [str(ROOT / "mac/homelab-listener"), "serve"]}
+    )
+    path.write_bytes(original)
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args[1])
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(installer.subprocess, "run", run)
+    with pytest.raises(TimeoutError, match="has not unloaded"):
+        installer.refresh_agents({"homelab-listener"})
+    assert "bootstrap" not in calls
+    assert path.read_bytes() == original
+    assert fake_clock["now"] == installer.BOOTOUT_TIMEOUT
+    assert json.loads((installer.ROOT / "install.json").read_text())["pending_agents"] == [label]
+
+
+@pytest.mark.parametrize("code", [1, 5])
+def test_bootstrap_retries_only_exit_five_with_a_deadline(installer, monkeypatch, fake_clock, code):
+    monkeypatch.setattr(installer, "BOOTSTRAP_RETRY_SECONDS", 0.4)
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        raise subprocess.CalledProcessError(code, args)
+
+    monkeypatch.setattr(installer.subprocess, "run", run)
+    with pytest.raises(subprocess.CalledProcessError) as failure:
+        installer.bootstrap("gui/501", installer.AGENTS / "listener.plist")
+    assert failure.value.returncode == code
+    assert len(calls) == (3 if code == 5 else 1)
+    assert fake_clock["now"] == (installer.BOOTSTRAP_RETRY_SECONDS if code == 5 else 0)
+
+
+def test_install_converges_after_manual_listener_recovery(
+    installer, monkeypatch, tmp_path, fake_clock
+):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr(installer, "revision", lambda: "corrected-main")
+    monkeypatch.setattr(installer, "interpreter", lambda: "/fixed/python3")
+    files = installer.contents("/fixed/python3")
+    monkeypatch.setattr(installer, "contents", lambda python: files.copy())
+    for name, content in files.items():
+        target = installer.ROOT / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    installer.manifest_update(
+        commit="7696401",
+        files=sorted(files),
+        pending_changes=sorted(files),
+        pending_agents=["org.homelab.listener"],
+    )
+    # Listener was restored by hand from installed code; the rest still use the checkout.
+    for kind, args in [
+        ("listener", ["serve"]),
+        ("router", ["serve"]),
+        ("profile", ["tick"]),
+        ("profile.job.dictation-recheck", ["job-worker", "dictation-recheck"]),
+    ]:
+        label = "org.homelab." + kind
+        command = "homelab-" + kind.split(".")[0]
+        prefix = (
+            installer.installed_command(command)
+            if kind == "listener"
+            else [str(ROOT / ".venv/bin/python3"), str(ROOT / "mac" / command)]
+        )
+        payload = {"Label": label, "ProgramArguments": [*prefix, *args]}
+        if ".job." in label:
+            payload["StartCalendarInterval"] = {"Hour": 4, "Minute": 0}
+        (installer.AGENTS / f"{label}.plist").write_bytes(plistlib.dumps(payload))
+    jobs = Path.home() / ".local/state/homelab-profile/jobs.json"
+    jobs.parent.mkdir(parents=True)
+    original_jobs = b'{"dictation-recheck":{"command":["/other/repo/check"],"pending":true}}'
+    jobs.write_bytes(original_jobs)
+    info = Path.home() / "Applications/HomeLab.app/Contents/Info.plist"
+    info.parent.mkdir(parents=True)
+    info.write_bytes(plistlib.dumps({"HomeLabProfileCommand": str(ROOT / "mac/homelab-profile")}))
+    loaded = {
+        f"gui/{installer.os.getuid()}/{path.stem}" for path in installer.AGENTS.glob("*.plist")
+    }
+    calls = []
+    listener_bootstraps = 0
+
+    def run(args, **kwargs):
+        nonlocal listener_bootstraps
+        calls.append(args)
+        if args == [str(installer.ROOT / "install-menu-bar.sh")]:
+            info.write_bytes(
+                plistlib.dumps(
+                    {
+                        "HomeLabPython": "/fixed/python3",
+                        "HomeLabProfileCommand": str(installer.ROOT / "homelab-profile"),
+                    }
+                )
+            )
+        elif args[1] == "print":
+            return subprocess.CompletedProcess(
+                args, 0 if args[2] in loaded else 1, b"state = waiting"
+            )
+        elif args[1] == "bootout":
+            loaded.remove(args[2])
+        elif args[1] == "bootstrap":
+            if Path(args[3]).stem == "org.homelab.listener":
+                listener_bootstraps += 1
+                if listener_bootstraps == 1:
+                    raise subprocess.CalledProcessError(5, args)
+            loaded.add(f"{args[2]}/{Path(args[3]).stem}")
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(installer.subprocess, "run", run)
+    installer.install()
+    manifest = json.loads((installer.ROOT / "install.json").read_text())
+    assert manifest["commit"] == "corrected-main"
+    assert manifest["pending_agents"] == manifest["pending_changes"] == []
+    assert len(loaded) == 4
+    assert listener_bootstraps == 2
+    for path in installer.AGENTS.glob("*.plist"):
+        assert str(ROOT) not in path.read_text()
+    job = plistlib.loads(
+        (installer.AGENTS / "org.homelab.profile.job.dictation-recheck.plist").read_bytes()
+    )
+    assert job["StartCalendarInterval"] == {"Hour": 4, "Minute": 0}
+    assert job["ProgramArguments"][-2:] == ["job-worker", "dictation-recheck"]
+    assert jobs.read_bytes() == original_jobs
+    assert plistlib.loads(info.read_bytes())["HomeLabProfileCommand"] == str(
+        installer.ROOT / "homelab-profile"
+    )
+    calls.clear()
+    installer.install()
+    assert calls == []
