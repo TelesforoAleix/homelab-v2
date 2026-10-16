@@ -98,6 +98,7 @@ def test_render_native_alias_resolution_and_states(files, state):
     _, cfg, registry = migrate()
     entry = copy.deepcopy(registry["services"]["vision"]["vision"])
     registry["services"]["vision"]["small"] = entry
+    registry["services"]["vision"]["forbidden"] = copy.deepcopy(entry)
     policy = cfg["profiles"]["inference"]["services"]
     policy["vision"] = {"state": state, "allowed": ["vision", "small"], "default": "small"}
     presets = m.presets(policy, registry)
