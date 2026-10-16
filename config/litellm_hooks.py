@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from contextvars import ContextVar
 from pathlib import Path
@@ -32,6 +33,23 @@ audit: ContextVar[dict | None] = getattr(sys.modules.get(__name__), "audit", Non
     "model_call_audit", default=None
 )
 logger = logging.getLogger("homelab.models")
+
+
+def route(purpose):
+    """Only configured Mac patterns expand; no global wildcard or mutable route table."""
+    if not isinstance(purpose, str):
+        return None, {}, {}
+    if purpose in model_specs and "*" not in purpose:
+        return purpose, model_specs[purpose], model_info[purpose]
+    for pattern, spec in model_specs.items():
+        if not pattern.endswith("-*") or "connect_timeout" not in model_info[pattern]:
+            continue
+        prefix = pattern[:-1]
+        if purpose.startswith(prefix) and re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", purpose[len(prefix) :]
+        ):
+            return pattern, {**spec, "model": "openai/" + purpose}, model_info[pattern]
+    return None, {}, {}
 
 
 def input_type_error(data):
@@ -152,10 +170,13 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                     response = error_response(400, "Expected a JSON object")
                 else:
                     purpose = body.get("model")
-                    if isinstance(purpose, str) and purpose in model_specs:
-                        event["purpose"] = purpose
-                        event["real_model"] = model_specs[purpose]["model"].split("/", 1)[1]
-                    info = model_info.get(purpose, {}) if isinstance(purpose, str) else {}
+                    key, spec, info = route(purpose)
+                    if key is not None:
+                        # Audit purpose stays bounded even for refused arbitrary model ids.
+                        event["purpose"] = key[:-2] if key.endswith("-*") else key
+                        event["requested_model"] = purpose
+                        if not key.endswith("-*"):
+                            event["real_model"] = spec["model"].split("/", 1)[1]
                     image_entry = info.get("mode") == "image_generation"
                     published = profile_fields(info) if image_entry else set()
                     fields |= {field.split(".", 1)[0] for field in published}
@@ -222,7 +243,7 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                     (
                         f"{event['purpose']} is paused because the Mac is on battery"
                         if event.get("profile_paused")
-                        else f"{event['purpose']} is not available until Inference"
+                        else f"{event['purpose']} is not available in this profile"
                     ),
                     "service_unavailable_error",
                 )
@@ -284,16 +305,16 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
 class PurposeHooks(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         purpose = data.get("model")
-        if not isinstance(purpose, str) or purpose not in model_specs:
+        key, spec, info = route(purpose)
+        if key is None:
             # Use LiteLLM's own default refusal, including for deployment names and ids.
             raise ProxyModelNotFoundError(
                 route="/v1/embeddings" if call_type == "embeddings" else "/v1/chat/completions",
                 model_name=purpose if isinstance(purpose, str) else "",
             )
-        spec = model_specs[purpose]
         metadata = data.setdefault("metadata", {})
-        embedding = model_info[purpose].get("mode") == "embedding"
-        metadata[RETURN_RAW_MODEL_NAME_METADATA_KEY] = embedding or purpose == "vision"
+        embedding = info.get("mode") == "embedding"
+        metadata[RETURN_RAW_MODEL_NAME_METADATA_KEY] = embedding or key in {"vision", "vision-*"}
         if call_type in {"embeddings", "aembedding"} and "input_type" in data:
             if not embedding:
                 raise HTTPException(400, "input_type requires an embedding purpose")
@@ -301,7 +322,7 @@ class PurposeHooks(CustomLogger):
                 raise HTTPException(400, error)
             role = data.pop("input_type")
             text = data.get("input")
-            prefix = model_info[purpose]["input_prefixes"][role]
+            prefix = info["input_prefixes"][role]
             data["input"] = (
                 prefix + text if isinstance(text, str) else [prefix + item for item in text]
             )
@@ -323,19 +344,24 @@ class PurposeHooks(CustomLogger):
         if event is not None and "connect_timeout" in model_info.get(event["purpose"], {}):
             # The pinned proxy accepts numeric YAML timeouts; OpenAI's SDK needs an
             # httpx.Timeout for a separate connect limit on an on-demand Mac route.
-            purpose = event["purpose"]
-            url_variable = model_specs[purpose]["api_base"].removeprefix("os.environ/")
+            purpose = event.get("requested_model", event["purpose"])
+            key, spec, info = route(purpose)
+            url_variable = spec["api_base"].removeprefix("os.environ/")
             if not os.environ.get(url_variable):
                 raise HTTPException(503, "Model call failed")
             # Native preset omission enforces policy at the Mac. Inspect only model ids;
             # never forward upstream diagnostics or accept policy supplied by a client.
             base = os.environ[url_variable].removesuffix("/v1").rstrip("/")
-            timeout = httpx.Timeout(3.0, connect=model_info[purpose]["connect_timeout"])
+            timeout = httpx.Timeout(3.0, connect=info["connect_timeout"])
             async with httpx.AsyncClient(trust_env=False, timeout=timeout) as client:
                 response = await client.get(base + "/models")
                 response.raise_for_status()
-                available = {row["id"] for row in response.json()["data"]}
-                model = model_specs[purpose]["model"].split("/", 1)[1]
+                available = {
+                    name
+                    for row in response.json()["data"]
+                    for name in [row["id"], *row.get("aliases", [])]
+                }
+                model = spec["model"].split("/", 1)[1]
                 if model not in available:
                     # A native static file carries one boolean, never private profile contents.
                     try:
@@ -350,18 +376,27 @@ class PurposeHooks(CustomLogger):
             if model not in available:
                 event["profile_blocked"] = True
                 raise HTTPException(503, "Model call failed")
-            kwargs["timeout"] = httpx.Timeout(
-                model_specs[purpose]["timeout"], connect=model_info[purpose]["connect_timeout"]
-            )
+            kwargs["timeout"] = httpx.Timeout(spec["timeout"], connect=info["connect_timeout"])
         if event is not None:
             event["upstream"] = True
         return kwargs
 
     async def async_post_call_success_hook(self, data, user_api_key_dict, response):
         purpose = data.get("model")
-        if model_info.get(purpose, {}).get("mode") == "embedding":
-            response.model = model_specs[purpose]["model"].split("/", 1)[1]
-        elif purpose == "vision":
+        key, spec, info = route(purpose)
+        if info.get("mode") == "embedding":
+            served = getattr(response, "_hidden_params", {}).get(
+                "provider_response_model"
+            ) or getattr(response, "model", "")
+            if key in {"embed-large-bulk", "embed-large-bulk-*"} and served.startswith(
+                "embed-large-bulk-"
+            ):
+                response.model = served.removeprefix("embed-large-bulk-")
+            elif key.endswith("-*"):
+                response.model = purpose.removeprefix(key[:-1])
+            else:
+                response.model = spec["model"].split("/", 1)[1]
+        elif key in {"vision", "vision-*"}:
             self.record_vision_model(response)
             response.model = purpose
         return response
@@ -381,9 +416,10 @@ class PurposeHooks(CustomLogger):
         self, user_api_key_dict, response, request_data
     ):
         async for chunk in response:
-            if request_data.get("model") == "vision":
+            purpose = request_data.get("model")
+            if route(purpose)[0] in {"vision", "vision-*"}:
                 self.record_vision_model(chunk)
-                chunk.model = "vision"
+                chunk.model = purpose
             yield chunk
 
     async def async_post_call_failure_hook(

@@ -125,7 +125,11 @@ def test_presets_preserve_both_models_settings(monkeypatch, tmp_path):
         "ub": "2048",
         "t": "4",
     }
-    assert dict(config["*"]) == {"load-on-startup": "false", "log-disable": "true"}
+    assert dict(config["*"]) == {
+        "load-on-startup": "false",
+        "log-disable": "true",
+        "sleep-idle-seconds": "600",
+    }
     assert "@" not in text
 
 
@@ -154,8 +158,8 @@ def test_serve_executes_native_router_without_environment_overrides(monkeypatch,
         "--models-preset",
         str(state / "models.ini"),
         "--models-autoload",
-        "--sleep-idle-seconds",
-        "600",
+        "--models-max",
+        "4",
         "--host",
         address,
         "--port",

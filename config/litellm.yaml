@@ -39,6 +39,15 @@ model_list:
     model_info:
       # The deployment hook applies this separately from the page request timeout.
       connect_timeout: 3.0
+  # Native LiteLLM wildcard substitution preserves the requested router preset name.
+  - model_name: vision-*
+    litellm_params:
+      model: openai/vision-*
+      api_base: os.environ/HOMELAB_MAC_VISION_URL
+      api_key: none
+      timeout: 300.0
+    model_info:
+      connect_timeout: 3.0
   - model_name: vision:xhigh
     litellm_params:
       model: openai/deepseek/deepseek-v4.1-flash
@@ -78,6 +87,18 @@ model_list:
         passage: ""
 
   # Sources and direct proof results are in docs/operations.md.
+  - model_name: embed-large-bulk-*
+    litellm_params:
+      model: openai/embed-large-bulk-*
+      api_base: os.environ/HOMELAB_MAC_EMBED_URL
+      api_key: none
+      timeout: 300.0
+    model_info:
+      connect_timeout: 3.0
+      mode: embedding
+      input_prefixes:
+        query: "Instruct: Given a question, retrieve passages that answer the question\nQuery:"
+        passage: ""
   - model_name: image-gpt-2.5-flare
     litellm_params:
       model: openai/openai/gpt-image-2.5-flare

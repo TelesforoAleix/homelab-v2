@@ -66,7 +66,7 @@ class Upstream(BaseHTTPRequestHandler):
                 if profile
                 else {
                     "data": [
-                        {"id": model}
+                        (model if isinstance(model, dict) else {"id": model})
                         for model in getattr(self.server, "models", ["vision", REAL_LARGE])
                     ]
                 }
@@ -230,7 +230,12 @@ def run(unset=False):
                     os.environ.pop("HOMELAB_MAC_VISION_URL")
                     os.environ.pop("HOMELAB_MAC_EMBED_URL")
                 for row in config["model_list"]:
-                    if row["model_name"] not in {"vision", "embed-large-bulk"}:
+                    if row["model_name"] not in {
+                        "vision",
+                        "embed-large-bulk",
+                        "vision-*",
+                        "embed-large-bulk-*",
+                    }:
                         row["litellm_params"]["api_base"] = stub_url
                 path = Path(directory) / "litellm.yaml"
                 path.write_text(yaml.safe_dump(config))
@@ -648,6 +653,56 @@ def run(unset=False):
                                 "none" if purpose == "vision" else KEY
                             )
 
+                    # Two generic Mac patterns reach native model names unchanged. The
+                    # native list may expose defaults as aliases of a canonical preset.
+                    if not unset:
+                        vision_upstream.models = [
+                            {"id": "vision-small", "aliases": ["vision"]},
+                            {"id": "vision-other", "aliases": []},
+                            {
+                                "id": "embed-large-bulk-small",
+                                "aliases": [REAL_LARGE, "embed-large-bulk"],
+                            },
+                            {"id": "embed-large-bulk-other", "aliases": []},
+                        ]
+                        for family, endpoint, payload in (
+                            (
+                                "vision",
+                                "/v1/chat/completions",
+                                {"messages": [{"role": "user", "content": CONTENT}]},
+                            ),
+                            ("embed-large-bulk", "/v1/embeddings", {"input": CONTENT}),
+                        ):
+                            for suffix in ("small", "other"):
+                                name = family + "-" + suffix
+                                response = client.post(
+                                    endpoint, headers=headers, json={"model": name, **payload}
+                                )
+                                calls += 1
+                                assert response.status_code == 200, response.text
+                                assert requests[-1][1]["model"] == name
+                                assert response.json()["model"] == (
+                                    name if family == "vision" else suffix
+                                )
+                            before = len(requests)
+                            response = client.post(
+                                endpoint,
+                                headers=headers,
+                                json={"model": family + "-forbidden", **payload},
+                            )
+                            calls += 1
+                            assert response.status_code == 503, response.text
+                            assert response.json()["error"]["message"] == (
+                                family + " is not available in this profile"
+                            )
+                            assert len(requests) == before
+                            response = client.post(
+                                endpoint, headers=headers, json={"model": family, **payload}
+                            )
+                            calls += 1
+                            assert response.status_code == 200, response.text
+                        vision_upstream.models = ["vision", REAL_LARGE]
+
                     if not unset:
                         response = client.post(
                             "/v1/chat/completions",
@@ -684,7 +739,7 @@ def run(unset=False):
                             calls += 1
                             assert response.status_code == 503, response.text
                             assert response.json()["error"]["message"] == (
-                                f"{purpose} is not available until Inference"
+                                f"{purpose} is not available in this profile"
                             )
                             assert len(requests) == before_refusal
                             assert any(
@@ -716,7 +771,7 @@ def run(unset=False):
                                 assert response.json()["error"]["message"] == (
                                     f"{purpose} is paused because the Mac is on battery"
                                     if paused
-                                    else f"{purpose} is not available until Inference"
+                                    else f"{purpose} is not available in this profile"
                                 )
                                 assert len(requests) == before_refusal
                                 assert CONTENT not in response.text and KEY not in response.text

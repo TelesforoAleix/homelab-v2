@@ -350,16 +350,17 @@ an API key. No new port is needed; 8092 is freed. Allow incoming connections for
 if macOS asks. No wake lock is installed. The action listener (8091) and dictation cleanup
 server (8095) keep their independent services and lifecycles.
 
-The native router loads the requested model on the first call. With no requests, llama.cpp
+For an *on request* service, the native router loads the requested model on the first call.
+With no requests, llama.cpp
 unloads its model weights and KV cache after `IDLE_SECONDS` in `mac/homelab-router` (600 seconds
 by default). `/models` then reports `sleeping` (or `unloaded` before the first request); a
 sleeping child process remains and reloads on demand. Startup loads neither preset. The
-preset template is `mac/router-models.ini.in`; absolute model paths are rendered privately
-at installation, never committed. A private cache under router state keeps unrelated cached
+initial preset template is `mac/router-models.ini.in`; migration copies its exact flags and
+local paths into the private model registry. Current presets are rendered from the active policy. A private cache under router state keeps unrelated cached
 models out of native discovery. llama.cpp owns model management; the usage profile command
 can restrict which presets are available (see below).
 
-`status` prints only the two preset names/states and current memory in bytes: router RSS,
+`status` prints only the available preset names/states and current memory in bytes: router RSS,
 router plus descendants' RSS, and their summed Darwin physical footprint (including Metal).
 It calls `/health` and `/models`, which do not wake models. Compare the current family
 physical footprint after inference with the same field after the idle interval; lifetime peak
@@ -486,7 +487,7 @@ Working allows bulk embeddings, cleanup and VoiceInk and closes no apps. Its `se
 are empty: it applies no sleep or power-mode default and does not match the owner’s system
 settings. The owner keeps separate choices for AC and Battery. Legacy Working power-mode,
 sleep and GPU fields remain readable: they are checked against the numeric bounds, then
-ignored without rewriting the private file. Vision and unregistered future image presets
+ignored in memory; explicit migration removes those obsolete Working settings. Vision and unregistered future image presets
 are excluded. Inference permits both router purposes, stops dictation, politely quits the
 configured apps, selects High Power and disables sleep **only for AC** (`pmset -c`), and
 sets the global GPU wired limit to 45056 MB. Battery power mode/sleep and both sources’
@@ -533,10 +534,16 @@ when quitting an application” controls session restoration for apps using the 
 VS Code restores windows by default. The owner chooses these settings; the command changes
 none of them and never force-quits an app. The listener on 8091, the cleanup plist and VoiceInk settings are untouched.
 
-The allow-list is a private router `allowed.json`; rendering omits disallowed presets without
-changing any model flags. Native `/models?reload=1` reconciles the presets and unloads removed
-models; the command verifies the resulting list. Allowed models keep their processes. This
-requires a llama.cpp build supporting native preset reload. A mismatch fails the switch.
+The active policy is private router `allowed.json`; rendering omits *off* services and unallowed
+models. Native `/models?reload=1` reconciles presets and unloads removed or changed children.
+An unchanged model keeps its process. A switch explicitly loads every allowed model of an *on*
+service with native `/models/load` and verifies it is loaded; its preset disables idle sleep.
+*On request* models retain 600-second native idle sleep. `load-on-startup` preserves *on* across
+router restarts. Idle policy must be in presets, since router CLI flags override preset values.
+Router capacity covers the complete registry (at least four), preventing LRU eviction of *on*
+models. Restart the router after adding registry entries; registration is a separate operation.
+This requires llama.cpp native aliases, reload and load APIs (tested against build 11429,
+commit `d81235049`). No process supervisor or request rewriting is added. A mismatch fails the switch.
 The gateway checks the native model list before Mac inference, using the existing private URL
 and connection limit. A dedicated private `public/` directory under router state holds only
 `homelab-profile.json`, served by llama.cpp’s native `--path` option on the existing router
@@ -544,7 +551,7 @@ address and port. It publishes exactly one boolean, `paused_on_battery`, never p
 contents or paths. See the [native static-path option](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
 The updated router must be restarted once to enable that path; do so outside the sandbox when
 no ingest needs its models. This adds no listener or request proxy. A missing preset returns OpenAI-shaped HTTP 503 with, for example,
-`vision is not available until Inference`. Its existing audit line adds
+`vision is not available in this profile`. Its existing audit line adds
 `profile_blocked=true`, with purpose and `upstream=false`, so waiting requests can be counted
 without content. During battery pause the 503 instead says, for example,
 `vision is paused because the Mac is on battery`, with `profile_paused=true`. Only the native
@@ -738,6 +745,116 @@ rm -rf "$HOME/Applications/HomeLab.app"
 
 The profile agent and its idle return and jobs keep working without the app. The app wrote
 nothing for usage, so there is nothing else to remove.
+
+## Per-profile service and model policy
+
+Use the installed command for all profile file reads and writes. `profiles-show` emits the
+resolved configuration. `profiles-set` accepts a complete version-2 JSON object on stdin,
+validates before writing atomically, and takes effect at the next switch. Both Working and
+Inference must be present; their settings/app/job fields retain the existing rules.
+
+```bash
+"$MAC_TOOLS/homelab-profile" migrate
+"$MAC_TOOLS/homelab-profile" profiles-show
+"$MAC_TOOLS/homelab-profile" status
+# Export privately, edit, then validate/save through the same command:
+PROFILE_EDIT=$(mktemp)
+chmod 600 "$PROFILE_EDIT"
+"$MAC_TOOLS/homelab-profile" profiles-show > "$PROFILE_EDIT"
+# Edit "$PROFILE_EDIT" with the owner's editor.
+"$MAC_TOOLS/homelab-profile" profiles-set < "$PROFILE_EDIT"
+rm "$PROFILE_EDIT"
+```
+
+`profiles.json` has `"version": 2`. Each profile's `services` changes from a list into a map
+with exactly `vision`, `embed-large-bulk`, `cleanup`, and `voiceink`. A routed service looks
+like this (ids are placeholders):
+
+```json
+{"state": "on request", "allowed": ["model-a", "model-b"], "default": "model-a"}
+```
+
+The states are `off`, `on request`, and `on`. Cleanup and VoiceInk accept only
+`{"state": "off"}` or `{"state": "on"}`. Even an *off* routed service retains its nonempty
+allowed list and default for later use. Lists must contain distinct registered ids for that
+service, and the default must be in the list. Unknown services, states, models, versions,
+missing fields and line-break injection are rejected.
+
+A private sibling `~/.config/homelab/models.json` is the available-model registry:
+
+```json
+{
+  "version": 1,
+  "services": {
+    "vision": {
+      "model-a": {
+        "model": "/private/example/model.gguf",
+        "flags": {"mmproj": "/private/example/projector.gguf", "ngl": "99", "c": "16384"},
+        "memory_mb": null
+      }
+    },
+    "embed-large-bulk": {
+      "model-b": {
+        "model": "/private/example/embedding.gguf",
+        "flags": {"embeddings": "true", "pooling": "last", "embd-normalize": "2"},
+        "memory_mb": null
+      }
+    }
+  }
+}
+```
+
+Registry ids are unique ASCII letters/digits with dots, underscores or hyphens (1–96 chars).
+Paths are absolute and single-line; only the supported model/preset flags are accepted, never
+listener, logging or download flags. Memory is null or a positive integer in MB; measuring it
+and registering models are outside this command's current interface.
+
+Migration is explicit and idempotent. It saves original bytes once as
+`profiles.json.v1.bak` (`0600`), resolves old defaults, converts each allowed routed service
+to *on request* and each disallowed one to *off*, and converts dictation services to *on/off*.
+The registry starts with ids `vision` and `Qwen3-Embedding-4B`, their exact current paths and
+flags from the template, and unknown memory. Each is its service's only allowed model and
+default, including when off. App lists, job permissions and intervals survive. Legacy Working
+power fields are validated then removed. No model is loaded by migration and no profile is
+switched. The legacy running allow-list remains observable until the next switch; Working and
+Inference preserve their current permissions and model behaviour.
+
+A purpose request selects its default; `<purpose>-<id>` selects that allowed model. For example,
+`vision-vision` and `embed-large-bulk-Qwen3-Embedding-4B` select the migrated models. Native
+aliases share the same child with the purpose name. The legacy `Qwen3-Embedding-4B` upstream
+name remains an alias for the embedding default. The gateway has two bounded native LiteLLM
+patterns, `vision-*` and `embed-large-bulk-*`; a new registered model needs no gateway code or
+configuration entry. Other names retain their existing refusal. Embedding responses retain
+the real registered model id, and the default Qwen vector space and role prefixes stay intact.
+
+`status` adds `profiles` (each profile's states, allowed models and defaults) and per-service
+`configured_state`, `allowed_models`, `default`, and observed `models`. The existing `state`
+remains the native default-model load state for the menu client. Sleeping is normal for *on
+request*; an *on* service whose model is no longer loaded makes the observation custom.
+Native aliases and idle settings are checked too. The existing `allowed`/`running` fields
+remain compatible with the menu app. Manual `start` permits an on-request routed service;
+`stop` makes it off in runtime policy without editing either saved profile.
+
+After merging and installing from main, deploy the gateway only after the med-ask ingest
+check, then run this outside the sandbox, on AC, starting from exact Working:
+
+```bash
+"$MAC_TOOLS/homelab-profile" migrate
+"$MAC_TOOLS/homelab-profile" status
+uv run python tests/mac_profile_models_acceptance.py cycle
+"$MAC_TOOLS/homelab-profile" status
+```
+
+The acceptance script saves a private recovery file, reads/writes profiles through the installed
+command, temporarily permits vision in Working, and checks both existing purposes **from the
+node through LiteLLM** with a synthetic red image and embedding cosine ≥0.999 against the node.
+It adds a second small-context embedding preset using the already-installed weights, makes
+both models *on*, and verifies both are loaded immediately after the switch, before inference.
+It then checks purpose/default and both explicit model names from the node and requires an
+unallowed model to return the fixed 503. Finally it restores the real profiles, registry and
+Working policy, even on a failed probe. It never changes apps or system-setting expectations.
+If interrupted, run `uv run python tests/mac_profile_models_acceptance.py restore`; the private
+backup is retained until restoration succeeds. Do not start an ingest during the cycle.
 
 ## Mac action listener
 
