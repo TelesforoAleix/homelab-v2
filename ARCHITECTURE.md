@@ -212,7 +212,8 @@ launchd at the next eligible idle check. Jobs never enter Inference and never ru
 VS Code terminal. These owner-trusted local commands are independent of the node's durable
 Procrastinate jobs; no Mac work queue is introduced.
 The deployment hook keeps each purpose's 3-second connect and 300-second request limits,
-without retries, fallback or stopped-Mac alerts.
+without router retries, fallback or stopped-Mac alerts. The pinned upstream SDK can still
+repeat 5xx attempts before the failure hook; this transport behaviour is unchanged.
 
 Embedding requests optionally accept `input_type` (`query` or `passage`). Prefixes live in
 `model_info.input_prefixes` per purpose: Nemotron uses `query: ` / `passage: `; Qwen uses a

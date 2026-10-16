@@ -932,7 +932,8 @@ The gateway translates the Mac router's native `model name=… failed to load` e
 an honest generic load failure, not a diagnosis of memory pressure. At llama.cpp commit
 `d81235049`, child load failures share exit code 1; router HTTP errors do not distinguish
 allocation failure from other causes. The translation adds no memory precheck, retry, proxy
-or fallback. Unavailable-profile and battery-pause refusals retain their existing wording;
+or fallback. Existing transport behaviour is preserved: router retries are disabled, but the
+pinned upstream SDK can repeat 5xx attempts before the failure hook runs. Unavailable-profile and battery-pause refusals retain their existing wording;
 unrelated upstream failures retain the sanitised generic error. Deploy this gateway change
 only after the orchestrator's med-ask ingest check.
 
