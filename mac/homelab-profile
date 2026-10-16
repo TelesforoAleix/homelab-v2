@@ -12,6 +12,7 @@ import plistlib
 import re
 import runpy
 import shlex
+import signal
 import subprocess
 import time
 from datetime import UTC, datetime, timedelta
@@ -26,17 +27,20 @@ SCHEDULE = Path.home() / ".config/homelab/night-window.json"
 AGENTS = Path.home() / "Library/LaunchAgents"
 VOICE = "com.prakashjoshipax.VoiceInk"
 CLEANUP = "org.mac-dictation.cleanup"
+registration = runpy.run_path(str(SCRIPT.with_name("model_registration.py")))
 model_policy = runpy.run_path(str(SCRIPT.with_name("profile_models.py")))
 MODELS = model_policy["ROUTED"]
 REGISTRY = model_policy["REGISTRY"]
 DEFAULTS = {
     "working": {
+        "memory_budget_mb": 16384,
         "services": ["embed-large-bulk", "cleanup", "voiceink"],
         "close_apps": [],
         "settings": {},
         "jobs": True,
     },
     "inference": {
+        "memory_budget_mb": 40960,
         "services": ["vision", "embed-large-bulk"],
         "close_apps": ["com.google.Chrome", "com.microsoft.VSCode"],
         "settings": {"powermode": 2, "sleep": 0, "gpu_limit_mb": 45056},
@@ -81,6 +85,7 @@ def config():
             raise ValueError("invalid profile configuration")
         profiles[name].update(overrides)
     for name, profile in profiles.items():
+        validate_budget(profile["memory_budget_mb"])
         if version == 2:
             model_policy["validate_services"](profile["services"], registry)
         else:
@@ -108,6 +113,17 @@ def migrate():
     """Explicit, repeatable migration; retain the exact original bytes once."""
     cfg = config()  # Validate all old settings before writing anything.
     if cfg.get("version") == 2:
+        original = load(CONFIG, {})
+        if all("memory_budget_mb" in p for p in original.get("profiles", {}).values()):
+            return
+        backup = CONFIG.with_suffix(".json.budget.bak")
+        if backup.exists() and backup.read_bytes() != CONFIG.read_bytes():
+            raise ValueError("budget migration backup already exists with different content")
+        if not backup.exists():
+            with backup.open("xb") as handle:
+                handle.write(CONFIG.read_bytes())
+            backup.chmod(0o600)
+        save(CONFIG, cfg)
         return
     backup = CONFIG.with_suffix(".json.v1.bak")
     original = CONFIG.read_bytes() if CONFIG.exists() else None
@@ -150,8 +166,11 @@ def write_profiles(value):
     if not isinstance(value.get("profiles"), dict) or set(value["profiles"]) != set(DEFAULTS):
         raise ValueError("both profiles required")
     for name, profile in value["profiles"].items():
-        if not isinstance(profile, dict) or set(profile) != set(DEFAULTS[name]):
+        if not isinstance(profile, dict) or set(profile) - {"memory_budget_mb"} != set(
+            DEFAULTS[name]
+        ) - {"memory_budget_mb"}:
             raise ValueError("invalid profile")
+        validate_budget(profile.get("memory_budget_mb", DEFAULTS[name]["memory_budget_mb"]))
         model_policy["validate_services"](profile["services"], registry)
         validate_settings(profile["settings"], inference=name == "inference")
         if not isinstance(profile["jobs"], bool) or not isinstance(profile["close_apps"], list):
@@ -165,6 +184,78 @@ def write_profiles(value):
         if key in value and (type(value[key]) is not int or value[key] < 1):
             raise ValueError("invalid idle interval")
     save(CONFIG, value)
+    import sys
+
+    for report in budget_reports(config()).values():
+        if report["warning"]:
+            print(report["warning"], file=sys.stderr)
+
+
+def validate_budget(value):
+    if type(value) is not int or value <= 0:
+        raise ValueError("memory budget must be a positive integer in MiB")
+
+
+def budget_reports(cfg):
+    registry = model_policy["validate_registry"](load(REGISTRY, None))
+    return {
+        name: model_policy["budget"](profile["services"], registry, profile["memory_budget_mb"])
+        for name, profile in cfg["profiles"].items()
+    }
+
+
+def model_operation(args):
+    # Downloads and test loads never hold the state lock. Re-read and validate at commit.
+    with lock():
+        registry = model_policy["validate_registry"](load(REGISTRY, None))
+        if args.action == "add":
+            if not model_policy["identifier"](args.name):
+                raise ProfileRefusal("invalid model id")
+            if any(args.name in models for models in registry["services"].values()):
+                raise ProfileRefusal("model id already registered")
+            template = copy.deepcopy(registry["services"][args.service][args.like])
+            # Validate aliases/ids before downloading, with a provisional copied entry.
+            candidate = copy.deepcopy(registry)
+            candidate["services"][args.service][args.name] = template
+            model_policy["validate_registry"](candidate)
+        else:
+            template = copy.deepcopy(registry["services"][args.service][args.name])
+    folder = None
+    try:
+        if args.action == "add":
+            if (args.service == "vision") != bool(args.projector_url):
+                raise ProfileRefusal("vision requires --projector-url; embeddings do not use it")
+            entry, folder = registration["prepare"](
+                template, args.name, args.url, args.projector_url
+            )
+        else:
+            entry = copy.deepcopy(template)
+        entry["memory_mb"] = registration["test_load"](entry, router())
+        with lock():
+            current = model_policy["validate_registry"](load(REGISTRY, None))
+            models = current["services"][args.service]
+            source = args.like if args.action == "add" else args.name
+            if models.get(source) != template:
+                raise ProfileRefusal("model configuration changed during test load; retry")
+            if args.action == "add" and any(
+                args.name in entries for entries in current["services"].values()
+            ):
+                raise ProfileRefusal("model id registered during test load; retry with another id")
+            models[args.name] = entry
+            model_policy["validate_registry"](current)
+            save(REGISTRY, current)
+        folder = None  # Ownership transferred to the registry; retain downloaded files.
+        return {
+            "service": args.service,
+            "id": args.name,
+            "available": True,
+            "memory_mb": entry["memory_mb"],
+        }
+    finally:
+        if folder is not None:
+            import shutil
+
+            shutil.rmtree(folder)
 
 
 def validate_settings(settings, *, inference=False):
@@ -528,6 +619,16 @@ def snapshot(cfg):
             name: model_policy["services"](profile["services"])
             for name, profile in cfg["profiles"].items()
         },
+        "model_registry": {
+            service: {
+                name: {"available": True, "memory_mb": entry["memory_mb"]}
+                for name, entry in entries.items()
+            }
+            for service, entries in registry["services"].items()
+        }
+        if cfg.get("version") == 2
+        else {},
+        "memory_budgets": budget_reports(cfg) if cfg.get("version") == 2 else {},
         "settings": observed,
         "apps": apps,
         "settings_skipped": bool(record.get("skip_settings")),
@@ -1150,6 +1251,19 @@ def main():
         "profiles-set",
     ):
         sub.add_parser(command)
+    model = sub.add_parser("model").add_subparsers(dest="action", required=True)
+    for action in ("add", "measure"):
+        command = model.add_parser(action)
+        command.add_argument("service", choices=sorted(MODELS))
+        command.add_argument("name", help="registered model id")
+        if action == "add":
+            command.add_argument(
+                "--like", required=True, help="registry id to copy flags and directory from"
+            )
+            command.add_argument("--url", required=True, help="Hugging Face model resolve URL")
+            command.add_argument(
+                "--projector-url", help="Hugging Face projector resolve URL (vision)"
+            )
     change = sub.add_parser("switch")
     change.add_argument("profile", choices=DEFAULTS)
     change.add_argument("--confirm-kill", action="store_true")
@@ -1181,6 +1295,19 @@ def main():
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         cfg = config()
+        if args.command == "model":
+            if cfg.get("version") != 2:
+                raise ProfileRefusal("use migrate before registering or measuring models")
+
+            def interrupted(signum, frame):
+                raise SystemExit(128 + signum)
+
+            previous = signal.signal(signal.SIGTERM, interrupted)
+            try:
+                print(json.dumps(model_operation(args)))
+            finally:
+                signal.signal(signal.SIGTERM, previous)
+            return 0
         if args.command == "job-worker":
             job_worker(args.name, cfg)
             return 0
@@ -1247,7 +1374,7 @@ def main():
                     "kickstart",
                     f"gui/{os.getuid()}/org.homelab.profile.job.{args.name}",
                 )
-    except ProfileRefusal as exc:
+    except (ProfileRefusal, registration["ModelError"]) as exc:
         parser.exit(1, str(exc) + "\n")
     except TimeoutError as exc:
         parser.exit(1, str(exc) + "\n")

@@ -26,6 +26,7 @@ FILES = (
     "router-models.ini.in",
     "installed_tools.py",
     "profile_models.py",
+    "model_registration.py",
     "install-menu-bar.sh",
 )
 DEPENDENCIES = {
@@ -37,7 +38,13 @@ DEPENDENCIES = {
         "installed_tools.py",
     },
     "router": {"homelab-router", "router-models.ini.in", "installed_tools.py", "profile_models.py"},
-    "profile": {"homelab-profile", "homelab-router", "installed_tools.py", "profile_models.py"},
+    "profile": {
+        "homelab-profile",
+        "homelab-router",
+        "installed_tools.py",
+        "profile_models.py",
+        "model_registration.py",
+    },
 }
 BOOTOUT_TIMEOUT = 10
 BOOTSTRAP_RETRY_SECONDS = 5

@@ -90,6 +90,26 @@ class Upstream(BaseHTTPRequestHandler):
         else:
             body = json.loads(raw)
         requests.append((self.path, body, self.headers.get("Authorization")))
+        if getattr(self.server, "load_failure", False):
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "error": {
+                            "code": 500,
+                            "type": "server_error",
+                            "message": "model name="
+                            + body["model"]
+                            + " failed to load "
+                            + CONTENT
+                            + KEY,
+                        }
+                    }
+                ).encode()
+            )
+            return
         if body.get("prompt") == CONTENT + ":quota":
             self.send_response(402)
             self.send_header("Content-Type", "application/json")
@@ -786,6 +806,40 @@ def run(unset=False):
                         vision_upstream.models = ["vision", REAL_LARGE]
                         vision_upstream.profile_status = 200
                         vision_upstream.profile_state = {"paused_on_battery": False}
+                        # The real router reports one generic failed-load error, including for
+                        # allocation failure. Test both families, explicit ids and streaming.
+                        vision_upstream.models = [
+                            "vision",
+                            REAL_LARGE,
+                            "vision-small",
+                            "embed-large-bulk-small",
+                        ]
+                        vision_upstream.load_failure = True
+                        for purpose, endpoint, payload in (
+                            ("vision", "/v1/chat/completions", {"messages": []}),
+                            (
+                                "vision-small",
+                                "/v1/chat/completions",
+                                {"messages": [], "stream": True},
+                            ),
+                            ("embed-large-bulk", "/v1/embeddings", {"input": CONTENT}),
+                            ("embed-large-bulk-small", "/v1/embeddings", {"input": CONTENT}),
+                        ):
+                            before_load = len(requests)
+                            response = client.post(
+                                endpoint, headers=headers, json={"model": purpose, **payload}
+                            )
+                            calls += 1
+                            assert response.status_code == 503, response.text
+                            assert response.json()["error"]["message"] == (
+                                "The Mac could not load this model now "
+                                "(often for lack of memory); try later"
+                            ), response.text
+                            # The pinned upstream SDK can repeat 5xx requests before the failure
+                            # hook. Translation must preserve existing deployment settings.
+                            assert len(requests) > before_load
+                            assert CONTENT not in response.text and KEY not in response.text
+                        vision_upstream.load_failure = False
                         vision_upstream.shutdown()
                         vision_upstream.server_close()
                         before_stopped = len(requests)

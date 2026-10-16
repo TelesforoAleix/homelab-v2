@@ -529,3 +529,17 @@ sized to the entire registry (at least four); registry additions require a route
 Two bounded LiteLLM patterns route explicit Mac model names without per-model gateway entries.
 The hook checks native ids/aliases, retains refusal sanitising and audits only the base purpose
 for dynamic names. All unavailable-profile refusals say “not available in this profile”.
+
+
+**2026-10-16 — Measure registrations separately and report native load failures honestly.**
+Model registration copies an existing service entry's flags and configured parent directory,
+verifies Hugging Face's published file hashes and loads through a temporary standalone
+loopback llama-server. This measures Darwin physical footprint without changing live native
+presets. New entries remain unallowed everywhere; only final registry writes hold the state
+lock. The registry needs no new fields or version; optional version-2 profile memory budgets
+retain compatibility and explicit migration backs up existing files. Budgets sum all pinned
+models plus the largest on-request model, reporting unknowns rather than estimating them.
+The owner replaced the proposed memory-specific refusal: llama.cpp `d81235049` reports a
+generic failed load and shared exit code, so the gateway says the Mac could not load this model
+now (often for lack of memory), and to try later. There is no memory precheck, upstream change,
+proxy or retry. Gateway deployment waits for the orchestrator's med-ask ingest check.

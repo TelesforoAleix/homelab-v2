@@ -180,3 +180,28 @@ def render(policy, registry):
     out = io.StringIO()
     ini.write(out)
     return "version = 1\n\n" + out.getvalue()
+
+
+def budget(policy, registry, limit):
+    """All pinned models plus the largest on-request model; unknown is never estimated."""
+    pinned, requested, unknown = [], [], []
+    for service in ROUTED:
+        setting = services(policy)[service]
+        if setting["state"] == "off":
+            continue
+        for name in setting["allowed"]:
+            memory = registry["services"][service][name]["memory_mb"]
+            if memory is None:
+                unknown.append(f"{service}-{name}")
+            else:
+                (pinned if setting["state"] == "on" else requested).append(memory)
+    known = sum(pinned) + max(requested, default=0)
+    over = known > limit
+    return {
+        "memory_budget_mb": limit,
+        "required_mb": None if unknown else known,
+        "known_mb": known,
+        "unknown_models": unknown,
+        "over_budget": over,
+        "warning": "profile exceeds its memory budget" if over else None,
+    }

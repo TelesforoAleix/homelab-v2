@@ -33,6 +33,16 @@ audit: ContextVar[dict | None] = getattr(sys.modules.get(__name__), "audit", Non
     "model_call_audit", default=None
 )
 logger = logging.getLogger("homelab.models")
+MAC_LOAD_FAILURE = "The Mac could not load this model now (often for lack of memory); try later"
+
+
+def mac_load_failed(purpose, exception):
+    # Only the native router's failed-load signal on configured Mac routes. Never infer
+    # memory pressure, inspect model memory, or repeat an upstream diagnostic to a client.
+    _, _, info = route(purpose)
+    return "connect_timeout" in info and bool(
+        re.search(r"model name=[A-Za-z0-9_.-]+ failed to load", str(exception))
+    )
 
 
 def route(purpose):
@@ -248,6 +258,12 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                     "service_unavailable_error",
                 )
                 status = 503
+            if event.get("model_load_failed"):
+                if hasattr(response, "body_iterator"):
+                    async for _ in response.body_iterator:
+                        pass
+                response = error_response(503, MAC_LOAD_FAILURE, "service_unavailable_error")
+                status = 503
             if (
                 event["purpose"] in model_info
                 and model_info[event["purpose"]].get("mode") == "image_generation"
@@ -427,6 +443,11 @@ class PurposeHooks(CustomLogger):
     ):
         if isinstance(original_exception, ProxyModelNotFoundError):
             return None
+        if mac_load_failed(request_data.get("model"), original_exception):
+            event = audit.get()
+            if event is not None:
+                event["model_load_failed"] = True
+            return HTTPException(503, MAC_LOAD_FAILURE)
         # Gateway exceptions can include provider names, bodies and credentials. Preserve
         # the numeric status, but let LiteLLM format a content-free OpenAI error.
         status = getattr(original_exception, "status_code", 502)
