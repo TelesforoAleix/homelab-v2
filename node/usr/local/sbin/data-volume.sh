@@ -60,9 +60,10 @@ unlock() {
 
     if [ ! -b "$BULK_MAPPER" ]; then
         [ -b "$BULK_SOURCE" ] || die "$BULK_SOURCE not found"
-        [ ! -L "$KEY" ] && [ -f "$KEY" ] \
-            && [ "$(stat -c '%u:%g:%a:%s' "$KEY")" = "0:0:400:4096" ] \
-            || die "bulk key must be a root:root 0400 regular file of 4096 bytes"
+        if [ -L "$KEY" ] || [ ! -f "$KEY" ] \
+            || [ "$(stat -c '%u:%g:%a:%s' "$KEY")" != "0:0:400:4096" ]; then
+            die "bulk key must be a root:root 0400 regular file of 4096 bytes"
+        fi
         cryptsetup open --key-file "$KEY" "$BULK_SOURCE" "$BULK_NAME"
     fi
     mounted "$BULK_MOUNT" || mount "$BULK_MOUNT"

@@ -94,7 +94,7 @@ volume_state() {
     fi
 }
 
-classify_boot
+classify_boot -1
 volume_state
 
 MESSAGE="$(printf 'Home Lab back up. Down ~%dm, %s. Data volumes: %s' "$DOWN_MIN" "$CLASS" "$STATE")"

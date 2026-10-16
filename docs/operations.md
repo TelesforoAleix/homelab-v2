@@ -1654,10 +1654,15 @@ KEY=/srv/homelab/.keys/homelab-bulk.key
 findmnt --mountpoint /srv/homelab
 lsblk -o NAME,MODEL,SIZE,TYPE,MOUNTPOINTS "$DISK"
 test -b "$DISK"
-test "$(lsblk -nr -o TYPE "$DISK")" = disk
-test -z "$(lsblk -nr -o MOUNTPOINTS "$DISK" | tr -d '[:space:]')"
-test -z "$(ls -A "/sys/class/block/$(basename "$(readlink -f "$DISK")")/holders")"
-test -z "$(wipefs --no-act --noheadings --output TYPE "$DISK")"
+DISK_LAYOUT=$(lsblk -nr -o TYPE "$DISK")
+test "$DISK_LAYOUT" = disk
+DISK_MOUNTS=$(lsblk -nr -o MOUNTPOINTS "$DISK")
+test -z "$(printf '%s' "$DISK_MOUNTS" | tr -d '[:space:]')"
+DISK_DEVICE=$(readlink -f "$DISK")
+DISK_HOLDERS=$(ls -A "/sys/class/block/${DISK_DEVICE##*/}/holders")
+test -z "$DISK_HOLDERS"
+DISK_SIGNATURES=$(wipefs --no-act --noheadings --output TYPE "$DISK")
+test -z "$DISK_SIGNATURES"
 if blkid -p "$DISK"; then exit 1; else test "$?" -eq 2; fi
 test ! -e "$PART"
 test ! -e /dev/mapper/homelab-bulk
@@ -1712,15 +1717,18 @@ for unit in homelab.service med-ask.service image-studio.service docker.service 
   test "$(systemctl show -p ActiveState --value "$unit")" = inactive
 done
 # There must be no container snapshot mounts left below the source roots.
-if findmnt -rn -o TARGET | grep -E '^/var/lib/(docker|containerd)/'; then exit 1; fi
+MOUNT_TARGETS=$(findmnt -rn -o TARGET)
+if printf '%s\n' "$MOUNT_TARGETS" | grep -E '^/var/lib/(docker|containerd)/'; then exit 1; fi
 for area in docker containerd; do
   test ! -e "/srv/homelab-bulk/$area"
   rsync -aHAXS --numeric-ids "/var/lib/$area" /srv/homelab-bulk/
-  test -z "$(rsync -aHAXSnci --numeric-ids --delete "/var/lib/$area/" "/srv/homelab-bulk/$area/")"
+  COPY_DIFFERENCES=$(rsync -aHAXSnci --numeric-ids --delete "/var/lib/$area/" "/srv/homelab-bulk/$area/")
+  test -z "$COPY_DIFFERENCES"
 done
 test ! -e /srv/homelab-bulk/models
 rsync -aHAXS --numeric-ids /srv/homelab/models /srv/homelab-bulk/
-test -z "$(rsync -aHAXSnci --numeric-ids --delete /srv/homelab/models/ /srv/homelab-bulk/models/)"
+COPY_DIFFERENCES=$(rsync -aHAXSnci --numeric-ids --delete /srv/homelab/models/ /srv/homelab-bulk/models/)
+test -z "$COPY_DIFFERENCES"
 sync
 # Show installed diffs BEFORE copying. diff exit 1 is an expected difference.
 for file in etc/docker/daemon.json etc/containerd/config.toml usr/local/sbin/data-volume.sh usr/local/sbin/homelab-watchdog.sh etc/systemd/system/homelab-data.target; do
@@ -1833,10 +1841,11 @@ originals. Run in a root shell, with the successful reboot/unlock checks recorde
 set -euo pipefail
 findmnt --mountpoint /srv/homelab-bulk
 test "$(docker info --format '{{.DockerRootDir}}')" = /srv/homelab-bulk/docker
+MOUNT_TARGETS=$(findmnt -rn -o TARGET)
 for path in /var/lib/docker.pre-bulk /var/lib/containerd.pre-bulk /srv/homelab/models; do
   test -d "$path"
   test ! -L "$path"
-  if findmnt -rn -o TARGET | grep -F "$path"; then exit 1; fi
+  if printf '%s\n' "$MOUNT_TARGETS" | grep -F "$path"; then exit 1; fi
 done
 rm -rf --one-file-system /var/lib/docker.pre-bulk /var/lib/containerd.pre-bulk /srv/homelab/models
 df -h / /srv/homelab /srv/homelab-bulk
