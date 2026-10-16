@@ -199,16 +199,54 @@ def test_start_installs_login_agent_without_private_values_in_output(monkeypatch
     assert address not in output and str(tmp_path) not in output
 
 
-def test_start_refuses_occupied_port(monkeypatch):
+@pytest.mark.parametrize("reuse", [False, True])
+def test_start_refuses_occupied_port(monkeypatch, reuse):
     monkeypatch.setattr(router, "healthy", lambda saved: False)
     monkeypatch.setattr(router, "record", lambda: None)
     monkeypatch.setattr(router, "tailscale_address", lambda: "127.0.0.1")
     with router.socket.socket() as listener:
+        listener.setsockopt(router.socket.SOL_SOCKET, router.socket.SO_REUSEADDR, int(reuse))
         listener.bind(("127.0.0.1", 0))
         listener.listen()
         monkeypatch.setattr(router, "PORT", listener.getsockname()[1])
         with pytest.raises(ValueError, match="taken"):
             router.start()
+
+
+def test_start_reuses_health_check_time_wait_port(monkeypatch, tmp_path):
+    import errno
+
+    setup_paths(monkeypatch, tmp_path)
+    address = "127.0.0.1"
+    # The server actively closes a health-check connection, leaving its port in
+    # TIME_WAIT just as llama-server does. There is no active listener after this.
+    with router.socket.socket() as listener:
+        listener.setsockopt(router.socket.SOL_SOCKET, router.socket.SO_REUSEADDR, 1)
+        listener.bind((address, 0))
+        listener.listen()
+        endpoint = listener.getsockname()
+        with router.socket.create_connection(endpoint, timeout=2) as client:
+            peer, _ = listener.accept()
+            with peer:
+                peer.settimeout(2)
+                peer.shutdown(router.socket.SHUT_WR)
+                assert client.recv(1) == b""
+                client.shutdown(router.socket.SHUT_WR)
+                assert peer.recv(1) == b""
+    # Verify that this fixture actually reproduces the old bind-probe defect.
+    with router.socket.socket() as old_probe:
+        with pytest.raises(OSError) as error:
+            old_probe.bind(endpoint)
+        assert error.value.errno == errno.EADDRINUSE
+    monkeypatch.setattr(router, "tailscale_address", lambda: address)
+    monkeypatch.setattr(router, "PORT", endpoint[1])
+    checks = iter([False, True])
+    monkeypatch.setattr(router, "healthy", lambda saved: next(checks))
+    monkeypatch.setattr(
+        router, "launchctl", lambda *a: subprocess.CompletedProcess(a, 1 if a[0] == "print" else 0)
+    )
+    router.start()
+    assert router.PLIST.is_file()  # Immediate start reaches agent installation, without a sleep.
 
 
 def test_stop_does_not_signal_reused_pid_and_removes_login_agent(monkeypatch, tmp_path):

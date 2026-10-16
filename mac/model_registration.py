@@ -113,8 +113,22 @@ def prepare(template, name, url, projector_url=None):
         raise
 
 
+def model_file_bytes(entry):
+    """Charge each configured weights/projector file once, including hard-link aliases."""
+    files = {}
+    for path in (entry["model"], entry["flags"].get("mmproj")):
+        if path is not None:
+            stat = Path(path).stat()
+            files[stat.st_dev, stat.st_ino] = stat.st_size
+    return sum(files.values())
+
+
 def test_load(entry, router):
-    """Load once on a temporary loopback port and measure Darwin physical footprint in MiB."""
+    """Load once; budget physical footprint plus configured model-file bytes in MiB."""
+    # Darwin physical footprint omits clean file-backed model pages. Charge the full
+    # files as well, consistently with vision_bench, rather than treating them as free.
+    # This is conservative when a backend also copies weights into charged allocations.
+    weights_bytes = model_file_bytes(entry)
     short = {"ngl", "c", "np", "b", "ub", "t"}
     args = [router["BINARY"], "--model", entry["model"]]
     for key, value in entry["flags"].items():
@@ -154,7 +168,7 @@ def test_load(entry, router):
                             time.sleep(0.2)
                         if process.poll() is not None or max(samples) <= 0:
                             break
-                        return math.ceil(max(samples) / 1024**2)
+                        return math.ceil((max(samples) + weights_bytes) / 1024**2)
                 except (OSError, ValueError, urllib.error.URLError):
                     pass
                 time.sleep(0.2)

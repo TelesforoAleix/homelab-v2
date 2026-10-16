@@ -858,6 +858,10 @@ backup is retained until restoration succeeds. Do not start an ingest during the
 
 ### Registering and measuring Mac models
 
+The router's startup port probe sets `SO_REUSEADDR`, matching the native listener, so
+TIME_WAIT from its own closed health-check connections does not delay a stop/start.
+An active listener still refuses startup; `SO_REUSEPORT` is not enabled.
+
 The installed command downloads and test-loads a new model before making it available:
 
 ```bash
@@ -881,14 +885,19 @@ Missing hashes stop registration; a mismatched hash/size removes the partial dow
 The test load runs a separate llama-server on an ephemeral loopback port with those flags,
 a temporary isolated cache and disabled content logging. It does not unload, reload or edit
 any live router model. Once native health reports ready after warmup, the largest of three
-current process-family Darwin physical-footprint samples, 200 ms apart, is rounded up to MiB
-and stored in `memory_mb`. This includes Metal allocations; it is an observed load footprint,
-not a guarantee of memory needed by every later request. Test loading can need additional
+current process-family Darwin physical-footprint samples, 200 ms apart, is added to the
+configured GGUF and projector file sizes, then rounded up once to MiB and stored in
+`memory_mb`. Each distinct file is charged once, including when paths are hard links.
+Physical footprint includes charged Metal allocations but omits clean mapped weights; the
+file charge accounts for those weights instead of treating them as free. This is conservative:
+backends that copy weights into charged allocations can count some weights twice. It is a
+budget allowance based on a real test load, not an exact resident-page or GPU-wired counter,
+and does not guarantee memory needed by every later request. Test loading can need additional
 memory alongside live models. Run measurements when the Mac is idle; a failed load registers
 nothing. Its child is terminated on success, failure or interruption. `model measure` uses the
 same load to update an existing entry, leaving its old measurement intact on failure.
 
-The registry is still version 1 with the same entry fields; `memory_mb` now means measured MiB
+The registry is still version 1 with the same entry fields; `memory_mb` now means accounted MiB
 (the historical field name is retained). Registration writes it atomically under the profile
 state lock, after re-reading and validating current entries. Network and test-load work happens
 outside that lock. A failed operation removes only the new directory it created. A new entry

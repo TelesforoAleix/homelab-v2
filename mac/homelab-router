@@ -257,6 +257,9 @@ def start():
             raise ValueError("legacy server running; stop it with the previous launcher first")
     address = tailscale_address()
     with socket.socket() as probe:
+        # Match the native listener: its closed health-check connections may still be
+        # in TIME_WAIT. Do not use SO_REUSEPORT; an active listener must still refuse.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind((address, PORT))
         except OSError:

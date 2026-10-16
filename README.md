@@ -29,7 +29,7 @@ Solid parts are built; dashed parts are planned.
   reports observed state as JSON, and returns to Working after idle inference. Each profile
   sets services to off, on request, or on, with allowed models and a default from a private
   registry. It can download, verify and test-load new models and reports warning-only
-  profile memory budgets; see [profile model policy](docs/operations.md#per-profile-service-and-model-policy). After 10
+  profile memory budgets that include mapped weights; see [profile model policy](docs/operations.md#per-profile-service-and-model-policy). After 10
   continuous minutes on battery, Inference pauses its model services and resumes on AC.
   Working leaves the owner’s AC and Battery settings alone. Inference requires AC power,
   changes only AC power mode/sleep and the global GPU limit, and restores their recorded

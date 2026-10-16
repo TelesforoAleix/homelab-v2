@@ -96,7 +96,18 @@ def test_hf_published_metadata(monkeypatch, digest, valid):
             m.metadata(URL)
 
 
-def test_isolated_load_measures_metal_footprint_and_stops_child(template, monkeypatch):
+@pytest.mark.parametrize("projector", [False, True])
+def test_isolated_load_accounts_for_mapped_weights_and_stops_child(
+    template, monkeypatch, projector
+):
+    with Path(template["model"]).open("wb") as handle:
+        handle.truncate(2 * 1024**2 + 1)
+    if projector:
+        path = Path(template["model"]).with_name("projector.gguf")
+        with path.open("wb") as handle:
+            handle.truncate(3 * 1024**2 + 2)
+        template["flags"]["mmproj"] = str(path)
+    samples = iter([10 * 1024**2 + 1, 12 * 1024**2 + 1, 11 * 1024**2 + 1])
     calls = []
 
     class Process:
@@ -128,10 +139,10 @@ def test_isolated_load_measures_metal_footprint_and_stops_child(template, monkey
         template,
         {
             "BINARY": "/example/llama-server",
-            "memory": lambda pid: {"family_physical_footprint_bytes": 10 * 1024**2 + 1},
+            "memory": lambda pid: {"family_physical_footprint_bytes": next(samples)},
         },
     )
-    assert measured == 11
+    assert measured == (18 if projector else 15)  # Round the sum of bytes once, after sampling.
     args, kwargs = calls[0]
     assert args[args.index("--host") + 1] == "127.0.0.1"
     assert "--models-preset" not in args
@@ -185,3 +196,12 @@ int main(int argc, char **argv) {
     env["LLAMA_SERVER_ROUTER_PORT"] = "8090"
     assert subprocess.run([str(probe), str(data)], env=env, timeout=10).returncode == 42
     assert marker.read_text() == "ENOMEM\n"
+
+
+def test_weight_charge_deduplicates_hard_linked_model_and_projector(template):
+    path = Path(template["model"])
+    path.write_bytes(b"weights")
+    projector = path.with_name("projector.gguf")
+    projector.hardlink_to(path)
+    template["flags"]["mmproj"] = str(projector)
+    assert m.model_file_bytes(template) == len(b"weights")
