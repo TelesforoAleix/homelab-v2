@@ -273,15 +273,70 @@ networks:
     name: homelab-models
 ```
 
-## Mac vision serving
+## Install and update the Mac tools
 
-Vision and bulk embeddings share one native Homebrew llama.cpp router on the Mac. From
-this checkout, outside the Codex sandbox (which cannot see Metal):
+Run these commands outside the sandbox. Mac agents run a private installed copy under
+`~/Library/Application Support/homelab/mac/` (directory `0700`), independent of the working
+checkout. Install Homebrew Python at `/opt/homebrew/bin/python3` first (Python 3.11 or later).
+This fixed interpreter is recorded in `install.json`; no agent uses the checkout's `.venv`.
+The tools use only the standard library. Swift's SDK is needed to build the menu app.
+
+Before installing or updating, check med-ask for active vision or bulk embedding requests,
+as for a node deploy. A router code/preset update cuts `vision` and `embed-large-bulk` for a
+few seconds. Wait for any running Mac job to finish; the installer refuses to unload an active
+job worker. It never switches profiles or stops dictation.
 
 ```bash
-mac/homelab-router start
-mac/homelab-router status
-mac/homelab-router stop
+cd ~/Code/homelab-v2
+git switch main
+git pull --ff-only
+mac/install-mac-tools
+export MAC_TOOLS="$HOME/Library/Application Support/homelab/mac"
+```
+
+The installer fetches `origin/main` and refuses dirty trees (including untracked files) or
+commits not contained in `origin/main`. It copies only the commands, their runtime dependencies
+and tracked menu sources. It rewrites existing listener, router, profile and profile-job plists
+in place, preserving flags, calendars, job identities and each job's own command. Existing
+loaded agents restart only when their paths or code/dependencies changed; unloaded agents stay
+unloaded. It also builds/reinstalls the menu app when its code or recorded paths change.
+A failed refresh can be retried with the same command. Private profiles, jobs and state stay
+under `~/.config/homelab/` and `~/.local/state/`.
+
+For a first installation, after installing the privileged profile helper as described below:
+
+```bash
+"$MAC_TOOLS/homelab-router" start
+"$MAC_TOOLS/homelab-listener" install
+"$MAC_TOOLS/homelab-profile" install
+```
+
+Updating is the same pull-and-install command sequence above. To see the installed commit and
+interpreter, and confirm the live command paths:
+
+```bash
+cat "$MAC_TOOLS/install.json"
+for label in listener router profile profile.job.dictation-recheck menu; do
+  plutil -p "$HOME/Library/LaunchAgents/org.homelab.$label.plist"
+done
+plutil -p "$HOME/Applications/HomeLab.app/Contents/Info.plist"
+```
+
+Listener/router/profile and all later `job add` agents use the installed command and recorded
+Python. The menu agent runs `~/Applications/HomeLab.app/Contents/MacOS/HomeLabMenuBar`; its
+bundle's `HomeLabProfileCommand` points to the installed profile command. Changing branches in
+`~/Code/homelab-v2` cannot change these agents' code. The examples below assume `MAC_TOOLS`
+was exported as above.
+
+## Mac vision serving
+
+Vision and bulk embeddings share one native Homebrew llama.cpp router on the Mac. Use the
+installed tools outside the Codex sandbox (which cannot see Metal):
+
+```bash
+"$MAC_TOOLS/homelab-router" start
+"$MAC_TOOLS/homelab-router" status
+"$MAC_TOOLS/homelab-router" stop
 ```
 
 `start` installs a user LaunchAgent (`org.homelab.router`) and waits up to 120 seconds for
@@ -401,16 +456,16 @@ even while on battery; GPU limit is global. Model loading/sleep is activity,
 not a profile change. An unavailable router reports its model services disallowed.
 
 ```bash
-mac/homelab-profile install
-mac/homelab-profile status
-mac/homelab-profile switch working
-mac/homelab-profile check-work
-mac/homelab-profile switch inference
-mac/homelab-profile start vision
-mac/homelab-profile stop vision
-mac/homelab-profile job list
-mac/homelab-profile job add example --calendar '{"Hour":4,"Minute":0}' -- "$PWD/mac/profile-example-job"
-mac/homelab-profile job run example
+"$MAC_TOOLS/homelab-profile" install
+"$MAC_TOOLS/homelab-profile" status
+"$MAC_TOOLS/homelab-profile" switch working
+"$MAC_TOOLS/homelab-profile" check-work
+"$MAC_TOOLS/homelab-profile" switch inference
+"$MAC_TOOLS/homelab-profile" start vision
+"$MAC_TOOLS/homelab-profile" stop vision
+"$MAC_TOOLS/homelab-profile" job list
+"$MAC_TOOLS/homelab-profile" job add example --calendar '{"Hour":4,"Minute":0}' -- "$PWD/mac/profile-example-job"
+"$MAC_TOOLS/homelab-profile" job run example
 ```
 
 Installation creates a private `~/.config/homelab/profiles.json` with editable defaults and
@@ -580,8 +635,8 @@ test launched it, and removes its fixture. Before the first cycle using pause me
 restart the router outside the sandbox:
 
 ```bash
-mac/homelab-router stop
-mac/homelab-router start
+"$MAC_TOOLS/homelab-router" stop
+"$MAC_TOOLS/homelab-router" start
 uv run python tests/mac_profile_acceptance.py cycle
 ```
 
@@ -603,30 +658,30 @@ unconfirmed `switch inference`; if the guard refuses, the app repeats the guard'
 work list and offers **Switch anyway** (`--confirm-kill`) or **Cancel**. Never use *Switch
 anyway* while a chat or job under VS Code must survive.
 
-**Build, install and start** (from the owner's checkout, outside any sandbox; it switches nothing):
+**Build, install and start** (after installing the tools, outside any sandbox; it switches nothing):
 
 ```bash
-mac/install-menu-bar.sh
+"$MAC_TOOLS/install-menu-bar.sh"
 ```
 
-It builds `mac/MenuBar` in release mode, replaces `~/Applications/HomeLab.app`, signs it ad hoc
+It builds the installed `MenuBar` sources in release mode, replaces `~/Applications/HomeLab.app`, signs it ad hoc
 (`codesign --sign -`) and loads the `org.homelab.menu` user LaunchAgent, which starts the app now
 and at every login. A LaunchAgent works with an ad hoc signature; no Developer ID is needed. The
-bundle's `Info.plist` records this checkout's `mac/homelab-profile` and interpreter
-(`.venv/bin/python3`, else `python3`), so the app runs the same command as the
-`org.homelab.profile` agent. Rerun the script after pulling changes. The menu bar icon shows
+bundle's `Info.plist` records the installed `homelab-profile` and fixed interpreter, so the
+app runs the same command as the `org.homelab.profile` agent. The tools installer refreshes
+the app when needed; the command above explicitly reinstalls it. The menu bar icon shows
 the state: laptop (*Working*), bolt
 (*Inference*), pause (*paused*), sliders (*Custom*).
 
 The commands it uses, all JSON on stdout:
 
 ```bash
-mac/homelab-profile plan-inference      # apps/dictation to stop, guard work, AC refusal
-mac/homelab-profile waiting             # refusals per purpose, last 24 hours
-mac/homelab-profile usage               # Codex and Claude 5-hour/7-day usage
-mac/homelab-profile schedule show
-mac/homelab-profile schedule set --start 23:00 --end 07:00 --days mon,tue,wed,thu,fri
-mac/homelab-profile schedule off
+"$MAC_TOOLS/homelab-profile" plan-inference      # apps/dictation to stop, guard work, AC refusal
+"$MAC_TOOLS/homelab-profile" waiting             # refusals per purpose, last 24 hours
+"$MAC_TOOLS/homelab-profile" usage               # Codex and Claude 5-hour/7-day usage
+"$MAC_TOOLS/homelab-profile" schedule show
+"$MAC_TOOLS/homelab-profile" schedule set --start 23:00 --end 07:00 --days mon,tue,wed,thu,fri
+"$MAC_TOOLS/homelab-profile" schedule off
 ```
 
 **Waiting work.** `waiting` runs two read-only commands over `ssh homelab-agent` (batch mode,
@@ -669,7 +724,7 @@ job cannot set the window, and the window's entry is refused in job context.
 **Turning it all off:**
 
 ```bash
-mac/homelab-profile schedule off
+"$MAC_TOOLS/homelab-profile" schedule off
 launchctl bootout "gui/$(id -u)/org.homelab.menu"
 rm "$HOME/Library/LaunchAgents/org.homelab.menu.plist"
 rm -rf "$HOME/Applications/HomeLab.app"
@@ -684,15 +739,15 @@ The owner's launchd user agent accepts only `POST /backup` with an empty body on
 bound to the Mac's runtime Tailscale IPv4. Extend the tailnet grant so only the node can reach
 this port before installing it. There is no listener key; the tailnet rule is the gate.
 The agent runs as the logged-in owner, using the same SSH key and `homelab-agent` configuration
-as the manual copy. Keep this checkout and its Python interpreter at their installed paths.
-From this checkout, using a persistent Python 3 installation:
+as the manual copy. Install the Mac tools first; the listener and its copy dependency run
+from the installed directory with the recorded interpreter:
 
 ```bash
-python3 mac/homelab-listener install
-mac/homelab-listener status
-mac/homelab-listener stop
-mac/homelab-listener start
-mac/homelab-listener uninstall
+"$MAC_TOOLS/homelab-listener" install
+"$MAC_TOOLS/homelab-listener" status
+"$MAC_TOOLS/homelab-listener" stop
+"$MAC_TOOLS/homelab-listener" start
+"$MAC_TOOLS/homelab-listener" uninstall
 ```
 
 Install writes `~/Library/LaunchAgents/org.homelab.listener.plist` with mode `0600`. launchd

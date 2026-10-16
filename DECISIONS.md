@@ -500,3 +500,14 @@ already writes with the owner's approval, as of its `at` time; a missing or inva
 unknown. The repository ships no status-line script and the app never writes usage. Each source
 reports its age. Waiting estimates use only published `seconds_per_image`; other purposes show
 their count with no estimate.
+
+
+**2026-10-16 — Install the Mac control plane from main.** Login agents previously ran the
+working checkout, so checking out an executor branch changed live code. One private installed
+copy now contains the commands, stdlib-only sibling dependencies and menu sources, stamped
+with a clean commit contained in freshly fetched `origin/main`. Use the stable Homebrew
+`/opt/homebrew/bin/python3` entry point for every agent and menu subprocess, recorded in the
+install, rather than any checkout virtual environment. Existing job plists are rewritten in
+place without changing calendars, job commands or private state. Dependency comparisons restart
+only affected loaded agents; menu sources/path changes rebuild the installed app. Router refresh
+briefly interrupts vision and bulk embeddings, so operators check med-ask before updating.

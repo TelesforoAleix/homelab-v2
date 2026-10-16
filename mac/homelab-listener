@@ -19,6 +19,7 @@ PORT = 8091
 COPY_TIMEOUT = 180
 LABEL = "org.homelab.listener"
 SCRIPT = Path(__file__).resolve()
+installed_command = runpy.run_path(str(SCRIPT.with_name("installed_tools.py")))["command"]
 STATE = Path.home() / ".local/state/homelab-listener"
 PLIST = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
 CARD = Path("/Volumes/SD Card")
@@ -197,8 +198,8 @@ def agent(command):
         PLIST.parent.mkdir(parents=True, exist_ok=True)
         settings = {
             "Label": LABEL,
-            "ProgramArguments": [sys.executable, str(SCRIPT), "serve"],
-            "WorkingDirectory": str(SCRIPT.parent.parent),
+            "ProgramArguments": installed_command("homelab-listener", "serve"),
+            "WorkingDirectory": str(Path(installed_command("homelab-listener")[1]).parent),
             "EnvironmentVariables": {
                 "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                 "PYTHONUNBUFFERED": "1",

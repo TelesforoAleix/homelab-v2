@@ -212,9 +212,13 @@ def test_launchd_lifecycle_and_private_plist(monkeypatch, tmp_path):
         return subprocess.CompletedProcess(args, 0, b"state = running")
 
     monkeypatch.setattr(listener, "launchctl", launchctl)
+    installed = tmp_path / "installed/homelab-listener"
+    monkeypatch.setattr(
+        listener, "installed_command", lambda name, *args: ["/fixed/python3", str(installed), *args]
+    )
     listener.agent("install")
     settings = plistlib.loads(listener.PLIST.read_bytes())
-    assert settings["ProgramArguments"] == [listener.sys.executable, str(SCRIPT), "serve"]
+    assert settings["ProgramArguments"] == ["/fixed/python3", str(installed), "serve"]
     assert settings["KeepAlive"] is True
     assert settings["RunAtLoad"] is True
     assert settings["Umask"] == 0o077

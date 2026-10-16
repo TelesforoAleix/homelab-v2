@@ -4,12 +4,12 @@
 set -euo pipefail
 
 MAC_DIR="${0:A:h}"
-REPO="${MAC_DIR:h}"
+INSTALLED="$HOME/Library/Application Support/homelab/mac"
+[[ "$MAC_DIR" = "$INSTALLED" ]] || exec "$INSTALLED/install-menu-bar.sh" "$@"
 APP="$HOME/Applications/HomeLab.app"
 LABEL="org.homelab.menu"
 AGENT="$HOME/Library/LaunchAgents/$LABEL.plist"
-PYTHON="$REPO/.venv/bin/python3"
-[[ -x "$PYTHON" ]] || PYTHON="$(command -v python3)"
+PYTHON="$(/usr/bin/plutil -extract python raw -o - "$INSTALLED/install.json")"
 
 swift build --package-path "$MAC_DIR/MenuBar" -c release
 BINARY="$(swift build --package-path "$MAC_DIR/MenuBar" -c release --show-bin-path)/HomeLabMenuBar"
@@ -21,7 +21,7 @@ rm -rf "$APP"
 /usr/bin/install -d -m 0755 "$APP/Contents/MacOS" "$HOME/Library/LaunchAgents"
 /usr/bin/install -m 0755 "$BINARY" "$APP/Contents/MacOS/HomeLabMenuBar"
 
-# The app runs the same command and interpreter as the profile LaunchAgent: this checkout.
+# The app and profile LaunchAgent use the installed command and recorded interpreter.
 INFO="$APP/Contents/Info.plist"
 /usr/bin/plutil -create xml1 "$INFO"
 for key value in \

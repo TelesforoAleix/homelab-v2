@@ -164,6 +164,13 @@ to zero. The helper refuses Inference without a complete bounded recovery record
 Working settings are validated, then ignored without rewriting the private configuration.
 Manual changes are compared to observed profiles, rather than trusting a selected-name flag.
 
+Mac login agents and the menu client's profile command run from the private installed copy
+at `~/Library/Application Support/homelab/mac/`, with one recorded Homebrew Python interpreter.
+`mac/install-mac-tools` accepts only a clean commit contained in freshly fetched `origin/main`,
+stamps that commit, rewrites existing agent paths without re-registering jobs, and restarts only
+affected loaded agents. Working-checkout branch switches cannot change live code. All profile,
+job and router state stays in its existing private folders. Menu builds use installed sources.
+
 The SwiftUI menu bar app under `mac/MenuBar` is a client of `homelab-profile`: it runs the
 command recorded in its bundle and renders its JSON (status, `plan-inference`, the guard's
 refusal, `waiting`, `usage`, `schedule`), holding no profile rules. It is ad hoc signed into

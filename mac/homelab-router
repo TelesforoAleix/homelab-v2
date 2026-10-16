@@ -10,10 +10,10 @@ import json
 import os
 import plistlib
 import re
+import runpy
 import shutil
 import socket
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -21,6 +21,7 @@ from pathlib import Path
 
 STATE = Path.home() / ".local/state/homelab-router"
 SCRIPT = Path(__file__).resolve()
+installed_command = runpy.run_path(str(SCRIPT.with_name("installed_tools.py")))["command"]
 PLIST = Path.home() / "Library/LaunchAgents/org.homelab.router.plist"
 LABEL = "org.homelab.router"
 BINARY = "/opt/homebrew/bin/llama-server"
@@ -235,7 +236,7 @@ def start():
     PLIST.parent.mkdir(parents=True, exist_ok=True)
     settings = {
         "Label": LABEL,
-        "ProgramArguments": [sys.executable, str(SCRIPT), "serve"],
+        "ProgramArguments": installed_command("homelab-router", "serve"),
         "RunAtLoad": True,
         "KeepAlive": True,
         "ThrottleInterval": 10,

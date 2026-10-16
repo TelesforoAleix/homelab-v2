@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Install clean main-contained Mac tools and refresh only affected login agents."""
+
+import fcntl
+import json
+import os
+import plistlib
+import runpy
+import subprocess
+import tempfile
+from pathlib import Path
+
+SOURCE = Path(__file__).resolve().parent
+ROOT = Path.home() / "Library/Application Support/homelab/mac"
+AGENTS = Path.home() / "Library/LaunchAgents"
+# All dependencies are stdlib. This stable Homebrew entry point is never a checkout venv.
+PYTHON = Path("/opt/homebrew/bin/python3")
+FILES = (
+    "homelab-listener",
+    "homelab-router",
+    "homelab-profile",
+    "homelab-copy",
+    "homelab-vision",
+    "homelab-embed",
+    "router-models.ini.in",
+    "installed_tools.py",
+    "install-menu-bar.sh",
+)
+DEPENDENCIES = {
+    "listener": {
+        "homelab-listener",
+        "homelab-copy",
+        "homelab-vision",
+        "homelab-router",
+        "installed_tools.py",
+    },
+    "router": {"homelab-router", "router-models.ini.in", "installed_tools.py"},
+    "profile": {"homelab-profile", "homelab-router", "installed_tools.py"},
+}
+
+
+def git(*args):
+    return subprocess.check_output(["git", "-C", str(SOURCE.parent), *args], text=True).strip()
+
+
+def revision():
+    if git("status", "--porcelain", "--untracked-files=all"):
+        raise ValueError("refusing dirty checkout (including untracked files)")
+    # Refresh the tracking ref so an obsolete local ref cannot authorize an install.
+    subprocess.run(["git", "-C", str(SOURCE.parent), "fetch", "origin", "main"], check=True)
+    commit = git("rev-parse", "HEAD")
+    if subprocess.run(
+        ["git", "-C", str(SOURCE.parent), "merge-base", "--is-ancestor", commit, "origin/main"]
+    ).returncode:
+        raise ValueError("refusing commit not contained in origin/main")
+    return commit
+
+
+def interpreter():
+    value = str(PYTHON)
+    if not PYTHON.is_absolute() or not PYTHON.is_file():
+        raise ValueError("install Homebrew Python at /opt/homebrew/bin/python3 first")
+    subprocess.run(
+        [
+            value,
+            "-c",
+            "import sys; assert sys.version_info >= (3, 11); assert sys.prefix == sys.base_prefix",
+        ],
+        check=True,
+    )
+    return value
+
+
+def contents(python):
+    files = {name: (SOURCE / name).read_bytes() for name in FILES}
+    for name in git("ls-files", "--", "mac/MenuBar").splitlines():
+        path = SOURCE.parent / name
+        files[str(path.relative_to(SOURCE))] = path.read_bytes()
+    # Manual invocations and subprocesses use the same recorded interpreter as launchd.
+    for name, data in files.items():
+        if data.startswith(b"#!/usr/bin/env python3\n"):
+            files[name] = ("#!" + python + "\n").encode() + data.split(b"\n", 1)[1]
+    return files
+
+
+def rewrite(payload, command):
+    """Keep calendar/flags and job identity intact; jobs.json is never touched."""
+    updated = dict(payload)
+    args = payload["ProgramArguments"]
+    # Accept both direct script execution and python + script from older installs.
+    index = next(i for i, arg in enumerate(args) if Path(arg).name == command)
+    updated["ProgramArguments"] = [*installed_command(command), *args[index + 1 :]]
+    if "WorkingDirectory" in updated:
+        updated["WorkingDirectory"] = str(ROOT)
+    return updated
+
+
+def installed_command(name):
+    return runpy.run_path(str(ROOT / "installed_tools.py"))["command"](name)
+
+
+def manifest_update(**values):
+    path = ROOT / "install.json"
+    manifest = json.loads(path.read_text())
+    manifest.update(values)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(manifest) + "\n")
+    temporary.chmod(0o600)
+    temporary.replace(path)
+
+
+def refresh_agents(changed):
+    domain = f"gui/{os.getuid()}"
+    pending = set(json.loads((ROOT / "install.json").read_text()).get("pending_agents", []))
+    for path in sorted(AGENTS.glob("org.homelab.*.plist")):
+        payload = plistlib.loads(path.read_bytes())
+        label = payload["Label"]
+        kind = next(
+            (
+                k
+                for k in DEPENDENCIES
+                if label == f"org.homelab.{k}"
+                or (k == "profile" and label.startswith("org.homelab.profile.job."))
+            ),
+            None,
+        )
+        if kind is None:
+            continue
+        updated = rewrite(payload, f"homelab-{kind}")
+        if updated == payload and not (DEPENDENCIES[kind] & changed) and label not in pending:
+            continue
+        service = f"{domain}/{label}"
+        observed = subprocess.run(["/bin/launchctl", "print", service], capture_output=True)
+        active = observed.returncode == 0
+        if label.startswith("org.homelab.profile.job.") and b"state = running" in (
+            observed.stdout or b""
+        ):
+            raise ValueError(f"{label} is running; wait for completion and rerun installer")
+        restart = active or label in pending
+        if restart:
+            pending.add(label)
+            manifest_update(pending_agents=sorted(pending))
+        if active:
+            subprocess.run(["/bin/launchctl", "bootout", service], check=True)
+        path.write_bytes(plistlib.dumps(updated))
+        path.chmod(0o600)
+        if restart:
+            subprocess.run(["/bin/launchctl", "bootstrap", domain, str(path)], check=True)
+            pending.remove(label)
+            manifest_update(pending_agents=sorted(pending))
+        print(f"updated {label}: {updated['ProgramArguments'][1]}")
+
+
+def install():
+    commit = revision()
+    python = interpreter()
+    files = contents(python)
+    ROOT.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    ROOT.parent.chmod(0o700)
+    with (ROOT.parent / "install.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        changed = {
+            name
+            for name, data in files.items()
+            if not (ROOT / name).is_file() or (ROOT / name).read_bytes() != data
+        }
+        previous = ROOT / "install.json"
+        if previous.exists() and json.loads(previous.read_text())["python"] != python:
+            changed.update(FILES)
+        old = json.loads(previous.read_text()) if previous.exists() else {}
+        changed.update(old.get("pending_changes", []))
+        removed = set(old.get("files", [])) - files.keys()
+        changed.update(removed)
+        # Stage all files before replacing any live file. Each replacement is atomic.
+        with tempfile.TemporaryDirectory(dir=ROOT.parent) as temporary:
+            stage = Path(temporary)
+            for name, data in files.items():
+                path = stage / name
+                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                path.write_bytes(data)
+                path.chmod(0o700 if data.startswith(b"#!") else 0o600)
+            (stage / "install.json").write_text(
+                json.dumps(
+                    {
+                        "commit": commit,
+                        "python": python,
+                        "files": sorted(files),
+                        "pending_changes": sorted(changed),
+                        "pending_agents": old.get("pending_agents", []),
+                    }
+                )
+                + "\n"
+            )
+            (stage / "install.json").chmod(0o600)
+            ROOT.mkdir(exist_ok=True, mode=0o700)
+            ROOT.chmod(0o700)
+            for path in stage.rglob("*"):
+                if path.is_file():
+                    target = ROOT / path.relative_to(stage)
+                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    path.replace(target)
+        for name in removed:
+            (ROOT / name).unlink(missing_ok=True)
+        refresh_agents(changed)
+        app_info = Path.home() / "Applications/HomeLab.app/Contents/Info.plist"
+        info = plistlib.loads(app_info.read_bytes()) if app_info.exists() else {}
+        menu_changed = any(name.startswith("MenuBar/") for name in changed)
+        if (
+            menu_changed
+            or "install-menu-bar.sh" in changed
+            or info.get("HomeLabPython") != python
+            or info.get("HomeLabProfileCommand") != str(ROOT / "homelab-profile")
+        ):
+            subprocess.run([str(ROOT / "install-menu-bar.sh")], check=True)
+        manifest_update(pending_changes=[], pending_agents=[])
+        print(f"Mac tools installed: {commit}; interpreter: {python}")
+
+
+if __name__ == "__main__":
+    os.umask(0o077)
+    try:
+        install()
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise SystemExit(f"Mac tools install failed: {error}") from None

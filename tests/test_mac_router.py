@@ -75,6 +75,11 @@ def test_utun_fallback_ignores_wifi(monkeypatch):
 
 
 def setup_paths(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        router,
+        "installed_command",
+        lambda name, *args: ["/fixed/python3", "/installed/" + name, *args],
+    )
     state = tmp_path / "state"
     state.mkdir(mode=0o700)
     monkeypatch.setattr(router, "STATE", state)
@@ -181,7 +186,7 @@ def test_start_installs_login_agent_without_private_values_in_output(monkeypatch
     monkeypatch.setattr(router, "launchctl", launch)
     router.start()
     settings = router.plistlib.loads(router.PLIST.read_bytes())
-    assert settings["ProgramArguments"] == [sys.executable, str(router.SCRIPT), "serve"]
+    assert settings["ProgramArguments"] == ["/fixed/python3", "/installed/homelab-router", "serve"]
     assert settings["RunAtLoad"] and settings["KeepAlive"]
     assert settings["Umask"] == 0o077
     assert settings["StandardOutPath"] == settings["StandardErrorPath"] == "/dev/null"
