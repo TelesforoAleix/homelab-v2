@@ -15,6 +15,14 @@ jobs:
       - run: uv sync --group benchmark
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - name: Validate node shell and runtime configuration
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          bash -n node/usr/local/sbin/data-volume.sh
+          shellcheck node/usr/local/sbin/*.sh
+          dockerd --validate --config-file=node/etc/docker/daemon.json
+          containerd --config node/etc/containerd/config.toml config dump > /dev/null
       - run: uv run pytest
       - run: docker build -t homelab:ci .
       - name: Verify the pinned LiteLLM image without external networking or real secrets

@@ -28,8 +28,19 @@ server), `llama-embed-large` (CPU Qwen3-Embedding-4B) and `litellm`. Only `api` 
 port, on loopback.
 `node/etc/systemd/system/homelab.service` wraps the stack so it starts after the encrypted
 volume is unlocked (`homelab-data.target`) and
-stops with it. Brain and the corpus are bind-mounted read-only; Postgres data and model files
-live on the volume.
+stops with it. Brain and the corpus are bind-mounted read-only; Postgres data stays on main.
+Models, downloaded sources and generated images belong on the second SSD at
+`/srv/homelab-bulk`. Its single LUKS filesystem holds `docker/`, `containerd/`, `models/`
+and client folders. Main holds a root-only 4096-byte key (0400); bulk also has an independent
+owner passphrase slot, so loss of either SSD does not prevent recovering the other.
+
+Both volumes use noauto crypttab/fstab entries. `data-volume.sh unlock` opens main with
+the owner’s passphrase, opens bulk with that key, mounts both, starts containerd and Docker
+(with its socket), then starts the data target and clients. Retry after partial unlock is safe.
+Lock stops clients and runtimes before closing bulk, then main. Docker, its socket and
+containerd are disabled at boot and have mount conditions on both filesystems. Their drop-ins
+order them after the mounts and stop them with the data target. Neither root is written while
+locked. Docker’s default builder uses periodic GC with a 50 GB target, not a hard quota.
 
 Volume users declare `ConditionPathIsMountPoint=/srv/homelab`, `After=homelab-data.target`,
 `PartOf=homelab-data.target` and `WantedBy=homelab-data.target`. They do not require that target
@@ -52,12 +63,13 @@ is explicit. Bot code, its unit, credential and failure drop-ins, and the narrow
 are recorded here. Private allowlists and secret credential contents stay outside this tree.
 
 Base SSH, ufw, Docker, sysctl, console timeout and Wi-Fi configuration also live in `node/`;
-their installed modes are recorded in `AGENTS.md`. Recovery is the
+their installed modes are recorded in `AGENTS.md` and the rebuild runbook. Recovery is the
 [Rebuilding the node](docs/operations.md#rebuilding-the-node) procedure: no node backup, a public code
 clone, Brain from the owner's Mac, originals restored from an encrypted copy (or the
 owner's Mac corpus), re-ingestion and re-issued secrets.
-The rebuilt node needs no GitHub credential. Only the Samsung system disk is rebuilt; the
-deliberately unused Micron disk stays untouched.
+The rebuilt node needs no GitHub credential. Rebuild the Samsung independently; recover an
+existing Micron using its owner passphrase, never reformat it. Provision a blank replacement
+through the runbook.
 
 Every project's irreplaceable inputs live in `/srv/homelab/<project>-data/originals/`.
 The corpus lives at `/srv/homelab/homelab-v2-data/originals/corpus/`, mounted read-only.

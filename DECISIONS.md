@@ -568,3 +568,15 @@ recovery. Failure attempts to restore previous services and leaves the profiles 
 a failed restoration explicitly asks for a recovery switch. Custom state defers application,
 and paused Inference retains empty native presets until the existing AC resume. Other-profile
 edits and CLI changes to power/app/job fields still wait for a switch.
+
+**2026-10-16 — Independent encrypted bulk SSD for rebuildable storage.** The Micron holds
+one LUKS filesystem at `/srv/homelab-bulk` for Docker, containerd and client rebuildable files;
+models move there now. Both persistent runtime roots move by configuration because Docker
+29's containerd image store does not follow Docker's data-root. A 4096-byte root-only key
+on main unlocks bulk after main, and an owner passphrase slot recovers bulk without main.
+No TPM dependency is added. Docker/socket/containerd are disabled at boot and gated on both
+mounts; the existing unlock script starts them before the data target. Host alerts remain
+independent. Copy both roots with metadata intact and retain the renamed originals and old
+models until an owner reboot/unlock proof; cleanup is a separate approved deletion. The
+default Docker builder garbage-collects toward 50 GB. Databases and irreplaceable inputs
+stay on main, with originals covered by the weekly copy.

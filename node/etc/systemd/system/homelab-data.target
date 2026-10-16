@@ -1,6 +1,7 @@
 [Unit]
-Description=Encrypted data volume unlocked and mounted at /srv/homelab
+Description=Both encrypted volumes mounted and Docker ready
 ConditionPathIsMountPoint=/srv/homelab
-Requires=srv-homelab.mount
-After=srv-homelab.mount
-# No [Install] section, on purpose: nothing pulls this in at boot. The unlock script starts it.
+ConditionPathIsMountPoint=/srv/homelab-bulk
+Requires=srv-homelab.mount srv-homelab\x2dbulk.mount docker.service containerd.service
+After=srv-homelab.mount srv-homelab\x2dbulk.mount docker.service containerd.service
+# No [Install]: the unlock script starts this, never boot.

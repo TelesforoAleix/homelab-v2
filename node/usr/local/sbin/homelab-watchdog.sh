@@ -17,9 +17,9 @@
 # The unit excludes AF_UNIX to block the model helper socket at the kernel
 # filter. systemctl also needs UNIX sockets, so findmnt alone probes the
 # mount. The unlock procedure mounts before starting homelab-data.target;
-# a mounted volume without the target starting is not a state it produces.
+# a partial unlock can leave a mount present without a running stack.
 #
-# No volume key material is read: /etc/crypttab contains no keyfile path,
+# No volume key material is read: crypttab contains only paths,
 # and findmnt is unprivileged. The calling unit owns retries. This script
 # composes text and delegates sends to the shared homelab-notify.sh.
 #
@@ -86,17 +86,18 @@ classify_boot() {
 volume_state() {
     if ! awk '$1 !~ /^#/ && $1 == "homelab-data" { f=1 } END { exit !f }' "$CRYPTTAB" 2>/dev/null; then
         STATE="not configured on this node"
-    elif findmnt -n "$MOUNT" >/dev/null 2>&1; then
+    elif findmnt -rn --mountpoint "$MOUNT" >/dev/null 2>&1 \
+        && findmnt -rn --mountpoint /srv/homelab-bulk >/dev/null 2>&1; then
         STATE="unlocked"
     else
         STATE="LOCKED -- ssh homelab && sudo data-volume.sh unlock"
     fi
 }
 
-classify_boot
+classify_boot -1
 volume_state
 
-MESSAGE="$(printf 'Home Lab back up. Down ~%dm, %s. Data volume: %s' "$DOWN_MIN" "$CLASS" "$STATE")"
+MESSAGE="$(printf 'Home Lab back up. Down ~%dm, %s. Data volumes: %s' "$DOWN_MIN" "$CLASS" "$STATE")"
 
 # Logged before sending: journalctl -u homelab-watchdog.service -b shows
 # exactly what was (or would have been) sent, with no separate debug path to

@@ -229,7 +229,9 @@ def test_large_embeddings_are_private_cpu_only_and_hardened():
     assert large["restart"] == "unless-stopped"
     assert large["networks"] == ["default"] and "ports" not in large
     assert large["environment"]["LLAMA_CACHE"] == "/models"
-    assert large["volumes"] == ["${HOMELAB_MODELS_PATH:-/srv/homelab/models}/embed-large:/models"]
+    assert large["volumes"] == [
+        "${HOMELAB_MODELS_PATH:-/srv/homelab-bulk/models}/embed-large:/models"
+    ]
     command = shlex.split(large["command"])
     for flag, value in [
         ("--pooling", "last"),

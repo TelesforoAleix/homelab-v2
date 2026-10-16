@@ -1,0 +1,3 @@
+# Managed entries only: preserve unrelated installed entries when updating.
+homelab-data /dev/ubuntu-vg/data none luks,noauto,discard
+homelab-bulk /dev/disk/by-id/wwn-0x500a07511802f8bd-part1 /srv/homelab/.keys/homelab-bulk.key luks,noauto

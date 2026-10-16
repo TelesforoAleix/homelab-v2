@@ -3,5 +3,12 @@
   "log-opts": {
     "max-size": "10m",
     "max-file": "3"
+  },
+  "data-root": "/srv/homelab-bulk/docker",
+  "builder": {
+    "gc": {
+      "enabled": true,
+      "defaultKeepStorage": "50GB"
+    }
   }
 }
