@@ -1,18 +1,65 @@
 {
   "profiles": {
     "working": {
-      "services": ["embed-large-bulk", "cleanup", "voiceink"],
+      "services": {
+        "cleanup": {
+          "state": "on"
+        },
+        "embed-large-bulk": {
+          "state": "on request",
+          "allowed": [
+            "Qwen3-Embedding-4B"
+          ],
+          "default": "Qwen3-Embedding-4B"
+        },
+        "vision": {
+          "state": "off",
+          "allowed": [
+            "vision"
+          ],
+          "default": "vision"
+        },
+        "voiceink": {
+          "state": "on"
+        }
+      },
       "close_apps": [],
       "settings": {},
       "jobs": true
     },
     "inference": {
-      "services": ["vision", "embed-large-bulk"],
+      "services": {
+        "cleanup": {
+          "state": "off"
+        },
+        "embed-large-bulk": {
+          "state": "on request",
+          "allowed": [
+            "Qwen3-Embedding-4B"
+          ],
+          "default": "Qwen3-Embedding-4B"
+        },
+        "vision": {
+          "state": "on request",
+          "allowed": [
+            "vision"
+          ],
+          "default": "vision"
+        },
+        "voiceink": {
+          "state": "off"
+        }
+      },
       "close_apps": [],
-      "settings": {"powermode": 2, "sleep": 0, "gpu_limit_mb": 45056},
+      "settings": {
+        "powermode": 2,
+        "sleep": 0,
+        "gpu_limit_mb": 45056
+      },
       "jobs": true
     }
   },
   "return_seconds": 900,
-  "idle_seconds": 300
+  "idle_seconds": 300,
+  "version": 2
 }

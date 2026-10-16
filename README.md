@@ -26,7 +26,9 @@ Solid parts are built; dashed parts are planned.
 - Mac login agents run a stamped, private [installed copy from main](docs/operations.md#install-and-update-the-mac-tools),
   independent of the working checkout. Update with `git pull --ff-only` and `mac/install-mac-tools`.
 - The [Mac profile command](docs/operations.md#mac-usage-profiles) selects Working or Inference,
-  reports observed state as JSON, and returns to Working after idle inference. After 10
+  reports observed state as JSON, and returns to Working after idle inference. Each profile
+  sets services to off, on request, or on, with allowed models and a default from a private
+  registry; see [profile model policy](docs/operations.md#per-profile-service-and-model-policy). After 10
   continuous minutes on battery, Inference pauses its model services and resumes on AC.
   Working leaves the owner’s AC and Battery settings alone. Inference requires AC power,
   changes only AC power mode/sleep and the global GPU limit, and restores their recorded

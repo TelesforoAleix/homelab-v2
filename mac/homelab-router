@@ -25,6 +25,7 @@ installed_command = runpy.run_path(str(SCRIPT.with_name("installed_tools.py")))[
 PLIST = Path.home() / "Library/LaunchAgents/org.homelab.router.plist"
 LABEL = "org.homelab.router"
 BINARY = "/opt/homebrew/bin/llama-server"
+model_policy = runpy.run_path(str(SCRIPT.with_name("profile_models.py")))
 PORT = 8090
 IDLE_SECONDS = 600
 VISION = Path.home() / "vision-bench-outputs/models/Qwen3-VL-8B-Instruct-GGUF"
@@ -95,9 +96,14 @@ def record():
     return json.loads(path.read_text()) if path.exists() else None
 
 
-def api(address, path, timeout=2):
+def api(address, path, timeout=2, data=None):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(f"http://{check_address(address)}:{PORT}{path}", timeout=timeout) as response:
+    request = urllib.request.Request(
+        f"http://{check_address(address)}:{PORT}{path}",
+        data=json.dumps(data).encode() if data is not None else None,
+        headers={"Content-Type": "application/json"},
+    )
+    with opener.open(request, timeout=timeout) as response:
         return json.load(response)
 
 
@@ -116,6 +122,21 @@ def write_presets():
     status = public / "homelab-profile.json"
     if not status.exists():
         status.write_text('{"paused_on_battery": false}\n')
+    policy = STATE / "allowed.json"
+    saved_policy = json.loads(policy.read_text()) if policy.exists() else None
+    if isinstance(saved_policy, dict):
+        if saved_policy.get("version") != 2:
+            raise ValueError("invalid router policy")
+        registry = json.loads(model_policy["REGISTRY"].read_text())
+        rendered = model_policy["render"](saved_policy["services"], registry)
+        for entry in model_policy["presets"](saved_policy["services"], registry).values():
+            for key in ("model", "mmproj"):
+                if key in entry and not Path(entry[key]).is_file():
+                    raise ValueError("model or projector missing")
+        temp = STATE / "models.ini.tmp"
+        temp.write_text(rendered)
+        temp.replace(STATE / "models.ini")
+        return
     weights = VISION / "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
     projector = VISION / "mmproj-F16.gguf"
     embed = EMBED / "Qwen3-Embedding-4B-Q8_0.gguf"
@@ -125,6 +146,9 @@ def write_presets():
     if any(any(c in str(path) for c in "\n\r") for path in (weights, projector, embed)):
         raise ValueError("model paths cannot contain line breaks")
     template = SCRIPT.with_name("router-models.ini.in").read_text()
+    template = template.replace(
+        "load-on-startup = false", f"load-on-startup = false\nsleep-idle-seconds = {IDLE_SECONDS}"
+    )
     for key, path in (("VISION_MODEL", weights), ("PROJECTOR", projector), ("EMBED_MODEL", embed)):
         template = template.replace("@" + key + "@", str(path))
     policy = STATE / "allowed.json"
@@ -147,13 +171,21 @@ def write_presets():
 
 
 def router_args(address):
+    # This build treats zero as unlimited at runtime but rejects startup loads with
+    # a zero limit. Capacity for the whole registry prevents LRU eviction of on models.
+    registry_path = model_policy["REGISTRY"]
+    capacity = 4
+    if registry_path.exists():
+        registry = model_policy["validate_registry"](json.loads(registry_path.read_text()))
+        capacity = max(capacity, sum(len(models) for models in registry["services"].values()))
     return [
         BINARY,
         "--models-preset",
         str(STATE / "models.ini"),
         "--models-autoload",
-        "--sleep-idle-seconds",
-        str(IDLE_SECONDS),
+        # Idle policy lives in presets: CLI options override every preset.
+        "--models-max",
+        str(capacity),
         "--host",
         check_address(address),
         "--port",
@@ -302,7 +334,7 @@ def status():
     states = {
         row["id"]: row["status"]["value"]
         for row in models
-        if row["id"] in ("vision", "Qwen3-Embedding-4B")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", row["id"])
     }
     print(json.dumps({"models": states, **memory(saved["pid"])}))
     return 0

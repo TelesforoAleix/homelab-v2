@@ -26,7 +26,9 @@ SCHEDULE = Path.home() / ".config/homelab/night-window.json"
 AGENTS = Path.home() / "Library/LaunchAgents"
 VOICE = "com.prakashjoshipax.VoiceInk"
 CLEANUP = "org.mac-dictation.cleanup"
-MODELS = {"vision": "vision", "embed-large-bulk": "Qwen3-Embedding-4B"}
+model_policy = runpy.run_path(str(SCRIPT.with_name("profile_models.py")))
+MODELS = model_policy["ROUTED"]
+REGISTRY = model_policy["REGISTRY"]
 DEFAULTS = {
     "working": {
         "services": ["embed-large-bulk", "cleanup", "voiceink"],
@@ -65,6 +67,10 @@ def config():
     value = load(CONFIG, {})
     if not isinstance(value, dict) or not isinstance(value.get("profiles", {}), dict):
         raise ValueError("invalid profile configuration")
+    version = value.get("version", 1)
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError("unsupported profile version")
+    registry = model_policy["validate_registry"](load(REGISTRY, None)) if version == 2 else None
     profiles = copy.deepcopy(DEFAULTS)
     for name, overrides in value.get("profiles", {}).items():
         if (
@@ -75,12 +81,10 @@ def config():
             raise ValueError("invalid profile configuration")
         profiles[name].update(overrides)
     for name, profile in profiles.items():
-        if (
-            not isinstance(profile["services"], list)
-            or not all(isinstance(s, str) for s in profile["services"])
-            or set(profile["services"]) - SERVICES
-        ):
-            raise ValueError("unknown service")
+        if version == 2:
+            model_policy["validate_services"](profile["services"], registry)
+        else:
+            model_policy["legacy_services"](profile["services"])
         if not isinstance(profile["jobs"], bool):
             raise ValueError("jobs must be boolean")
         if not isinstance(profile["close_apps"], list):
@@ -98,6 +102,69 @@ def config():
         if value.get(key, 1) < 1:
             raise ValueError("idle intervals must be positive")
     return {**value, "profiles": profiles}
+
+
+def migrate():
+    """Explicit, repeatable migration; retain the exact original bytes once."""
+    cfg = config()  # Validate all old settings before writing anything.
+    if cfg.get("version") == 2:
+        return
+    backup = CONFIG.with_suffix(".json.v1.bak")
+    original = CONFIG.read_bytes() if CONFIG.exists() else None
+    if original is not None:
+        if backup.exists() and backup.read_bytes() != original:
+            raise ValueError("migration backup already exists with different content")
+        if not backup.exists():
+            with backup.open("xb") as handle:
+                handle.write(original)
+            backup.chmod(0o600)
+    lib = router()
+    registry = load(REGISTRY, None)
+    if registry is None:
+        registry = model_policy["initial_registry"](
+            SCRIPT.with_name("router-models.ini.in"), lib["VISION"], lib["EMBED"]
+        )
+    model_policy["validate_registry"](registry)
+    migrated = copy.deepcopy(cfg)
+    migrated["version"] = 2
+    for profile in migrated["profiles"].values():
+        profile["services"] = model_policy["services"](profile["services"])
+        model_policy["validate_services"](profile["services"], registry)
+    save(REGISTRY, registry)
+    save(CONFIG, migrated)
+
+
+def read_profiles():
+    return config()
+
+
+def write_profiles(value):
+    # Validate a prospective config without ever replacing the live file on failure.
+    if (
+        not isinstance(value, dict)
+        or type(value.get("version")) is not int
+        or value.get("version") != 2
+    ):
+        raise ValueError("use migrate first; writes require version 2")
+    registry = model_policy["validate_registry"](load(REGISTRY, None))
+    if not isinstance(value.get("profiles"), dict) or set(value["profiles"]) != set(DEFAULTS):
+        raise ValueError("both profiles required")
+    for name, profile in value["profiles"].items():
+        if not isinstance(profile, dict) or set(profile) != set(DEFAULTS[name]):
+            raise ValueError("invalid profile")
+        model_policy["validate_services"](profile["services"], registry)
+        validate_settings(profile["settings"], inference=name == "inference")
+        if not isinstance(profile["jobs"], bool) or not isinstance(profile["close_apps"], list):
+            raise ValueError("invalid profile")
+        if any(
+            not isinstance(app, str) or not re.fullmatch(r"[A-Za-z0-9.-]+", app)
+            for app in profile["close_apps"]
+        ):
+            raise ValueError("invalid apps")
+    for key in ("return_seconds", "idle_seconds"):
+        if key in value and (type(value[key]) is not int or value[key] < 1):
+            raise ValueError("invalid idle interval")
+    save(CONFIG, value)
 
 
 def validate_settings(settings, *, inference=False):
@@ -139,21 +206,34 @@ def router():
     return runpy.run_path(str(SCRIPT.with_name("homelab-router")))
 
 
+class ModelStates(dict):
+    """Transient native observations; paths/arguments are never included in status JSON."""
+
+
 def router_models():
     lib = router()
     saved = lib["record"]()
     if not lib["healthy"](saved):
         return {}
-    return {
-        row["id"]: row["status"]["value"] for row in lib["api"](saved["address"], "/models")["data"]
-    }
+    rows = lib["api"](saved["address"], "/models")["data"]
+    states = ModelStates({row["id"]: row["status"]["value"] for row in rows})
+    states.rows = {row["id"]: row for row in rows}
+    return states
 
 
 def set_models(allowed, *, paused=False):
     # Native reload removes disallowed presets AND unloads their children. No HTTP proxy.
     lib = router()
     policy = lib["STATE"] / "allowed.json"
-    save(policy, sorted(MODELS[name] for name in allowed if name in MODELS))
+    modern = isinstance(allowed, dict)
+    registry = model_policy["validate_registry"](load(REGISTRY, None)) if modern else None
+    rendered = model_policy["presets"](allowed, registry) if modern else None
+    save(
+        policy,
+        {"version": 2, "services": allowed}
+        if modern
+        else sorted(MODELS[name] for name in allowed if name in MODELS),
+    )
     if paused:
         save(lib["STATE"] / "public/homelab-profile.json", {"paused_on_battery": True})
     lib["write_presets"]()
@@ -162,9 +242,19 @@ def set_models(allowed, *, paused=False):
         raise ValueError("router unavailable; start it before switching")
     lib["api"](saved["address"], "/models?reload=1", timeout=120)
     actual = set(router_models())
-    expected = {MODELS[name] for name in allowed if name in MODELS}
+    expected = set(rendered) if modern else {MODELS[name] for name in allowed if name in MODELS}
     if actual != expected:
         raise ValueError("router did not enforce presets; switch incomplete")
+    if modern:
+        for model, options in rendered.items():
+            if options["load-on-startup"] == "true":
+                if router_models().get(model) == "unloaded":
+                    lib["api"](saved["address"], "/models/load", timeout=300, data={"model": model})
+                # Load acknowledges spawning, not readiness. Native props autoload waits
+                # for loading children and wakes sleeping ones, without generating content.
+                lib["api"](saved["address"], f"/props?model={model}", timeout=300)
+                if router_models().get(model) != "loaded":
+                    raise ValueError("on model did not load; switch incomplete")
     if not paused:
         save(lib["STATE"] / "public/homelab-profile.json", {"paused_on_battery": False})
 
@@ -210,8 +300,22 @@ def service(name, start):
             if start:
                 raise ProfileRefusal("Inference is paused because the Mac is on battery")
             return
-        current = {key for key, model in MODELS.items() if model in router_models()}
-        set_models(current | {name} if start else current - {name})
+        cfg = config()
+        if cfg.get("version") == 2:
+            policy = load(router()["STATE"] / "allowed.json", {})
+            current = policy.get("services") if isinstance(policy, dict) else None
+            if current is None:
+                current = model_policy["legacy_services"](
+                    [s for s, model in MODELS.items() if model in router_models()]
+                    + (["cleanup"] if cleanup_running() else [])
+                    + (["voiceink"] if app_running(VOICE) else [])
+                )
+            current = copy.deepcopy(current)
+            current[name]["state"] = "on request" if start else "off"
+            set_models(current)
+        else:
+            current = {key for key, model in MODELS.items() if model in router_models()}
+            set_models(current | {name} if start else current - {name})
     elif name == "voiceink":
         if app_running(VOICE) != start:
             app(VOICE, start)
@@ -330,6 +434,35 @@ def snapshot(cfg):
     }
     states["cleanup"] = {"running": cleanup_running()}
     states["voiceink"] = {"running": app_running(VOICE)}
+    if cfg.get("version") == 2:
+        registry = model_policy["validate_registry"](load(REGISTRY, None))
+        policy = load(router()["STATE"] / "allowed.json", {})
+        legacy_runtime = not isinstance(policy, dict)
+        active = (
+            policy.get("services")
+            if not legacy_runtime
+            else model_policy["legacy_services"](
+                [s for s, model in MODELS.items() if model in models]
+                + [s for s in ("cleanup", "voiceink") if states[s]["running"]]
+            )
+        )
+        for service in MODELS:
+            setting = active[service]
+
+            def observed_model(model):
+                key = MODELS[service] if legacy_runtime else f"{service}-{model}"
+                return models.get(key, "disallowed")
+
+            states[service].update(
+                configured_state=setting["state"],
+                allowed_models=setting["allowed"],
+                default=setting["default"],
+                models={m: observed_model(m) for m in setting["allowed"]},
+                state=observed_model(setting["default"]),
+            )
+            states[service]["allowed"] = any(
+                observed_model(m) != "disallowed" for m in setting["allowed"]
+            )
     observed = settings()
     record = load(STATE / "session.json", {})
     paused = bool(record.get("return_pending") and record.get("paused"))
@@ -340,13 +473,38 @@ def snapshot(cfg):
     }
     matches = []
     for name, profile in cfg["profiles"].items():
-        allowed = set(profile["services"])
+        allowed = model_policy["enabled"](profile["services"])
         if name == "inference" and paused:
             allowed -= set(MODELS)
         services_match = all(states[s]["allowed"] == (s in allowed) for s in MODELS)
         services_match &= all(
             states[s]["running"] == (s in allowed) for s in ("cleanup", "voiceink")
         )
+        if cfg.get("version") == 2 and not (name == "inference" and paused):
+            wanted = model_policy["presets"](profile["services"], registry)
+            expected_names = set(wanted)
+            if legacy_runtime:
+                expected_names = {MODELS[s] for s in MODELS if s in allowed}
+                # Legacy children always sleep and cannot satisfy a pinned-on policy.
+                services_match &= not any(profile["services"][s]["state"] == "on" for s in MODELS)
+            services_match &= set(models) == expected_names
+            services_match &= all(active[s] == profile["services"][s] for s in MODELS)
+            if not legacy_runtime and hasattr(models, "rows"):
+                for model, options in wanted.items():
+                    row = models.rows.get(model, {})
+                    aliases = set(filter(None, options["alias"].split(",")))
+                    services_match &= set(row.get("aliases", [])) == aliases
+                    args = row.get("status", {}).get("args", [])
+                    try:
+                        sleep = args[args.index("--sleep-idle-seconds") + 1]
+                    except (ValueError, IndexError):
+                        sleep = "-1"
+                    services_match &= sleep == options["sleep-idle-seconds"]
+            services_match &= all(
+                models.get(m) == "loaded"
+                for m, opts in wanted.items()
+                if opts["load-on-startup"] == "true"
+            )
         expected_settings = profile["settings"]
         if name == "inference" and record.get("return_pending") and (paused or not on_ac):
             expected_settings = {k: v for k, v in expected_settings.items() if k != "powermode"}
@@ -359,11 +517,17 @@ def snapshot(cfg):
             and not any(apps[bundle] for bundle in profile["close_apps"])
         ):
             matches.append(name)
+    for service in ("cleanup", "voiceink"):
+        states[service]["configured_state"] = "on" if states[service]["running"] else "off"
     # Test mode never claims that skipped system settings were applied.
     profile = matches[0] if matches else "custom"
     return {
         "profile": profile,
         "services": states,
+        "profiles": {
+            name: model_policy["services"](profile["services"])
+            for name, profile in cfg["profiles"].items()
+        },
         "settings": observed,
         "apps": apps,
         "settings_skipped": bool(record.get("skip_settings")),
@@ -415,7 +579,7 @@ def switch(name, cfg, confirm=False, skip=False, automatic=False, scheduled=Fals
     # Record recovery intent before quitting: cancellation/crashes retain a recovery record.
     for svc in ("cleanup", "voiceink"):
         present = cleanup_running() if svc == "cleanup" else app_running(VOICE)
-        desired = svc in target["services"]
+        desired = svc in model_policy["enabled"](target["services"])
         if name == "working" and record.get("return_pending"):
             desired = svc in record.get("stopped", [])
         if name == "inference" and present and not desired:
@@ -427,7 +591,9 @@ def switch(name, cfg, confirm=False, skip=False, automatic=False, scheduled=Fals
             record.setdefault("closed", []).append(bundle)
             save(STATE / "session.json", record)
             app(bundle, False)
-    set_models(set(target["services"]))
+    set_models(
+        target["services"] if isinstance(target["services"], dict) else set(target["services"])
+    )
     skip = skip or (name == "working" and record.get("skip_settings", False))
     if not skip:
         run("/usr/bin/sudo", "-n", "/usr/local/sbin/homelab-profile-apply", name)
@@ -501,7 +667,11 @@ def tick(cfg):
                 ):
                     raise ValueError("resume settings do not match; Inference remains paused")
             try:
-                set_models(set(cfg["profiles"]["inference"]["services"]))
+                set_models(
+                    cfg["profiles"]["inference"]["services"]
+                    if cfg.get("version") == 2
+                    else set(cfg["profiles"]["inference"]["services"])
+                )
             except (OSError, ValueError, KeyError, subprocess.SubprocessError):
                 # Failed reload/verification must also leave the on-disk presets closed,
                 # so a router restart cannot bypass the still-paused session.
@@ -918,7 +1088,8 @@ def inference_plan(cfg):
     stop_services = [
         name
         for name in ("cleanup", "voiceink")
-        if status["services"].get(name, {}).get("running") and name not in inference["services"]
+        if status["services"].get(name, {}).get("running")
+        and name not in model_policy["enabled"](inference["services"])
     ]
     on_ac = on_ac_power()
     return {
@@ -969,7 +1140,15 @@ def job_worker(name, cfg):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("status", "install", "tick", "check-work"):
+    for command in (
+        "status",
+        "install",
+        "tick",
+        "check-work",
+        "migrate",
+        "profiles-show",
+        "profiles-set",
+    ):
         sub.add_parser(command)
     change = sub.add_parser("switch")
     change.add_argument("profile", choices=DEFAULTS)
@@ -1016,7 +1195,17 @@ def main():
             print(json.dumps(schedule_report()))
             return 0
         with lock():
-            if args.command == "status":
+            if args.command == "migrate":
+                migrate()
+                print(json.dumps({"version": 2, "migrated": True}))
+            elif args.command == "profiles-show":
+                print(json.dumps(read_profiles()))
+            elif args.command == "profiles-set":
+                import sys
+
+                write_profiles(json.load(sys.stdin))
+                print(json.dumps(read_profiles()))
+            elif args.command == "status":
                 print(json.dumps(snapshot(cfg)))
             elif args.command == "check-work":
                 work = vscode_work()
@@ -1033,7 +1222,7 @@ def main():
                 tick(cfg)
             elif args.command == "install":
                 if not CONFIG.exists():
-                    save(CONFIG, {"profiles": DEFAULTS})
+                    migrate()
                 install_agent("org.homelab.profile", ["tick"], StartInterval=30, RunAtLoad=True)
             elif args.command == "plan-inference":
                 print(json.dumps(inference_plan(cfg)))

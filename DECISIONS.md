@@ -511,3 +511,21 @@ install, rather than any checkout virtual environment. Existing job plists are r
 place without changing calendars, job commands or private state. Dependency comparisons restart
 only affected loaded agents; menu sources/path changes rebuild the installed app. Router refresh
 briefly interrupts vision and bulk embeddings, so operators check med-ask before updating.
+
+
+**2026-10-16 — Profile service states and model selection remain native router policy.**
+Private version-2 profiles give each routed service off/on request/on plus allowed ids and a
+default from sibling version-1 `models.json`. Explicit migration backs up the old file and
+copies the current two presets' exact flags, with unchanged default permissions. Non-router
+services remain off/on. The command alone reads/writes profiles for clients.
+
+One native preset per allowed model uses `<purpose>-<id>` as its canonical name and the purpose
+as the default's alias; the legacy embedding upstream name also aliases the default. This
+avoids duplicate child processes for default and explicit requests. On disables native idle
+sleep and uses startup load plus the native load API after reload; no supervisor is introduced.
+Sleep settings move out of router CLI because CLI overrides presets. Build 11429 supports
+unlimited runtime capacity with zero but rejects startup loads against zero, so capacity is
+sized to the entire registry (at least four); registry additions require a router restart.
+Two bounded LiteLLM patterns route explicit Mac model names without per-model gateway entries.
+The hook checks native ids/aliases, retains refusal sanitising and audits only the base purpose
+for dynamic names. All unavailable-profile refusals say “not available in this profile”.

@@ -1,4 +1,5 @@
-; Rendered to private state at installation. Keys are native llama.cpp arguments.
+; Migration seed for the private model registry; also supports legacy profiles.
+; Keys are native llama.cpp arguments.
 version = 1
 
 [*]

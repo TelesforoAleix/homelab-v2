@@ -116,12 +116,16 @@ Tailscale IPv4 on TCP 8090 under the existing node-only grant; 8092 is freed. Th
 Compose defaults. Native presets retain the exact model/projector and inference flags:
 vision uses context 16,384, one slot, cache RAM 0, flash attention and Metal `-ngl 99`;
 embeddings use last-token pooling, L2 normalisation, context 8192, batch/microbatch 2048,
-four threads and Metal `-ngl 99`. Preset names `vision` and `Qwen3-Embedding-4B` match the
-gateway's upstream names. Embeddings report the same real model and role wording as
+four threads and Metal `-ngl 99`. Native aliases `vision` and `Qwen3-Embedding-4B` match the
+gateway's unchanged upstream names and select each service's profile default. Embeddings report the same real model and role wording as
 `embed-large`, preserving its vector space.
 
-Autoload is enabled, with neither preset loaded at startup. Native idle sleep releases model
-weights and KV memory after 600 seconds by default, configured once in the command. Sleeping
+Autoload is enabled. Version-2 private profiles select off, on request or on for each routed
+service and its allowed models/default from a private version-1 registry. Presets are rendered
+only for allowed models; purpose aliases and `<purpose>-<id>` names share one child per model.
+On-request models sleep after 600 seconds. On models disable idle sleep, load natively at
+startup, and are explicitly loaded/verified through the native API after a profile switch.
+Router capacity covers the registry to prevent LRU eviction of on models. Sleeping
 children remain ready to reload. launchd owns process restart; llama.cpp owns model loading,
 cache discovery and idle sleep, using a private cache under router state. The usage profile
 command controls preset availability through native reload; no custom model runtime or
@@ -191,7 +195,7 @@ at the end only if no manual switch, service action or `schedule off` ended that
 The router's private preset allow-list omits disallowed services; native preset reload unloads
 removed children without request rewriting or changes to model flags. The gateway checks the
 Mac's native model list before inference. An absent preset receives a fixed purpose-specific
-HTTP 503 naming Inference; the existing content-free audit adds `profile_blocked=true` so
+HTTP 503 saying "not available in this profile"; the existing content-free audit adds `profile_blocked=true` so
 refusals are countable per purpose. Generic failures remain sanitised. Clients own waiting work.
 Light Mac jobs use individual launchd calendar agents and run only in an exact permitting
 profile, on AC power with idle input. Missed runs coalesce into a pending bit, retried through
@@ -247,7 +251,10 @@ Published nested settings are allowed only at their specified paths, preventing 
 overrides inside provider options. Provider image errors are sanitized at the HTTP boundary.
 
 Names are `purpose:tier`; image purposes and embeddings have no tiers. Clients
-choose tiers themselves. There is no wildcard, pass-through, default model or fallback.
+choose tiers themselves. Two bounded native LiteLLM patterns also admit `vision-<id>` and
+`embed-large-bulk-<id>` to the Mac router. The hook validates id syntax and native preset/alias
+availability before inference; arbitrary dynamic ids are never logged. No global wildcard,
+provider pass-through or fallback is offered.
 Unknown names, deployment model ids and unavailable tiers receive LiteLLM's default
 OpenAI-shaped 4xx and never reach a provider. The pre-call hook checks against the same config
 and enforces each alias's configured effort; middleware blocks provider/routing overrides.
