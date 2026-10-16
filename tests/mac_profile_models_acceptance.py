@@ -127,6 +127,10 @@ def cycle():
             fixture["services"]["embed-large-bulk"]["Qwen3-Embedding-4B"]
         )
         fixture["services"]["embed-large-bulk"]["acceptance-small"]["flags"]["c"] = "512"
+        # Available in the registry, deliberately absent from the profile's allow-list.
+        fixture["services"]["embed-large-bulk"]["forbidden"] = copy.deepcopy(
+            fixture["services"]["embed-large-bulk"]["acceptance-small"]
+        )
         private_write(REGISTRY, fixture)
         policy["embed-large-bulk"] = {
             "state": "on",
