@@ -37,7 +37,8 @@ Solid parts are built; dashed parts are planned.
   restore windows and tabs according to their own settings: Chrome’s “Continue where you left
   off” and macOS’s “Close windows when quitting an application” are owner choices.
 - A SwiftUI [menu bar app](docs/operations.md#menu-bar-app-usage-and-night-window) drives the
-  same command: one-click switching, per-service control, requests waiting for Inference,
+  same command: one-click switching, per-service control, a Profiles editor for service states,
+  allowed/default models and warning-only memory budgets, requests waiting for Inference,
   Claude/Codex usage, and an owner-set night window into Inference that is off by default.
 - Knowledge endpoints: `POST /v1/knowledge/query` and `/v1/knowledge/answer`; jobs persist in Postgres.
 - Hosted images use three `image-*` purposes through LiteLLM, with capability profiles at

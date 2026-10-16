@@ -11,6 +11,10 @@ struct HomeLabMenuBarApp: App {
             Image(systemName: Self.symbol(store.status))
         }
         .menuBarExtraStyle(.window)
+        Window("Profiles", id: "profiles") {
+            ProfilesView().environmentObject(store)
+        }
+        .defaultSize(width: 700, height: 720)
     }
 
     static func symbol(_ status: ProfileStatus?) -> String {

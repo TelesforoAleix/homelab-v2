@@ -154,7 +154,7 @@ def read_profiles():
     return config()
 
 
-def write_profiles(value):
+def validate_profiles(value):
     # Validate a prospective config without ever replacing the live file on failure.
     if (
         not isinstance(value, dict)
@@ -183,12 +183,67 @@ def write_profiles(value):
     for key in ("return_seconds", "idle_seconds"):
         if key in value and (type(value[key]) is not int or value[key] < 1):
             raise ValueError("invalid idle interval")
-    save(CONFIG, value)
+
+
+def preview_profiles(value):
+    try:
+        validate_profiles(value)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ProfileRefusal(
+            str(exc) if isinstance(exc, ValueError) else "invalid profile"
+        ) from None
+    registry = model_policy["validate_registry"](load(REGISTRY, None))
+    return {
+        "memory_budgets": budget_reports(value),
+        "model_registry": {
+            service: {name: {"memory_mb": entry["memory_mb"]} for name, entry in entries.items()}
+            for service, entries in registry["services"].items()
+        },
+    }
+
+
+def apply_profile_services(policy, *, paused=False):
+    # Reuse the switch's renderer/load verification, without re-entering Inference,
+    # recapturing recovery settings or quitting applications.
+    if paused:
+        set_models(set(), paused=True)
+    else:
+        set_models(policy)
+    for svc in ("cleanup", "voiceink"):
+        service(svc, policy[svc]["state"] == "on")
+
+
+def write_profiles(value):
+    report = preview_profiles(value)  # Whole-document validation before any side effect.
+    old = config()
+    current = snapshot(old)
+    name = current["profile"]
+    changed = name in old["profiles"] and (
+        value["profiles"][name]["services"] != old["profiles"][name]["services"]
+    )
+    if changed:
+        previous = model_policy["services"](old["profiles"][name]["services"])
+        try:
+            apply_profile_services(value["profiles"][name]["services"], paused=current["paused"])
+            save(CONFIG, value)
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+            try:
+                apply_profile_services(previous, paused=current["paused"])
+            except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+                raise ProfileRefusal(
+                    "Profiles were not saved; restoring services failed. Switch to the previous "
+                    "profile to recover."
+                ) from None
+            raise ProfileRefusal(
+                "Profiles were not saved; applying services failed and was rolled back."
+            ) from None
+    else:
+        save(CONFIG, value)
     import sys
 
-    for report in budget_reports(config()).values():
-        if report["warning"]:
-            print(report["warning"], file=sys.stderr)
+    for budget in report["memory_budgets"].values():
+        if budget["warning"]:
+            print(budget["warning"], file=sys.stderr)
 
 
 def validate_budget(value):
@@ -199,7 +254,11 @@ def validate_budget(value):
 def budget_reports(cfg):
     registry = model_policy["validate_registry"](load(REGISTRY, None))
     return {
-        name: model_policy["budget"](profile["services"], registry, profile["memory_budget_mb"])
+        name: model_policy["budget"](
+            profile["services"],
+            registry,
+            profile.get("memory_budget_mb", DEFAULTS[name]["memory_budget_mb"]),
+        )
         for name, profile in cfg["profiles"].items()
     }
 
@@ -1249,6 +1308,7 @@ def main():
         "migrate",
         "profiles-show",
         "profiles-set",
+        "profiles-preview",
     ):
         sub.add_parser(command)
     model = sub.add_parser("model").add_subparsers(dest="action", required=True)
@@ -1322,11 +1382,16 @@ def main():
             print(json.dumps(schedule_report()))
             return 0
         with lock():
+            cfg = config()
             if args.command == "migrate":
                 migrate()
                 print(json.dumps({"version": 2, "migrated": True}))
             elif args.command == "profiles-show":
                 print(json.dumps(read_profiles()))
+            elif args.command == "profiles-preview":
+                import sys
+
+                print(json.dumps(preview_profiles(json.load(sys.stdin))))
             elif args.command == "profiles-set":
                 import sys
 

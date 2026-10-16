@@ -671,6 +671,25 @@ unconfirmed `switch inference`; if the guard refuses, the app repeats the guard'
 work list and offers **Switch anyway** (`--confirm-kill`) or **Cancel**. Never use *Switch
 anyway* while a chat or job under VS Code must survive.
 
+**Profiles…** opens a separate editor in the same system style. Select Working or Inference;
+each service has a state picker (off/on request/on for router services, off/on for dictation).
+Routed services show available registered models with measured MiB, allowed-model checkboxes,
+and a default picker containing only allowed models. Removing the default selects the first
+remaining allowed model; an empty allowed list is a validation error, including for off services.
+The editable memory budget sits beside required memory, explicit unknowns and any warning.
+**Over budget still saves.** Budget previews and validation come from `profiles-preview`;
+**Save profiles** sends the whole document on stdin to `profiles-set`, preserving power settings,
+closed apps, jobs and timings. Command errors appear in the editor and the draft stays available
+for correction. Reload discards unsaved edits. Saving the current profile applies its services
+without re-entering Inference or recapturing recovery settings; the other profile waits until
+its next switch. Native reload can briefly interrupt requests with the existing 503 response.
+No file paths, downloads or model registration controls appear in the editor.
+
+After installing an update, the orchestrator can run `tests/mac_profiles_screen_acceptance.py`
+with the installed Python, from exact Working with `Qwen3-Embedding-0.6B` already registered.
+It exercises the editor’s stdin save path, verifies status plus native model ids/default aliases,
+and restores the original profiles in `finally`, printing only pass/fail information.
+
 **Build, install and start** (after installing the tools, outside any sandbox; it switches nothing):
 
 ```bash
@@ -750,7 +769,13 @@ nothing for usage, so there is nothing else to remove.
 
 Use the installed command for all profile file reads and writes. `profiles-show` emits the
 resolved configuration. `profiles-set` accepts a complete version-2 JSON object on stdin,
-validates before writing atomically, and takes effect at the next switch. Both Working and
+validates the whole document before any side effect and writes atomically. Edits to the
+currently observed profile’s services apply immediately through the switch’s native preset
+renderer, reload and on-model loading; edits to the other profile apply at its next switch.
+Custom state is left alone. An apply failure leaves the profiles file unchanged and attempts
+to restore the previous services; if that restoration fails, the command asks for a switch
+to the previous profile. Paused Inference keeps its router models paused until AC resumes it.
+Settings, app lists and job fields edited through the CLI still take effect at the next switch. Both Working and
 Inference must be present; their settings/app/job fields retain the existing rules.
 
 ```bash

@@ -188,7 +188,13 @@ job and router state stays in its existing private folders. Menu builds use inst
 
 The SwiftUI menu bar app under `mac/MenuBar` is a client of `homelab-profile`: it runs the
 command recorded in its bundle and renders its JSON (status, `plan-inference`, the guard's
-refusal, `waiting`, `usage`, `schedule`), holding no profile rules. It is ad hoc signed into
+refusal, `waiting`, `usage`, `schedule`), holding no profile rules. Its Profiles window reads through `profiles-show` and previews
+validation, registry memory and budgets through `profiles-preview`; whole-document stdin saves
+use `profiles-set`, preserving fields outside services and budgets. Current-profile service
+edits reuse native preset rendering/reload and on-model loads without re-entering Inference;
+other-profile edits wait for a switch. Validation precedes side effects, apply failures retain
+the old profiles file and attempt service rollback, and paused Inference remains paused.
+It is ad hoc signed into
 `~/Applications` and started at login by the `org.homelab.menu` user LaunchAgent; it uses only
 Apple's SDK. `waiting` makes two read-only calls over the node-only `homelab-agent` SSH account:
 the last 24 hours of `CONTAINER_NAME=homelab-litellm-1` journal lines with

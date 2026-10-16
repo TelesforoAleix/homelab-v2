@@ -276,7 +276,8 @@ def test_budget_sums_all_on_and_largest_on_request_including_unknown(files):
     assert m.budget(policy, registry, 20000)["required_mb"] == 6000
 
 
-def test_budget_migration_backup_and_warning_does_not_block_save(files, capsys):
+def test_budget_migration_backup_and_warning_does_not_block_save(files, capsys, monkeypatch):
+    monkeypatch.setattr(p, "snapshot", lambda cfg: {"profile": "custom", "paused": False})
     _, cfg, registry = migrate()
     for profile in cfg["profiles"].values():
         profile.pop("memory_budget_mb")
@@ -373,3 +374,160 @@ def test_add_and_measure_are_isolated_and_commit_under_lock(files, monkeypatch):
     args.action = "measure"
     args.name = "Qwen3-Embedding-4B"
     assert p.model_operation(args)["memory_mb"] == 1024
+
+
+@pytest.fixture
+def live_profile(files, monkeypatch):
+    _, cfg, registry = migrate()
+    policy = copy.deepcopy(cfg["profiles"]["working"]["services"])
+    live = {}
+    dictation = {"cleanup": True, "voiceink": True}
+
+    def set_models(value, *, paused=False):
+        p.save(r.STATE / "allowed.json", {"version": 2, "services": value})
+        live.clear()
+        for name, options in m.presets(value, registry).items():
+            live[name] = "loaded" if options["load-on-startup"] == "true" else "unloaded"
+
+    set_models(policy)
+    monkeypatch.setattr(p, "set_models", set_models)
+    monkeypatch.setattr(p, "service", lambda name, start: dictation.update({name: start}))
+    monkeypatch.setattr(p, "router_models", lambda: live.copy())
+    monkeypatch.setattr(p, "cleanup_running", lambda: dictation["cleanup"])
+    monkeypatch.setattr(
+        p, "app_running", lambda bundle: bundle == p.VOICE and dictation["voiceink"]
+    )
+    monkeypatch.setattr(p, "settings", lambda: {})
+    return cfg, registry, live, dictation
+
+
+def test_save_current_applies_models_default_states_and_keeps_profile(live_profile):
+    cfg, registry, live, dictation = live_profile
+    registry["services"]["embed-large-bulk"]["small"] = copy.deepcopy(
+        registry["services"]["embed-large-bulk"]["Qwen3-Embedding-4B"]
+    )
+    p.save(p.REGISTRY, registry)
+    policy = cfg["profiles"]["working"]["services"]
+    policy["embed-large-bulk"].update(state="on", allowed=["small"], default="small")
+    policy["cleanup"]["state"] = "off"
+    original_unedited = copy.deepcopy(cfg["profiles"]["inference"])
+    p.write_profiles(cfg)
+    assert live == {"embed-large-bulk-small": "loaded"}
+    assert dictation == {"cleanup": False, "voiceink": True}
+    assert p.snapshot(p.config())["profile"] == "working"
+    assert p.config()["profiles"]["inference"] == original_unedited
+    assert m.presets(policy, registry)["embed-large-bulk-small"]["alias"] == (
+        "embed-large-bulk,Qwen3-Embedding-4B"
+    )
+
+
+def test_save_other_profile_defers_application(live_profile, monkeypatch):
+    cfg, _, live, _ = live_profile
+    original = live.copy()
+    monkeypatch.setattr(p, "apply_profile_services", lambda *a, **kw: pytest.fail("must defer"))
+    cfg["profiles"]["inference"]["services"]["vision"]["state"] = "on"
+    p.write_profiles(cfg)
+    assert p.config()["profiles"]["inference"]["services"]["vision"]["state"] == "on"
+    assert live == original
+    assert p.snapshot(p.config())["profile"] == "working"
+
+
+def test_save_apply_failure_rolls_back_config_and_services(live_profile, monkeypatch):
+    cfg, _, live, dictation = live_profile
+    before = p.CONFIG.read_bytes()
+    original = live.copy()
+    apply = p.apply_profile_services
+    attempts = []
+
+    def fail_once(policy, **kwargs):
+        attempts.append(copy.deepcopy(policy))
+        apply(policy, **kwargs)
+        if len(attempts) == 1:
+            raise ValueError("native load failure")
+
+    monkeypatch.setattr(p, "apply_profile_services", fail_once)
+    cfg["profiles"]["working"]["services"]["vision"]["state"] = "on"
+    cfg["profiles"]["working"]["services"]["cleanup"]["state"] = "off"
+    with pytest.raises(p.ProfileRefusal, match="rolled back"):
+        p.write_profiles(cfg)
+    assert len(attempts) == 2
+    assert p.CONFIG.read_bytes() == before
+    assert live == original and dictation["cleanup"]
+    assert p.snapshot(p.config())["profile"] == "working"
+
+
+def test_preview_validates_without_writing_and_returns_only_public_registry(files):
+    _, cfg, _ = migrate()
+    before = p.CONFIG.read_bytes()
+    report = p.preview_profiles(cfg)
+    assert report["memory_budgets"] == p.budget_reports(cfg)
+    assert report["model_registry"]["vision"]["vision"] == {"memory_mb": None}
+    assert p.CONFIG.read_bytes() == before
+    cfg["profiles"]["working"]["services"]["vision"]["allowed"] = []
+    with pytest.raises(p.ProfileRefusal, match="invalid allowed"):
+        p.preview_profiles(cfg)
+    assert p.CONFIG.read_bytes() == before
+
+
+def test_save_paused_never_resumes_models_or_recaptures_recovery(live_profile, monkeypatch):
+    cfg, _, _, _ = live_profile
+    record = {"return_pending": True, "paused": True, "previous_sleep": 10}
+    p.save(p.STATE / "session.json", record)
+    monkeypatch.setattr(p, "snapshot", lambda cfg: {"profile": "inference", "paused": True})
+    calls = []
+    monkeypatch.setattr(p, "set_models", lambda value, **kwargs: calls.append((value, kwargs)))
+    cfg["profiles"]["inference"]["services"]["vision"]["state"] = "on"
+    p.write_profiles(cfg)
+    assert calls == [(set(), {"paused": True})]
+    assert p.load(p.STATE / "session.json", {}) == record
+
+
+def test_profiles_cli_stdin_preview_save_and_validation(live_profile, monkeypatch, capsys):
+    import io
+    import sys
+
+    cfg, _, live, _ = live_profile
+    cfg["profiles"]["working"]["services"]["vision"]["state"] = "on"
+    for command in ("profiles-preview", "profiles-set"):
+        monkeypatch.setattr(sys, "argv", [str(p.SCRIPT), command])
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(cfg)))
+        assert p.main() == 0
+        result = json.loads(capsys.readouterr().out)
+        assert ("memory_budgets" if command == "profiles-preview" else "profiles") in result
+    assert live["vision-vision"] == "loaded"
+    before = p.CONFIG.read_bytes()
+    cfg["profiles"]["working"]["memory_budget_mb"] = "bad"
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(cfg)))
+    with pytest.raises(SystemExit) as exit:
+        p.main()
+    assert exit.value.code == 1
+    assert "positive integer" in capsys.readouterr().err
+    assert p.CONFIG.read_bytes() == before
+
+
+def test_save_custom_preserves_manual_runtime_and_optional_budgets(live_profile, monkeypatch):
+    cfg, _, live, _ = live_profile
+    monkeypatch.setattr(p, "snapshot", lambda cfg: {"profile": "custom", "paused": False})
+    monkeypatch.setattr(p, "apply_profile_services", lambda *a, **kw: pytest.fail("must defer"))
+    for profile in cfg["profiles"].values():
+        profile.pop("memory_budget_mb")
+    cfg["profiles"]["working"]["services"]["vision"]["state"] = "on"
+    original = live.copy()
+    p.write_profiles(cfg)
+    assert live == original
+    assert p.config()["profiles"]["working"]["memory_budget_mb"] == 16384
+
+
+def test_failed_rollback_names_recovery_without_saving(live_profile, monkeypatch):
+    cfg, _, _, _ = live_profile
+    before = p.CONFIG.read_bytes()
+    cfg["profiles"]["working"]["services"]["vision"]["state"] = "on"
+
+    def fail(*args, **kwargs):
+        raise ValueError("private output must not escape")
+
+    monkeypatch.setattr(p, "apply_profile_services", fail)
+    with pytest.raises(p.ProfileRefusal, match="Switch to the previous profile") as failure:
+        p.write_profiles(cfg)
+    assert "private output" not in str(failure.value)
+    assert p.CONFIG.read_bytes() == before
