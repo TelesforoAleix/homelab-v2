@@ -129,7 +129,10 @@ Router capacity covers the registry to prevent LRU eviction of on models.
 The profile command registers Hugging Face downloads beside a model path from private
 configuration, refuses downloads leaving under 20 GiB, verifies published SHA-256 hashes,
 and test-loads on a separate temporary loopback server without changing live router policy.
-Measured Darwin process-family physical footprint, rounded up to MiB, fills `memory_mb`;
+The largest sampled Darwin process-family physical footprint plus the unique configured
+GGUF/projector file sizes, rounded up once to MiB, fills `memory_mb`. The file charge covers
+mapped weights excluded from physical footprint; it is a conservative budget allowance when
+backends copy weights into charged allocations, rather than an exact GPU-wired counter;
 failed loads register nothing and new models join no profile's allowed list. Optional profile
 budgets default to 16384/40960 MiB for Working/Inference. Status reports pinned model memory
 plus the largest on-request model, explicit unknowns and warning-only budget excesses. Sleeping
@@ -143,7 +146,8 @@ Generated presets and the LaunchAgent contain runtime paths only in private user
 Content logging is disabled and native output is discarded. Failed launcher invocations retain
 only a fixed startup-stage line in private state, never exception text or CLI output.
 `status` exposes only preset states and current router/family RSS and Darwin physical
-footprint. The router itself installs no wake lock.
+footprint. The router itself installs no wake lock. Its startup bind probe uses `SO_REUSEADDR` so closed
+health-check sockets in TIME_WAIT do not delay a restart; active listeners still block it.
 
 `mac/homelab-profile` observes services, app bundle ids and settings, reporting Working,
 Inference or custom as JSON. Private editable profiles and an atomic recovery record live

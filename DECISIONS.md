@@ -543,3 +543,17 @@ The owner replaced the proposed memory-specific refusal: llama.cpp `d81235049` r
 generic failed load and shared exit code, so the gateway says the Mac could not load this model
 now (often for lack of memory), and to try later. There is no memory precheck, upstream change,
 proxy or retry. Gateway deployment waits for the orchestrator's med-ask ingest check.
+
+
+**2026-10-16 — Charge mapped model files alongside measured footprint for profile budgets.**
+The Mac verification showed that Darwin physical footprint alone omits the mmapped GGUF
+weights and understates the loaded model's memory. Registration and measurement now add the
+configured weights and projector file sizes to the largest post-warmup process-family
+physical-footprint sample, rounding the byte sum up once to MiB. File identity deduplicates
+hard-link aliases. This follows the existing vision benchmark's file-plus-footprint method
+and accounts for all configured weights without a custom resident-page or Metal introspector.
+It deliberately provides a conservative budget allowance: copied weights may already appear
+in charged allocations, so some bytes can be counted twice. It is not an exact wired-memory
+counter or a promise about later requests. Preset flags, isolated loading and the warning-only
+budget rules remain unchanged. Existing registry entries require explicit remeasurement;
+the earlier footprint-only values cannot be corrected reliably without a load.
