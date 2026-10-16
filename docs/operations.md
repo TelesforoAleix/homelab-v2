@@ -468,7 +468,11 @@ not a profile change. An unavailable router reports its model services disallowe
 "$MAC_TOOLS/homelab-profile" job list
 "$MAC_TOOLS/homelab-profile" job add example --calendar '{"Hour":4,"Minute":0}' -- "$PWD/mac/profile-example-job"
 "$MAC_TOOLS/homelab-profile" job run example
+"$MAC_TOOLS/homelab-profile" job remove example
 ```
+
+To change a registered job's command, remove it and add it again with the same calendar. Removal
+refuses an unknown or currently running job and waits for its LaunchAgent to unload.
 
 Installation creates a private `~/.config/homelab/profiles.json` with editable defaults and
 `org.homelab.profile`, a user LaunchAgent that checks every 30 seconds. It does not switch
