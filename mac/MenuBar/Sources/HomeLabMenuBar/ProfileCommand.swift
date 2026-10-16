@@ -22,11 +22,11 @@ struct CommandResult: Sendable {
 }
 
 enum ProfileCommand {
-    static func run(_ arguments: [String]) async -> CommandResult {
-        await Task.detached(priority: .userInitiated) { runBlocking(arguments) }.value
+    static func run(_ arguments: [String], input: Data? = nil) async -> CommandResult {
+        await Task.detached(priority: .userInitiated) { runBlocking(arguments, input: input) }.value
     }
 
-    private static func runBlocking(_ arguments: [String]) -> CommandResult {
+    private static func runBlocking(_ arguments: [String], input: Data?) -> CommandResult {
         let info = Bundle.main.infoDictionary ?? [:]
         guard let python = info["HomeLabPython"] as? String,
               let script = info["HomeLabProfileCommand"] as? String
@@ -43,13 +43,19 @@ enum ProfileCommand {
         process.environment = environment
         let output = Pipe()
         let errors = Pipe()
-        process.standardInput = FileHandle.nullDevice
+        let stdin = Pipe()
+        if input == nil { process.standardInput = FileHandle.nullDevice }
+        else { process.standardInput = stdin }
         process.standardOutput = output
         process.standardError = errors
         do {
             try process.run()
         } catch {
             return CommandResult(status: -1, output: Data(), errors: "The profile command could not start.")
+        }
+        if let input {
+            stdin.fileHandleForWriting.write(input)
+            try? stdin.fileHandleForWriting.close()
         }
         // The command writes little to stderr, so reading stdout first cannot fill that pipe.
         let data = output.fileHandleForReading.readDataToEndOfFile()

@@ -557,3 +557,14 @@ in charged allocations, so some bytes can be counted twice. It is not an exact w
 counter or a promise about later requests. Preset flags, isolated loading and the warning-only
 budget rules remain unchanged. Existing registry entries require explicit remeasurement;
 the earlier footprint-only values cannot be corrected reliably without a load.
+
+**2026-10-16 — Apply current-profile service edits before committing the profiles file.**
+The Profiles window sends the complete document through the command on stdin, preserving
+fields it does not edit. `profiles-preview` shares save validation and budget calculation,
+so the app owns no memory policy. `profiles-set` observes the profile under the command lock,
+applies only changed services through the existing native preset reload/load path, then
+atomically saves. It does not re-enter Inference, quit configured apps or recapture power
+recovery. Failure attempts to restore previous services and leaves the profiles file unchanged;
+a failed restoration explicitly asks for a recovery switch. Custom state defers application,
+and paused Inference retains empty native presets until the existing AC resume. Other-profile
+edits and CLI changes to power/app/job fields still wait for a switch.

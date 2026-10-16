@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct MenuView: View {
+    @Environment(\.openWindow) private var openWindow
     @EnvironmentObject private var store: ProfileStore
     private let services = ["vision", "embed-large-bulk", "cleanup", "voiceink"]
     private let weekdays = ["M", "T", "W", "T", "F", "S", "S"]
@@ -19,6 +20,10 @@ struct MenuView: View {
             nightWindow
             Divider()
             HStack {
+                Button("Profiles…") {
+                    openWindow(id: "profiles")
+                    NSApp.activate()
+                }
                 Button("Reload") { Task { await store.reload() } }
                 Spacer()
                 Button("Quit HomeLab") { NSApplication.shared.terminate(nil) }
