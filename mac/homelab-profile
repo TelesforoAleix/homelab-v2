@@ -13,13 +13,13 @@ import re
 import runpy
 import shlex
 import subprocess
-import sys
 import time
 from datetime import UTC, datetime, timedelta
 from datetime import time as dtime
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve()
+installed_command = runpy.run_path(str(SCRIPT.with_name("installed_tools.py")))["command"]
 CONFIG = Path.home() / ".config/homelab/profiles.json"
 STATE = Path.home() / ".local/state/homelab-profile"
 SCHEDULE = Path.home() / ".config/homelab/night-window.json"
@@ -548,7 +548,7 @@ def install_agent(label, arguments, **extra):
     AGENTS.mkdir(parents=True, exist_ok=True)
     payload = {
         "Label": label,
-        "ProgramArguments": [sys.executable, str(SCRIPT), *arguments],
+        "ProgramArguments": installed_command("homelab-profile", *arguments),
         "Umask": 0o077,
         "StandardOutPath": "/dev/null",
         "StandardErrorPath": "/dev/null",

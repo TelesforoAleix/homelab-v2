@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -338,7 +339,7 @@ def test_root_helper_rejects_symlink(world, monkeypatch, tmp_path):
     "args", [[], ["switch", "custom"], ["switch", "inference", "--force"], ["start", "listener"]]
 )
 def test_cli_rejects_unsupported_arguments(args):
-    result = subprocess.run([p.sys.executable, str(p.SCRIPT), *args], capture_output=True)
+    result = subprocess.run([sys.executable, str(p.SCRIPT), *args], capture_output=True)
     assert result.returncode == 2
 
 
@@ -472,7 +473,7 @@ def test_battery_refusal_is_clear_and_precedes_side_effects(world, monkeypatch, 
     cfg, live, models, power = world
     before = copy.deepcopy((live, models, power))
     monkeypatch.setattr(p, "on_ac_power", lambda: False)
-    monkeypatch.setattr(p.sys, "argv", [str(p.SCRIPT), "switch", "inference", "--confirm-kill"])
+    monkeypatch.setattr(sys, "argv", [str(p.SCRIPT), "switch", "inference", "--confirm-kill"])
     with pytest.raises(SystemExit) as exc:
         p.main()
     assert exc.value.code == 1
@@ -1162,7 +1163,7 @@ def test_manual_action_ends_ownership_without_reentry(night, world, monkeypatch,
         p.switch("working", cfg, skip=True)
         p.switch("inference", cfg, skip=True)
     else:
-        monkeypatch.setattr(p.sys, "argv", [str(p.SCRIPT), "stop", "embed-large-bulk"])
+        monkeypatch.setattr(sys, "argv", [str(p.SCRIPT), "stop", "embed-large-bulk"])
         p.main()
     assert night_state()["owned"] is False
     p.schedule_tick(cfg, local(2026, 10, 20, 7, 0))
@@ -1246,11 +1247,11 @@ def test_inference_plan_lists_what_the_switch_would_stop(world, monkeypatch):
 
 def test_schedule_cli_prints_the_saved_window(world, monkeypatch, capsys):
     argv = [str(p.SCRIPT), "schedule", "set", "--start", "23:30", "--end", "06:00"]
-    monkeypatch.setattr(p.sys, "argv", [*argv, "--days", "fri,sat"])
+    monkeypatch.setattr(sys, "argv", [*argv, "--days", "fri,sat"])
     assert p.main() == 0
     shown = json.loads(capsys.readouterr().out)
     assert shown["enabled"] and shown["days"] == [4, 5] and shown["start"] == "23:30"
-    monkeypatch.setattr(p.sys, "argv", [*argv, "--days", "someday"])
+    monkeypatch.setattr(sys, "argv", [*argv, "--days", "someday"])
     with pytest.raises(SystemExit) as exit_:
         p.main()
     assert exit_.value.code == 1

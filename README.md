@@ -23,6 +23,8 @@ Solid parts are built; dashed parts are planned.
 - `embed-large` stays on the node for questions; `embed-large-bulk` uses the same vector space
   on the owner’s Mac through a login-managed llama.cpp router for bulk ingest. See the
   [Mac serving runbook](docs/operations.md#mac-bulk-embedding-serving).
+- Mac login agents run a stamped, private [installed copy from main](docs/operations.md#install-and-update-the-mac-tools),
+  independent of the working checkout. Update with `git pull --ff-only` and `mac/install-mac-tools`.
 - The [Mac profile command](docs/operations.md#mac-usage-profiles) selects Working or Inference,
   reports observed state as JSON, and returns to Working after idle inference. After 10
   continuous minutes on battery, Inference pauses its model services and resumes on AC.
