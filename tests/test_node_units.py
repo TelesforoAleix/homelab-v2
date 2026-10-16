@@ -25,7 +25,7 @@ ALERT_UNITS = {
 def host_modes() -> dict[str, tuple[int, int | None]]:
     rows = re.findall(
         r"^\| `(node/[^`]+/)` \| `(0[0-7]{3})` \| (`0[0-7]{3}`|—) \|$",
-        (ROOT / "AGENTS.md").read_text(),
+        (ROOT / "AGENTS.md").read_text() + "\n" + rebuild_section(),
         re.M,
     )
     return {
@@ -74,7 +74,12 @@ def test_rebuild_installs_every_host_file_at_its_mirrored_path_with_documented_m
                 assert mode == expected_mode
                 assert relative not in installed
                 installed[relative] = mode
-    assert set(installed) == {str(path.relative_to(ROOT)) for path in NODE_FILES}
+    # crypttab/fstab are merged entries; overwriting either host table loses OS entries.
+    tables = {"node/etc/crypttab", "node/etc/fstab"}
+    assert not tables.intersection(installed)
+    assert set(installed) == {str(path.relative_to(ROOT)) for path in NODE_FILES} - tables
+    for table in tables:
+        assert f"cat {table} >>" in rebuild_section()
 
 
 def test_rebuild_enables_every_installable_recorded_unit_and_no_trigger_only_unit():

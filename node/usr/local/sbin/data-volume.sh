@@ -1,81 +1,98 @@
 #!/usr/bin/env bash
-#
-# data-volume.sh -- unlock, lock and report the encrypted data volume.
-#
-# The owner unlocks over SSH after boot, with a passphrase. Three verbs give
-# the owner and watchdog a way to inspect the volume without a daemon.
-# cryptsetup open is the command whose wrong-passphrase refusal was tested;
-# the equivalent systemd-cryptsetup unit is not needed here.
-#
-# status only reads and needs no privilege; unlock and lock require root.
-# lock stops services, then unmounts, then closes the mapper. PartOf= stops
-# volume users before unmounting, avoiding a busy mount or ongoing writes.
-#
+# Owner's passphrase opens data; its root-only key opens bulk. No boot daemon.
+# Retry unlock after a partial failure; lock refuses to proceed past a failed stop.
 set -euo pipefail
 
 readonly NAME="homelab-data"
 readonly SOURCE="/dev/ubuntu-vg/data"
 readonly MAPPER="/dev/mapper/${NAME}"
 readonly MOUNT="/srv/homelab"
+readonly BULK_NAME="homelab-bulk"
+readonly BULK_SOURCE="/dev/disk/by-id/wwn-0x500a07511802f8bd-part1"
+readonly BULK_MAPPER="/dev/mapper/${BULK_NAME}"
+readonly BULK_MOUNT="/srv/homelab-bulk"
+readonly KEY="${MOUNT}/.keys/homelab-bulk.key"
 readonly TARGET="homelab-data.target"
 
 die() { printf 'data-volume: %s\n' "$*" >&2; exit 1; }
 need_root() { [ "$(id -u)" -eq 0 ] || die "'$1' needs root. Re-run with sudo."; }
+mounted() { findmnt -rn --mountpoint "$1" >/dev/null 2>&1; }
 
-status() {
-    printf '=== %s ===\n' "$NAME"
-    if [ -b "$MAPPER" ]; then printf 'mapper:   present  (%s)\n' "$MAPPER"
-    else                      printf 'mapper:   absent   -- the volume is LOCKED\n'; fi
+check_mount() {
+    local source
+    source="$(findmnt -rn -o SOURCE --mountpoint "$1")"
+    [ "$(readlink -f "$source")" = "$(readlink -f "$2")" ] \
+        || die "$1 is mounted from an unexpected source; refusing to continue"
+}
 
-    if findmnt -n "$MOUNT" >/dev/null 2>&1; then
-        printf 'mount:    %s\n' "$(findmnt -no SOURCE,FSTYPE,OPTIONS "$MOUNT")"
-        printf 'space:    %s\n' "$(df -h --output=size,used,avail,pcent "$MOUNT" | tail -1)"
+status_volume() {
+    printf '=== %s ===\n' "$1"
+    if [ -b "$2" ]; then printf 'mapper:   present\n'
+    else printf 'mapper:   absent -- LOCKED\n'; fi
+    if mounted "$3"; then
+        printf 'mount:    %s\n' "$(findmnt -rn -o SOURCE,FSTYPE,OPTIONS --mountpoint "$3")"
+        printf 'space:    %s\n' "$(df -h --output=size,used,avail,pcent "$3" | tail -1)"
     else
         printf 'mount:    not mounted\n'
     fi
+}
 
-    printf 'target:   %s\n' "$(systemctl is-active "$TARGET" 2>/dev/null || true)"
+status() {
+    status_volume "$NAME" "$MAPPER" "$MOUNT"
+    status_volume "$BULK_NAME" "$BULK_MAPPER" "$BULK_MOUNT"
     local unit state
-    for unit in $(systemctl show -p Wants --value "$TARGET" 2>/dev/null); do
+    for unit in "$TARGET" docker.service docker.socket containerd.service \
+        $(systemctl show -p Wants --value "$TARGET" 2>/dev/null); do
         state="$(systemctl is-active "$unit" 2>/dev/null || true)"
-        printf '  unit:   %-42s %s\n' "$unit" "$state"
+        printf 'unit: %-42s %s\n' "$unit" "$state"
     done
 }
 
 unlock() {
     need_root unlock
-    [ -b "$MAPPER" ] && die "already unlocked -- $MAPPER exists. Nothing to do."
-    [ -b "$SOURCE" ] || die "$SOURCE not found. Is the LV there? Run: sudo lvs ubuntu-vg"
+    if [ ! -b "$MAPPER" ]; then
+        [ -b "$SOURCE" ] || die "$SOURCE not found"
+        printf 'Opening %s. The passphrase is not echoed.\n' "$NAME"
+        cryptsetup open --allow-discards "$SOURCE" "$NAME"
+    fi
+    mounted "$MOUNT" || mount "$MOUNT"
+    check_mount "$MOUNT" "$MAPPER"
 
-    printf 'Opening %s as %s. The passphrase is not echoed.\n' "$SOURCE" "$NAME"
-    cryptsetup open --allow-discards "$SOURCE" "$NAME"   # --allow-discards: crypttab says `discard`
-    printf 'opened.\n'
+    if [ ! -b "$BULK_MAPPER" ]; then
+        [ -b "$BULK_SOURCE" ] || die "$BULK_SOURCE not found"
+        [ ! -L "$KEY" ] && [ -f "$KEY" ] \
+            && [ "$(stat -c '%u:%g:%a:%s' "$KEY")" = "0:0:400:4096" ] \
+            || die "bulk key must be a root:root 0400 regular file of 4096 bytes"
+        cryptsetup open --key-file "$KEY" "$BULK_SOURCE" "$BULK_NAME"
+    fi
+    mounted "$BULK_MOUNT" || mount "$BULK_MOUNT"
+    check_mount "$BULK_MOUNT" "$BULK_MAPPER"
 
-    mount "$MOUNT"
-    printf 'mounted %s.\n' "$MOUNT"
-
+    # Vendor Docker requires its socket and orders itself after containerd.
+    systemctl start containerd.service
+    systemctl start docker.service
+    systemctl is-active --quiet containerd.service docker.service
     systemctl start "$TARGET"
-    printf 'started %s.\n\n' "$TARGET"
     status
 }
 
 lock() {
     need_root lock
-    findmnt -n "$MOUNT" >/dev/null 2>&1 || [ -b "$MAPPER" ] || die "already locked. Nothing to do."
-
-    # Services, then mount, then key. See the header.
-    systemctl stop "$TARGET" || true
-    printf 'stopped %s and everything PartOf it.\n' "$TARGET"
-
-    if findmnt -n "$MOUNT" >/dev/null 2>&1; then
-        umount "$MOUNT" || die "umount failed -- something is still using $MOUNT. Try: sudo fuser -vm $MOUNT"
-        printf 'unmounted %s.\n' "$MOUNT"
+    # PartOf and After stop clients before Docker and containerd. Do not ignore
+    # failures: a failed stop must not be followed by closing either filesystem.
+    systemctl stop "$TARGET"
+    systemctl stop docker.service docker.socket
+    systemctl stop containerd.service
+    if mounted "$BULK_MOUNT"; then
+        check_mount "$BULK_MOUNT" "$BULK_MAPPER"
+        umount "$BULK_MOUNT"
     fi
-
-    if [ -b "$MAPPER" ]; then
-        cryptsetup close "$NAME"
-        printf 'closed %s -- the key is no longer in memory.\n\n' "$NAME"
+    if [ -b "$BULK_MAPPER" ]; then cryptsetup close "$BULK_NAME"; fi
+    if mounted "$MOUNT"; then
+        check_mount "$MOUNT" "$MAPPER"
+        umount "$MOUNT"
     fi
+    if [ -b "$MAPPER" ]; then cryptsetup close "$NAME"; fi
     status
 }
 

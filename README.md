@@ -46,6 +46,11 @@ Solid parts are built; dashed parts are planned.
 - [ARCHITECTURE.md](ARCHITECTURE.md) explains the boundaries and rules;
   [DECISIONS.md](DECISIONS.md) records the choices behind them.
 
+Docker state and rebuildable files live on the encrypted second SSD at `/srv/homelab-bulk`;
+databases, originals and corpus stay on `/srv/homelab`. After boot the owner unlocks main,
+which supplies bulk’s key, then Docker and the applications start. See
+[Rebuilding the node](docs/operations.md#rebuilding-the-node) for setup and recovery.
+
 ## Quick start
 
 ```bash
@@ -65,7 +70,7 @@ Running the stack needs a provisioned node; see the [operator runbook](docs/oper
 | `src/homelab/knowledge/` | LlamaIndex ingestion and retrieval |
 | `src/homelab/jobs/` | Procrastinate tasks and worker |
 | `config/litellm.yaml` | Model purposes and routes |
-| `node/` | Host files at their installed paths |
+| `node/` | Host files at their installed paths (table entries are merged) |
 | `mac/` | Usage profiles, measurements, model router and action listener |
 
 First version: [homelab-v1](https://github.com/TelesforoAleix/homelab-v1)
