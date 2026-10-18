@@ -1,0 +1,3 @@
+# Managed entries only: preserve the installed root, boot and swap entries.
+/dev/mapper/homelab-data /srv/homelab ext4 noauto,nofail,x-systemd.device-timeout=10s 0 2
+/dev/mapper/homelab-bulk /srv/homelab-bulk ext4 noauto,nofail,x-systemd.device-timeout=10s 0 2

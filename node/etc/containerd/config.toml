@@ -1,0 +1,4 @@
+# Docker's containerd image store has its own persistent root.
+disabled_plugins = ["cri"]
+root = "/srv/homelab-bulk/containerd"
+# Runtime sockets/state remain under /run/containerd (the vendor default).

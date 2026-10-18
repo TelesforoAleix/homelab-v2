@@ -4,6 +4,20 @@
 
 For a fresh node, follow [Rebuilding the node](#rebuilding-the-node). On the running node,
 connect with `ssh homelab` and unlock with `sudo data-volume.sh unlock` after each boot.
+The main passphrase opens `/srv/homelab`; its root-only key then opens `/srv/homelab-bulk`.
+Docker and containerd start next, then `homelab-data.target` and its three client services.
+`lock` stops the clients, Docker/socket and containerd before unmounting and closing bulk,
+then main. `status` reports both mounts and the runtime units. A partial unlock can be retried.
+The Telegram bot, watchdog and alerts remain available while locked.
+
+All clients put fetchable/rebuildable files (models, downloads, generated images) under
+`/srv/homelab-bulk/<client>/`. Databases, originals and corpus stay on `/srv/homelab`;
+only the `*-data/originals/` directories are included in the weekly copy. Models default to
+`/srv/homelab-bulk/models`, including both embedding servers. Docker uses
+`/srv/homelab-bulk/docker`, containerd uses `/srv/homelab-bulk/containerd`. The default Docker
+builder enables periodic GC with a 50 GB target; this is not a filesystem quota and active
+builds can temporarily exceed it. See [Docker GC](https://docs.docker.com/build/cache/garbage-collection/)
+and [the separate image store](https://docs.docker.com/engine/storage/containerd/).
 
 Host files live under `node/`: `node/<path>` installs at `/<path>`, owned by `root:root`.
 [AGENTS.md](../AGENTS.md#host-file-modes) records directory and file modes. For updates, use the
@@ -1105,8 +1119,8 @@ SSH accounts work through Tailscale.
 
 1. **Install Ubuntu and choose the system disk.** In the Ubuntu Server 26.04.1 LTS installer,
    select the **Samsung MZ7TY256, 238.5 GiB**, by model and size. Never identify the target by
-   `sda` or `sdb`: kernel names can swap between boots. Leave the **Micron MTFDDAV512TBN,
-   476.9 GiB**, deliberately unused, untouched. **Choosing the wrong disk in the installer
+   `sda` or `sdb`: kernel names can swap between boots. Leave an existing encrypted **Micron MTFDDAV512TBN,
+   476.9 GiB** untouched; recover it using its independent passphrase as described below. **Choosing the wrong disk in the installer
    is the one irreversible mistake in this procedure: the installer destroys that disk's
    data.** Check the model and size again before confirming the partition changes.
 
@@ -1123,7 +1137,7 @@ SSH accounts work through Tailscale.
    sudo vgs ubuntu-vg
    sudo lvs -o lv_name,lv_size ubuntu-vg
    sudo apt-get update
-   sudo apt-get install ca-certificates curl git rsync openssh-server lvm2 cryptsetup ufw iw chrony polkitd python3 openssl age
+   sudo apt-get install ca-certificates curl git rsync openssh-server lvm2 cryptsetup ufw iw chrony polkitd python3 openssl age parted
    ```
 
 2. **Create, format and register the encrypted data volume.** These commands apply only to
@@ -1141,13 +1155,16 @@ SSH accounts work through Tailscale.
    sudoedit /etc/crypttab /etc/fstab
    ```
 
-   Add exactly one entry to each file, leaving Ubuntu's existing entries intact:
+   Add these managed entries, leaving Ubuntu's existing entries intact. Bulk stays closed
+   until step 8 provisions or recovers it; its key path need not exist yet:
 
    ```text
    # /etc/crypttab
    homelab-data  /dev/ubuntu-vg/data  none  luks,noauto,discard
+   homelab-bulk /dev/disk/by-id/wwn-0x500a07511802f8bd-part1 /srv/homelab/.keys/homelab-bulk.key luks,noauto
    # /etc/fstab
    /dev/mapper/homelab-data  /srv/homelab  ext4  noauto,nofail,x-systemd.device-timeout=10s  0  2
+   /dev/mapper/homelab-bulk /srv/homelab-bulk ext4 noauto,nofail,x-systemd.device-timeout=10s 0 2
    ```
 
 3. **Install and join Tailscale.** Use the [vendor's apt repository](https://pkgs.tailscale.com/stable/)
@@ -1179,7 +1196,8 @@ SSH accounts work through Tailscale.
    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
    sudo apt-get update
    sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-   sudo docker version
+   sudo systemctl disable --now docker.service docker.socket containerd.service
+   sudo docker --version
    sudo docker compose version
    ```
 
@@ -1262,6 +1280,8 @@ SSH accounts work through Tailscale.
    sudo install -m 0600 -o root -g root node/etc/ssh/sshd_config.d/10-homelab-hardening.conf /etc/ssh/sshd_config.d/10-homelab-hardening.conf
    sudo install -m 0640 -o root -g root node/etc/ufw/after.rules node/etc/ufw/after6.rules node/etc/ufw/user.rules node/etc/ufw/user6.rules /etc/ufw/
    sudo install -m 0644 -o root -g root node/etc/docker/daemon.json /etc/docker/daemon.json
+   sudo install -d -m 0755 -o root -g root /etc/containerd
+   sudo install -m 0644 -o root -g root node/etc/containerd/config.toml /etc/containerd/config.toml
    sudo install -m 0644 -o root -g root node/etc/sysctl.d/99-homelab-swappiness.conf /etc/sysctl.d/99-homelab-swappiness.conf
    sudo install -m 0644 -o root -g root node/etc/profile.d/homelab-console-timeout.sh /etc/profile.d/homelab-console-timeout.sh
    sudo visudo -cf node/etc/sudoers.d/homelab-agent-v2
@@ -1276,6 +1296,14 @@ SSH accounts work through Tailscale.
    sudo install -m 0644 -o root -g root node/etc/systemd/system/homelab-notify@.service.d/*.conf /etc/systemd/system/homelab-notify@.service.d/
    sudo install -m 0644 -o root -g root node/etc/systemd/system/homelab-watchdog.service.d/*.conf /etc/systemd/system/homelab-watchdog.service.d/
    sudo install -m 0644 -o root -g root node/etc/systemd/system/homelab-telegram-bot.service.d/*.conf /etc/systemd/system/homelab-telegram-bot.service.d/
+   sudo install -d -m 0755 -o root -g root /etc/systemd/system/docker.service.d
+   sudo install -m 0644 -o root -g root node/etc/systemd/system/docker.service.d/data-volume.conf /etc/systemd/system/docker.service.d/data-volume.conf
+   sudo install -d -m 0755 -o root -g root /etc/systemd/system/docker.socket.d
+   sudo install -m 0644 -o root -g root node/etc/systemd/system/docker.socket.d/data-volume.conf /etc/systemd/system/docker.socket.d/data-volume.conf
+   sudo install -d -m 0755 -o root -g root /etc/systemd/system/containerd.service.d
+   sudo install -m 0644 -o root -g root node/etc/systemd/system/containerd.service.d/data-volume.conf /etc/systemd/system/containerd.service.d/data-volume.conf
+   sudo dockerd --validate --config-file=/etc/docker/daemon.json
+   sudo containerd --config /etc/containerd/config.toml config dump >/dev/null
    sudo visudo -c
    sudo sshd -t
    sudo systemd-analyze --generators=yes verify /etc/systemd/system/homelab.service /etc/systemd/system/homelab-data.target /etc/systemd/system/homelab-notify@.service /etc/systemd/system/homelab-watchdog.service /etc/systemd/system/homelab-watchdog.timer /etc/systemd/system/homelab-telegram-bot.service /etc/systemd/system/wifi-powersave-off.service /etc/systemd/system/homelab-copy-reminder.service /etc/systemd/system/homelab-copy-reminder.timer
@@ -1293,8 +1321,8 @@ SSH accounts work through Tailscale.
    ```bash
    sudo systemctl daemon-reload
    sudo systemctl reload ssh.service
-   sudo systemctl enable --now docker.service tailscaled.service chrony.service wifi-powersave-off.service
-   sudo systemctl restart docker.service
+   sudo systemctl disable docker.service docker.socket containerd.service
+   sudo systemctl enable --now tailscaled.service chrony.service wifi-powersave-off.service
    sudo systemctl enable homelab-telegram-bot.service homelab-watchdog.timer homelab-copy-reminder.timer
    sudo ufw default deny incoming
    sudo ufw default allow outgoing
@@ -1323,8 +1351,29 @@ SSH accounts work through Tailscale.
    ssh homelab-agent 'sudo -n true'
    ```
 
-8. **Unlock the volume.** Enter its new passphrase from the owner's password manager.
-   This is the same manual step required after every boot.
+8. **Provision or recover bulk, then unlock both volumes.** Follow the disk procedure
+   below. On a fresh rebuild, manually open and mount main first (its key directory does not
+   exist yet), then provision blank bulk. On an existing bulk disk, never format it: use the
+   owner's independent passphrase to open it, mount it, generate a replacement key on the new
+   main filesystem and add that key with `cryptsetup luksAddKey`. Keep its passphrase slot.
+   On this rebuild only, enter a root Bash shell and open main manually first:
+
+   ```bash
+   sudo -i
+   bash
+   set -euo pipefail
+   cryptsetup open --allow-discards /dev/ubuntu-vg/data homelab-data
+   mount /srv/homelab
+   install -d -m 0755 -o root -g root /srv/homelab-bulk
+   ```
+
+   For **blank bulk only**, run the disk inspection and partition blocks in the bulk section
+   below: set `DISK`, `PART`, `KEY` as shown there, run from `lsblk` through the `blkid` guard
+   and `test ! -e "$KEY"`, then the whole partition/encrypt block. Skip the migration backup,
+   copy, rename and cleanup blocks on a fresh rebuild. For **existing bulk**, use the recovery
+   block instead; the owner types its independent passphrase. Never run blank-disk formatting
+   on it. Both table entries were added in step 2. Exit the root shell before continuing.
+   Once both mounts and the key are present, the usual command is resumable.
 
    ```bash
    sudo data-volume.sh unlock
@@ -1340,10 +1389,10 @@ SSH accounts work through Tailscale.
    ```bash
    sudo git clone --branch main https://github.com/TelesforoAleix/homelab-v2.git /srv/homelab/homelab-v2
    sudo install -d -m 0775 -o aleix -g aleix /srv/homelab/brain
-   sudo install -d -m 0755 -o root -g root /srv/homelab/models /srv/homelab/postgres
-   sudo mkdir -p /srv/homelab/models/embed-large
-   sudo chown 10001:10001 /srv/homelab/models/embed-large
-   sudo chmod 0755 /srv/homelab/models/embed-large
+   sudo install -d -m 0755 -o root -g root /srv/homelab-bulk/models /srv/homelab/postgres
+   sudo mkdir -p /srv/homelab-bulk/models/embed-large
+   sudo chown 10001:10001 /srv/homelab-bulk/models/embed-large
+   sudo chmod 0755 /srv/homelab-bulk/models/embed-large
    ```
 
    **On the Mac**, copy notes, including hidden note files but excluding Git metadata:
@@ -1373,7 +1422,7 @@ SSH accounts work through Tailscale.
     sudo bash -c 'umask 077; read -r -s -p "new image gateway key: " K </dev/tty; echo; test -n "$K" || exit 1; printf "%s" "$K" > /srv/homelab/homelab-v2/secrets/image_gateway_api_key'
     sudo chown root:10001 /srv/homelab/homelab-v2/secrets/image_gateway_api_key
     sudo chmod 0440 /srv/homelab/homelab-v2/secrets/image_gateway_api_key
-    sudo bash -c 'umask 077; read -r -s -p "new hexadecimal database password: " P </dev/tty; echo; [[ "$P" =~ ^[[:xdigit:]]{32,}$ ]] || exit 1; printf "%s\n" "HOMELAB_DB_PASSWORD=$P" "HOMELAB_BRAIN_PATH=/srv/homelab/brain" "HOMELAB_CORPUS_PATH=/srv/homelab/homelab-v2-data/originals/corpus" "HOMELAB_POSTGRES_PATH=/srv/homelab/postgres" "HOMELAB_MODELS_PATH=/srv/homelab/models" > /srv/homelab/homelab-v2/.env'
+    sudo bash -c 'umask 077; read -r -s -p "new hexadecimal database password: " P </dev/tty; echo; [[ "$P" =~ ^[[:xdigit:]]{32,}$ ]] || exit 1; printf "%s\n" "HOMELAB_DB_PASSWORD=$P" "HOMELAB_BRAIN_PATH=/srv/homelab/brain" "HOMELAB_CORPUS_PATH=/srv/homelab/homelab-v2-data/originals/corpus" "HOMELAB_POSTGRES_PATH=/srv/homelab/postgres" "HOMELAB_MODELS_PATH=/srv/homelab-bulk/models" > /srv/homelab/homelab-v2/.env'
     sudo chown root:root /srv/homelab/homelab-v2/.env
     sudo chmod 0600 /srv/homelab/homelab-v2/.env
     sudo install -d -m 0750 -o root -g homelab-bot /etc/homelab-telegram-bot
@@ -1493,16 +1542,18 @@ SSH accounts work through Tailscale.
 
     Reconnect with `ssh homelab`, wait for the watchdog's 90-second boot delay, and confirm
     its Telegram notice says the data volume is `LOCKED`. Explicitly start the stack while
-    locked to prove that its mount condition skips it without failure or an additional alert:
+    locked to prove that neither runtime can start:
 
     ```bash
     data-volume.sh status
-    sudo systemctl start homelab.service
-    systemctl show homelab.service -p ActiveState -p Result -p ConditionResult
+    sudo systemctl start docker.socket containerd.service
+    systemctl is-active docker.service docker.socket containerd.service
+    systemctl show docker.socket containerd.service -p ActiveState -p Result -p ConditionResult
     sudo journalctl -b -u homelab.service -u homelab-watchdog.service --no-pager
     ```
 
-    Expect `ActiveState=inactive`, `Result=success`, `ConditionResult=no` and a journal entry
+    Expect all three runtime units inactive (is-active exits nonzero),
+    `Result=success`, `ConditionResult=no` on the two explicitly started units, and a journal entry
     showing the condition skip. Confirm `/status` still works and `/ask` reports the knowledge
     service down in Telegram. Finish by unlocking and checking health again:
 
@@ -1510,6 +1561,295 @@ SSH accounts work through Tailscale.
     sudo data-volume.sh unlock
     curl -fsS http://127.0.0.1:8000/health
     ```
+
+### Bulk disk and storage migration
+
+These commands are **not rehearsed**. Run only after this change is merged and the owner
+approves partitioning/encryption. No node changes are performed by the implementation agent.
+Formatting destroys the selected disk; there is no rollback for formatting the wrong disk.
+The inspection refuses signatures, partitions, mounts or holders. Stop on any error.
+Copying retains both old roots until the owner proves reboot/unlock. Root space is not
+reclaimed by renaming: only the later cleanup frees it. No database or originals move.
+
+Additional installed modes (all `root:root`):
+
+| Repository directory | Directory mode | File mode |
+|---|---|---|
+| `node/etc/containerd/` | `0755` | `0644` |
+| `node/etc/systemd/system/docker.service.d/` | `0755` | `0644` |
+| `node/etc/systemd/system/docker.socket.d/` | `0755` | `0644` |
+| `node/etc/systemd/system/containerd.service.d/` | `0755` | `0644` |
+
+`node/etc/crypttab` and `node/etc/fstab` are **managed entries**, not whole host files.
+Keep the existing OS entries. Rebuild step 2 registers both volumes before the new unlock
+script is used. Never install these files over the
+host tables. On a rebuild, perform the blank-disk part below only if bulk really is blank;
+an existing LUKS filesystem is recovered, not formatted. If just the Micron fails, main and
+its originals survive; provision its replacement as blank and copy/rebuild bulk's contents.
+If main fails, the owner's bulk passphrase recovers Micron independently. After main is
+rebuilt, open/mount bulk with that passphrase and add a newly generated on-main key:
+
+```bash
+sudo cryptsetup open /dev/disk/by-id/wwn-0x500a07511802f8bd-part1 homelab-bulk
+sudo mount /srv/homelab-bulk
+sudo install -d -m 0700 -o root -g root /srv/homelab/.keys
+sudo bash -c 'set -e; umask 077; set -o noclobber; head -c 4096 /dev/urandom > /srv/homelab/.keys/homelab-bulk.key; chmod 0400 /srv/homelab/.keys/homelab-bulk.key'
+sudo cryptsetup luksAddKey /dev/disk/by-id/wwn-0x500a07511802f8bd-part1 /srv/homelab/.keys/homelab-bulk.key
+```
+
+The last command asks the owner for the existing passphrase. Do not remove that independent
+slot. The generated key stays on main and is never printed, exported or committed.
+
+**Rollback, prepared first.** These commands are for the same root Bash session used below,
+with main still open. Use only if migration fails, before cleanup. They preserve the bulk
+copy for inspection. Stop applications before rolling back; writes made after switching
+storage may be absent in the retained old Docker state. Database bind mounts stay on main.
+
+```bash
+systemctl stop homelab-data.target
+systemctl stop homelab.service med-ask.service image-studio.service
+systemctl stop docker.service docker.socket
+systemctl stop containerd.service
+for area in docker containerd; do
+  if test -d "/var/lib/$area.pre-bulk"; then
+    test ! -e "/var/lib/$area"
+    mv "/var/lib/$area.pre-bulk" "/var/lib/$area"
+  fi
+done
+for file in etc/docker/daemon.json etc/containerd/config.toml usr/local/sbin/data-volume.sh usr/local/sbin/homelab-watchdog.sh etc/systemd/system/homelab-data.target etc/crypttab etc/fstab; do
+  install -o root -g root -m "$(stat -c %a "/root/homelab-bulk-rollback/$file")" "/root/homelab-bulk-rollback/$file" "/$file"
+done
+for unit in docker.service docker.socket containerd.service; do
+  rm -f "/etc/systemd/system/$unit.d/data-volume.conf"
+done
+install -o root -g root -m 0600 /root/homelab-bulk-rollback/env /srv/homelab/homelab-v2/.env
+# Override the new Compose default even if the old env had no models setting.
+sed -i '/^HOMELAB_MODELS_PATH=/d' /srv/homelab/homelab-v2/.env
+printf '%s\n' 'HOMELAB_MODELS_PATH=/srv/homelab/models' >> /srv/homelab/homelab-v2/.env
+systemctl daemon-reload
+systemctl enable containerd.service docker.service docker.socket
+systemctl start docker.service
+systemctl start homelab-data.target
+curl -fsS http://127.0.0.1:8000/health
+```
+
+The original models stay at `/srv/homelab/models` until cleanup. Rollback restores the old
+single-volume unlock script and boot enablement. It does not delete bulk, its key or LUKS
+slots. If `/var/lib/docker` or `/var/lib/containerd` unexpectedly exists as well as its
+`.pre-bulk` copy, stop and inspect; never overwrite it. This rollback assumes the preflight
+below found no existing `data-volume.conf` drop-ins and the three runtimes enabled at boot.
+
+**Inspect and prepare.** After owner's approval and merge, enter the node with
+`ssh homelab-agent`, then `sudo -i` and `bash`. Run these blocks in that root shell; do not
+paste rollback as part of normal execution. `set -e` stops the shell on failures.
+
+```bash
+set -euo pipefail
+cd /srv/homelab/homelab-v2
+git pull --ff-only origin main
+test -z "$(git status --porcelain)"
+DISK=/dev/disk/by-id/wwn-0x500a07511802f8bd
+PART=${DISK}-part1
+KEY=/srv/homelab/.keys/homelab-bulk.key
+findmnt --mountpoint /srv/homelab
+lsblk -o NAME,MODEL,SIZE,TYPE,MOUNTPOINTS "$DISK"
+test -b "$DISK"
+DISK_LAYOUT=$(lsblk -nr -o TYPE "$DISK")
+test "$DISK_LAYOUT" = disk
+DISK_MOUNTS=$(lsblk -nr -o MOUNTPOINTS "$DISK")
+test -z "$(printf '%s' "$DISK_MOUNTS" | tr -d '[:space:]')"
+DISK_DEVICE=$(readlink -f "$DISK")
+DISK_HOLDERS=$(ls -A "/sys/class/block/${DISK_DEVICE##*/}/holders")
+test -z "$DISK_HOLDERS"
+DISK_SIGNATURES=$(wipefs --no-act --noheadings --output TYPE "$DISK")
+test -z "$DISK_SIGNATURES"
+if blkid -p "$DISK"; then exit 1; else test "$?" -eq 2; fi
+test ! -e "$PART"
+test ! -e /dev/mapper/homelab-bulk
+test ! -e "$KEY"
+test ! -e /root/homelab-bulk-rollback
+for area in docker containerd; do
+  test -d "/var/lib/$area"
+  test ! -e "/var/lib/$area.pre-bulk"
+done
+for unit in docker.service docker.socket containerd.service; do
+  test "$(systemctl is-enabled "$unit")" = enabled
+  test ! -e "/etc/systemd/system/$unit.d/data-volume.conf"
+done
+install -d -m 0700 -o root -g root /root/homelab-bulk-rollback
+for file in etc/docker/daemon.json etc/containerd/config.toml usr/local/sbin/data-volume.sh usr/local/sbin/homelab-watchdog.sh etc/systemd/system/homelab-data.target etc/crypttab etc/fstab; do
+  cp -a --parents "/$file" /root/homelab-bulk-rollback/
+done
+install -m 0600 -o root -g root .env /root/homelab-bulk-rollback/env
+df -h / /srv/homelab | tee /root/homelab-bulk-rollback/space-before.txt
+```
+
+**Partition and encrypt the verified blank Micron.** This is the destructive boundary;
+main is already unlocked. Do not use these commands to recover an existing bulk disk.
+
+```bash
+parted --script "$DISK" mklabel gpt mkpart homelab-bulk 1MiB 100%
+udevadm settle
+test -b "$PART"
+install -d -m 0700 -o root -g root /srv/homelab/.keys
+(umask 077; set -o noclobber; head -c 4096 /dev/urandom > "$KEY")
+chown root:root "$KEY"
+chmod 0400 "$KEY"
+cryptsetup luksFormat --type luks2 --batch-mode --key-file "$KEY" "$PART"
+cryptsetup open --key-file "$KEY" "$PART" homelab-bulk
+mkfs.ext4 -L homelab-bulk /dev/mapper/homelab-bulk
+install -d -m 0755 -o root -g root /srv/homelab-bulk
+mount /dev/mapper/homelab-bulk /srv/homelab-bulk
+findmnt --mountpoint /srv/homelab-bulk
+```
+
+**Stop, copy and install.** No rehearsal and no cache purge. `rsync -aHAXS --numeric-ids`
+preserves ownership, hardlinks, ACLs, xattrs and sparse files. The dry comparison after each
+copy uses checksums; expect no output. Any difference is a stop, not a reason to delete.
+Neither the bind-mounted databases nor originals leave main.
+
+```bash
+systemctl stop homelab-data.target
+systemctl stop homelab.service med-ask.service image-studio.service
+systemctl stop docker.service docker.socket
+systemctl stop containerd.service
+for unit in homelab.service med-ask.service image-studio.service docker.service docker.socket containerd.service; do
+  test "$(systemctl show -p ActiveState --value "$unit")" = inactive
+done
+# There must be no container snapshot mounts left below the source roots.
+MOUNT_TARGETS=$(findmnt -rn -o TARGET)
+if printf '%s\n' "$MOUNT_TARGETS" | grep -E '^/var/lib/(docker|containerd)/'; then exit 1; fi
+for area in docker containerd; do
+  test ! -e "/srv/homelab-bulk/$area"
+  rsync -aHAXS --numeric-ids "/var/lib/$area" /srv/homelab-bulk/
+  COPY_DIFFERENCES=$(rsync -aHAXSnci --numeric-ids --delete "/var/lib/$area/" "/srv/homelab-bulk/$area/")
+  test -z "$COPY_DIFFERENCES"
+done
+test ! -e /srv/homelab-bulk/models
+rsync -aHAXS --numeric-ids /srv/homelab/models /srv/homelab-bulk/
+COPY_DIFFERENCES=$(rsync -aHAXSnci --numeric-ids --delete /srv/homelab/models/ /srv/homelab-bulk/models/)
+test -z "$COPY_DIFFERENCES"
+sync
+# Show installed diffs BEFORE copying. diff exit 1 is an expected difference.
+for file in etc/docker/daemon.json etc/containerd/config.toml usr/local/sbin/data-volume.sh usr/local/sbin/homelab-watchdog.sh etc/systemd/system/homelab-data.target; do
+  diff -u "/$file" "node/$file" || test "$?" -eq 1
+done
+for unit in docker.service docker.socket containerd.service; do
+  diff -u /dev/null "node/etc/systemd/system/$unit.d/data-volume.conf" || test "$?" -eq 1
+done
+# Preserve OS entries; replace just the two managed lines in each table.
+awk '$1 != "homelab-data" && $1 != "homelab-bulk"' /etc/crypttab > /root/homelab-bulk-rollback/crypttab.new
+cat node/etc/crypttab >> /root/homelab-bulk-rollback/crypttab.new
+awk '$2 != "/srv/homelab" && $2 != "/srv/homelab-bulk"' /etc/fstab > /root/homelab-bulk-rollback/fstab.new
+cat node/etc/fstab >> /root/homelab-bulk-rollback/fstab.new
+for table in crypttab fstab; do
+  diff -u "/etc/$table" "/root/homelab-bulk-rollback/$table.new" || test "$?" -eq 1
+  install -m 0644 -o root -g root "/root/homelab-bulk-rollback/$table.new" "/etc/$table"
+done
+install -m 0644 -o root -g root node/etc/docker/daemon.json /etc/docker/daemon.json
+install -m 0644 -o root -g root node/etc/containerd/config.toml /etc/containerd/config.toml
+install -m 0755 -o root -g root node/usr/local/sbin/data-volume.sh node/usr/local/sbin/homelab-watchdog.sh /usr/local/sbin/
+install -m 0644 -o root -g root node/etc/systemd/system/homelab-data.target /etc/systemd/system/homelab-data.target
+for unit in docker.service docker.socket containerd.service; do
+  install -d -m 0755 -o root -g root "/etc/systemd/system/$unit.d"
+  install -m 0644 -o root -g root "node/etc/systemd/system/$unit.d/data-volume.conf" "/etc/systemd/system/$unit.d/data-volume.conf"
+done
+# Update only this non-secret env field; never print .env or its diff.
+sed -i '/^HOMELAB_MODELS_PATH=/d' .env
+printf '%s\n' 'HOMELAB_MODELS_PATH=/srv/homelab-bulk/models' >> .env
+dockerd --validate --config-file=/etc/docker/daemon.json
+containerd --config /etc/containerd/config.toml config dump >/dev/null
+findmnt --verify --tab-file /etc/fstab
+systemctl disable docker.service docker.socket containerd.service
+systemctl daemon-reload
+systemd-analyze --generators=yes verify homelab-data.target homelab.service docker.service docker.socket containerd.service
+mv /var/lib/docker /var/lib/docker.pre-bulk
+mv /var/lib/containerd /var/lib/containerd.pre-bulk
+data-volume.sh unlock
+```
+
+**Checks before the owner's reboot.** All three application units and bot must be active;
+all containers running and every defined healthcheck healthy. Wait for model loading and
+container healthchecks, then re-run checks if they are still starting. No configuration or
+service mutations are implied by checking.
+
+```bash
+data-volume.sh status
+systemctl is-active homelab.service med-ask.service image-studio.service homelab-telegram-bot.service docker.service docker.socket containerd.service
+systemctl is-active homelab-watchdog.timer
+systemctl is-enabled docker.service docker.socket containerd.service || true
+# Expect disabled for all three, not enabled or masked.
+docker info --format '{{.DockerRootDir}} {{json .DriverStatus}}'
+# Expect /srv/homelab-bulk/docker and io.containerd.snapshotter.v1.
+containerd config dump | grep '^root ='
+# Expect /srv/homelab-bulk/containerd; docker info has no containerd root field.
+docker buildx inspect default
+# Expect docker driver and GC policies with about 50 GB Keep/Max Used Space.
+python3 -c 'import json; d=json.load(open("/etc/docker/daemon.json")); assert d["builder"]["gc"] == {"enabled": True, "defaultKeepStorage": "50GB"}'
+docker ps --format '{{.Names}} {{.Status}}'
+for container in $(docker ps -aq); do
+  test "$(docker inspect -f '{{.State.Status}}' "$container")" = running
+  test "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}healthy{{end}}' "$container")" = healthy
+done
+docker compose -f /srv/homelab/homelab-v2/compose.yaml ps
+curl -fsS http://127.0.0.1:8000/health
+for service in llama-embed llama-embed-large; do
+  docker compose -f /srv/homelab/homelab-v2/compose.yaml exec -T -e CHECK_SERVICE="$service" api python -c 'import os, urllib.request; base="http://"+os.environ["CHECK_SERVICE"]+":8080"; print(urllib.request.urlopen(base+"/health").read().decode()); print(urllib.request.urlopen(base+"/v1/models").read().decode())'
+done
+cat /root/homelab-bulk-rollback/space-before.txt
+df -h / /srv/homelab /srv/homelab-bulk
+```
+
+Verify the embedding containers' mounts explicitly:
+
+```bash
+for service in llama-embed llama-embed-large; do
+  docker inspect --format '{{range .Mounts}}{{if eq .Destination "/models"}}{{.Source}}{{end}}{{end}}' "$(docker compose -f /srv/homelab/homelab-v2/compose.yaml ps -q "$service")"
+done
+```
+
+Expect `/srv/homelab-bulk/models` and `/srv/homelab-bulk/models/embed-large`. The bot's `/status`
+and the watchdog timer remain available before unlock. No test alert or reboot is sent by
+the implementation agent. Root usage will still include `.pre-bulk` until cleanup.
+
+**Owner's steps** (owner types the passphrase, then reboots):
+
+```bash
+sudo -i
+KEY=/srv/homelab/.keys/homelab-bulk.key
+PART=/dev/disk/by-id/wwn-0x500a07511802f8bd-part1
+cryptsetup luksAddKey --key-file "$KEY" "$PART"
+cryptsetup open --test-passphrase "$PART"
+reboot
+```
+
+Enter the independent new passphrase at the first command's two prompts, then test it at
+the second prompt. Keep it in the owner's password manager; it is the recovery path if
+main dies. Reconnect as owner with `ssh homelab`. Before unlock, Docker/socket/containerd
+must be inactive; Telegram `/status` and the watchdog's locked notice must still work.
+Then `sudo data-volume.sh unlock` asks only for main's usual passphrase. Confirm both mounts,
+runtimes, three application units, container health and models with the checks above.
+Use `systemctl show -p ActiveEnterTimestampMonotonic` on the runtimes, target and applications
+to confirm containerd → Docker → target → clients (socket precedes Docker). Mounts precede
+containerd. If unlock fails, leave retained directories in place and use rollback.
+
+**Cleanup only after that proof and the owner's go.** This destroys the retained fallback;
+rollback above is no longer usable afterward. Do not remove the bulk copy or any main
+originals. Run in a root shell, with the successful reboot/unlock checks recorded externally:
+
+```bash
+set -euo pipefail
+findmnt --mountpoint /srv/homelab-bulk
+test "$(docker info --format '{{.DockerRootDir}}')" = /srv/homelab-bulk/docker
+MOUNT_TARGETS=$(findmnt -rn -o TARGET)
+for path in /var/lib/docker.pre-bulk /var/lib/containerd.pre-bulk /srv/homelab/models; do
+  test -d "$path"
+  test ! -L "$path"
+  if printf '%s\n' "$MOUNT_TARGETS" | grep -F "$path"; then exit 1; fi
+done
+rm -rf --one-file-system /var/lib/docker.pre-bulk /var/lib/containerd.pre-bulk /srv/homelab/models
+df -h / /srv/homelab /srv/homelab-bulk
+```
 
 ## Weekly originals copy
 
