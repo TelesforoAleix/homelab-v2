@@ -32,10 +32,13 @@ dev = [
     "pytest-asyncio",
     "ruff",
 ]
+telegram-bot = [
+    "python-telegram-bot==22.8",
+]
 
 [tool.uv]
-# Tests import mac/vision_bench.py, which needs the benchmark group (CI syncs it too).
-default-groups = ["dev", "benchmark"]
+# Tests use the Mac benchmark helpers and the real Telegram library (CI syncs both).
+default-groups = ["dev", "benchmark", "telegram-bot"]
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

@@ -580,3 +580,13 @@ independent. Copy both roots with metadata intact and retain the renamed origina
 models until an owner reboot/unlock proof; cleanup is a separate approved deletion. The
 default Docker builder garbage-collects toward 50 GB. Databases and irreplaceable inputs
 stay on main, with originals covered by the weekly copy.
+
+**2026-10-19 — A mature library owns the host bot's Telegram machinery.** This supersedes
+the earlier decisions to keep the bot stdlib-only. As the bot grows into a conversational
+assistant, python-telegram-bot supplies polling, sending and command registration, with
+inline keyboards, callback queries and file downloads available for later work. The router
+and executors retain the commands, replies and access gates. A hash-pinned environment
+under `/opt/homelab-telegram-bot/.venv`, built with host Python and installed with
+`pip --require-hashes`, keeps the bot independent of Docker and volume unlock. The host
+user, sandbox, TPM-sealed credential, TLS verification and no-listening-port boundary stay
+unchanged. Tests use the same library through the `telegram-bot` dependency group.

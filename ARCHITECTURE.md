@@ -81,8 +81,10 @@ last-good time and bytes outside the encrypted volume. A daily persistent timer 
 record and the existing notifier to remind the owner after seven days, or before any copy.
 No archive is staged, and the private identity remains in the owner's password manager.
 
-The Telegram client remains a stdlib-only host service, running as `homelab-bot` with its
-existing sandbox and TPM-sealed token. It long-polls Telegram with no listening port. The main
+The Telegram client is a host service using python-telegram-bot, running as `homelab-bot`
+with its existing sandbox and TPM-sealed token. Its own `/opt/homelab-telegram-bot/.venv`
+is built with host Python from hash-pinned requirements; the library owns Telegram transport,
+polling and registration. It long-polls Telegram with no listening port. The main
 allowlist gates dispatch; the privileged allowlist is a subset and gates `/backup` and
 `/restart`, which also checks its unit allowlist. Polkit independently permits only restarting `chrony.service`.
 `/ask` posts to the loopback answer API, returns only text and never dispatches model output.

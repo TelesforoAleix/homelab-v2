@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Home Lab Telegram client, using long polling and the standard library.
+"""Home Lab Telegram client, using python-telegram-bot long polling.
 
 Long polling needs outbound HTTPS and no inbound port. The main allowlist is
 checked once before dispatch, so new handlers cannot accidentally be public.
@@ -8,34 +8,18 @@ The token comes from systemd's credential directory, never the environment.
 Handler failures must log only metadata, since exception text can contain prose.
 """
 
-import json
+import asyncio
+import logging
 import os
-import ssl
 import sys
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
 import executors
 from router import Router, load_ids
+from telegram import Bot, BotCommand, Update
+from telegram.ext import Application, ContextTypes, ExtBot, MessageHandler, filters
+from telegram.request import HTTPXRequest
 
-API_ROOT = "https://api.telegram.org"
-
-# Long-poll timeout. Telegram holds the request open this long waiting for a
-# message, so the loop is idle rather than busy. Keep it below any intermediate
-# proxy timeout.
 POLL_TIMEOUT = 50
-
-# Network read timeout must exceed POLL_TIMEOUT, or every quiet poll looks like
-# a failure. This is the classic long-polling mistake.
-HTTP_TIMEOUT = POLL_TIMEOUT + 15
-
-# Backoff when Telegram is unreachable. Capped, so an outage does not turn into
-# an ever-growing wait, and jittered nowhere because a single client does not
-# need it. Bounded logging: see poll_forever().
-BACKOFF_START = 2
-BACKOFF_MAX = 300
 
 
 def log(msg: str) -> None:
@@ -145,27 +129,40 @@ def load_restart_units() -> set[str]:
 # Telegram API
 # --------------------------------------------------------------------------
 
-_TOKEN = ""
-_SSL_CTX = ssl.create_default_context()
+
+class AuditedBot(ExtBot):
+    """Add content-free outage metadata; the library owns polling and retries."""
+
+    __slots__ = ("_outage_logged",)
+
+    def __init__(self, token: str):
+        super().__init__(
+            token,
+            request=HTTPXRequest(read_timeout=30),
+            # PTB adds the long-poll timeout to this read timeout (65s total).
+            get_updates_request=HTTPXRequest(read_timeout=15),
+        )
+        self._outage_logged = False
+
+    async def get_updates(self, *args, **kwargs):
+        try:
+            updates = await super().get_updates(*args, **kwargs)
+        except Exception as exc:
+            if not self._outage_logged:
+                log(f"WARNING: Telegram unreachable, backing off: {type(exc).__name__}")
+                self._outage_logged = True
+            raise
+        if self._outage_logged:
+            log("Telegram reachable again")
+            self._outage_logged = False
+        return updates
 
 
-def api_call(method: str, params: dict | None = None, timeout: int = 30) -> dict:
-    """One Telegram API call. Raises on transport failure; caller decides."""
-    url = f"{API_ROOT}/bot{_TOKEN}/{method}"
-    data = urllib.parse.urlencode(params or {}).encode()
-    req = urllib.request.Request(url, data=data, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as resp:
-        return json.loads(resp.read().decode())
-
-
-def send_message(chat_id: int, text: str) -> None:
+async def send_message(bot: Bot, chat_id: int, text: str) -> None:
     for part in split_message(text):
         try:
-            response = api_call("sendMessage", {"chat_id": chat_id, "text": part}, timeout=30)
-            if not response.get("ok"):
-                log("WARNING: sendMessage returned not-ok")
-                return
-        except Exception as exc:  # noqa: BLE001 - never let a reply failure kill the loop
+            await bot.send_message(chat_id=chat_id, text=part, read_timeout=30)
+        except Exception as exc:  # noqa: BLE001 - reply failure must not stop polling
             log(f"WARNING: sendMessage failed: {type(exc).__name__}")
             return
 
@@ -191,21 +188,20 @@ def split_message(text: str) -> list[str]:
     return parts
 
 
-def register_profile(router: Router) -> None:
+async def register_profile(bot: Bot, router: Router) -> None:
     commands = [
-        {"command": name.removeprefix("/"), "description": executor.summary}
+        BotCommand(name.removeprefix("/"), executor.summary)
         for name, executor in router.executors.items()
     ]
     description = "Home Lab commands: " + "; ".join(
-        f"/{command['command']}: {command['description']}" for command in commands
+        f"/{command.command}: {command.description}" for command in commands
     )
-    for method, params in (
-        ("setMyCommands", {"commands": json.dumps(commands)}),
-        ("setMyDescription", {"description": description}),
+    for method, call, params in (
+        ("setMyCommands", bot.set_my_commands, {"commands": commands}),
+        ("setMyDescription", bot.set_my_description, {"description": description}),
     ):
         try:
-            response = api_call(method, params)
-            if response.get("ok"):
+            if await call(**params):
                 log(f"Telegram command registration {method} succeeded")
             else:
                 log(f"WARNING: Telegram command registration {method} returned not-ok")
@@ -231,66 +227,42 @@ def dispatch_reply(router: Router, user_id: int, text: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def poll_forever(allowlist: set[int], router: Router) -> None:
-    offset = 0
-    backoff = BACKOFF_START
-    outage_logged = False
+def build_application(token: str, allowlist: set[int], router: Router) -> Application:
+    async def startup(application: Application) -> None:
+        await register_profile(application.bot, router)
+        log(f"started; {len(allowlist)} allowlisted user(s); long polling, no listening socket")
 
-    log(f"started; {len(allowlist)} allowlisted user(s); long polling, no listening socket")
+    async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        message = update.effective_message
+        if message is None or update.effective_chat is None:
+            return
+        user_id = update.effective_user.id if update.effective_user else None
+        chat_id = update.effective_chat.id
+        # One main access check before dispatch, including non-text messages.
+        if user_id not in allowlist:
+            log(f"refused: user {user_id} is not allowlisted")
+            reply = "Not authorised."
+        else:
+            # Executors remain synchronous; don't block Telegram's network loop.
+            reply = await asyncio.to_thread(dispatch_reply, router, user_id, message.text or "")
+        await send_message(context.bot, chat_id, reply)
 
-    while True:
-        try:
-            resp = api_call(
-                "getUpdates",
-                {"offset": offset, "timeout": POLL_TIMEOUT},
-                timeout=HTTP_TIMEOUT,
-            )
-        except Exception as exc:  # noqa: BLE001 - transport problems are expected
-            # Log the FIRST failure of an outage, then stay quiet until it
-            # recovers. A bot that logs every retry turns a network blip into a
-            # journal full of identical lines, and journald is not free on a
-            # volume group with no free extents.
-            if not outage_logged:
-                log(f"WARNING: Telegram unreachable, backing off: {type(exc).__name__}")
-                outage_logged = True
-            time.sleep(backoff)
-            backoff = min(backoff * 2, BACKOFF_MAX)
-            continue
+    async def error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # Polling failures are already audited by AuditedBot. Never log exception text.
+        if update is not None:
+            log(f"ERROR: Telegram update failed: {type(context.error).__name__}")
 
-        if outage_logged:
-            log("Telegram reachable again")
-            outage_logged = False
-        backoff = BACKOFF_START
-
-        if not resp.get("ok"):
-            log("WARNING: getUpdates returned not-ok")
-            time.sleep(backoff)
-            continue
-
-        for update in resp.get("result", []):
-            offset = update["update_id"] + 1
-            message = update.get("message") or update.get("edited_message")
-            if not message:
-                continue
-
-            user_id = (message.get("from") or {}).get("id")
-            chat_id = (message.get("chat") or {}).get("id")
-            text = message.get("text", "")
-            if chat_id is None:
-                continue
-
-            # THE ACCESS CONTROL. One place, before anything else happens.
-            if user_id not in allowlist:
-                log(f"refused: user {user_id} is not allowlisted")
-                send_message(chat_id, "Not authorised.")
-                continue
-
-            send_message(chat_id, dispatch_reply(router, user_id, text))
+    application = Application.builder().bot(AuditedBot(token)).post_init(startup).build()
+    application.add_handler(MessageHandler(filters.ALL, receive))
+    application.add_error_handler(error)
+    return application
 
 
 def main() -> None:
-    global _TOKEN
-    _TOKEN = load_token()
+    # Vendor logs can include Bot API URLs (tokens), payloads and exception text.
+    # Only our explicit metadata audit reaches journald, including fatal failures.
+    logging.disable(logging.CRITICAL)
+    token = load_token()
     allowlist = load_allowlist()
     privileged = load_privileged()
     restart_units = load_restart_units()
@@ -318,12 +290,15 @@ def main() -> None:
         f"{len(router.unique_executors())} executors registered"
     )
 
-    register_profile(router)
-
     try:
-        poll_forever(allowlist, router)
-    except KeyboardInterrupt:
-        log("stopping")
+        application = build_application(token, allowlist, router)
+        application.run_polling(
+            timeout=POLL_TIMEOUT,
+            bootstrap_retries=-1,
+            allowed_updates=["message", "edited_message"],
+        )
+    except Exception as exc:
+        sys.exit(f"ERROR: Telegram client failed: {type(exc).__name__}")
 
 
 if __name__ == "__main__":
