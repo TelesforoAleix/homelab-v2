@@ -12,8 +12,10 @@ import asyncio
 import logging
 import os
 import sys
+from contextlib import suppress
 
 import executors
+from planning import Planning, load_config
 from router import Router, load_ids
 from telegram import Bot, BotCommand, Update
 from telegram.ext import Application, ContextTypes, ExtBot, MessageHandler, filters
@@ -198,7 +200,7 @@ async def register_profile(bot: Bot, router: Router) -> None:
     )
     for method, call, params in (
         ("setMyCommands", bot.set_my_commands, {"commands": commands}),
-        ("setMyDescription", bot.set_my_description, {"description": description}),
+        ("setMyDescription", bot.set_my_description, {"description": description[:512]}),
     ):
         try:
             if await call(**params):
@@ -227,10 +229,29 @@ def dispatch_reply(router: Router, user_id: int, text: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def build_application(token: str, allowlist: set[int], router: Router) -> Application:
+def build_application(
+    token: str, allowlist: set[int], router: Router, planning: Planning | None = None
+) -> Application:
+    notice_task = None
+
     async def startup(application: Application) -> None:
+        nonlocal notice_task
         await register_profile(application.bot, router)
         log(f"started; {len(allowlist)} allowlisted user(s); long polling, no listening socket")
+        if planning is not None and planning.config is not None:
+
+            async def send_notice(user_id, text):
+                # Unlike command replies, failures must propagate to retain the marker.
+                for part in split_message(text):
+                    await application.bot.send_message(chat_id=user_id, text=part, read_timeout=30)
+
+            notice_task = asyncio.create_task(planning.run(allowlist, send_notice))
+
+    async def shutdown(application: Application) -> None:
+        if notice_task is not None:
+            notice_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await notice_task
 
     async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.effective_message
@@ -252,7 +273,14 @@ def build_application(token: str, allowlist: set[int], router: Router) -> Applic
         if update is not None:
             log(f"ERROR: Telegram update failed: {type(context.error).__name__}")
 
-    application = Application.builder().bot(AuditedBot(token)).post_init(startup).build()
+    application = (
+        Application.builder()
+        .bot(AuditedBot(token))
+        .post_init(startup)
+        .post_stop(shutdown)
+        .post_shutdown(shutdown)
+        .build()
+    )
     application.add_handler(MessageHandler(filters.ALL, receive))
     application.add_error_handler(error)
     return application
@@ -283,6 +311,8 @@ def main() -> None:
 
     router = Router(privileged_users=privileged, log=log)
     executors.register_all(router, allowed_units=restart_units, log=log)
+    planning = Planning(load_config(log), log)
+    planning.register(router)
 
     log(
         f"{len(allowlist)} allowlisted, {len(privileged)} privileged, "
@@ -291,7 +321,7 @@ def main() -> None:
     )
 
     try:
-        application = build_application(token, allowlist, router)
+        application = build_application(token, allowlist, router, planning)
         application.run_polling(
             timeout=POLL_TIMEOUT,
             bootstrap_retries=-1,

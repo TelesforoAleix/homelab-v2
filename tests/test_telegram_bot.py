@@ -16,7 +16,7 @@ BOT_DIR = Path(__file__).resolve().parents[1] / "node/opt/homelab-telegram-bot"
 @pytest.fixture
 def bot_modules(monkeypatch):
     modules = {}
-    for name in ("router", "executors", "bot"):
+    for name in ("router", "executors", "planning", "bot"):
         spec = importlib.util.spec_from_file_location(name, BOT_DIR / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         monkeypatch.setitem(sys.modules, name, module)
@@ -515,3 +515,543 @@ async def test_poll_outage_logs_once_and_recovery_without_content(bot_modules, m
         "Telegram reachable again",
     ]
     await bot.shutdown()
+
+
+@pytest.fixture
+def planning_repo(bot_modules, tmp_path, monkeypatch):
+    import subprocess
+
+    source = tmp_path / "source"
+    source.mkdir()
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(source), *args], check=True, capture_output=True)
+
+    git("init", "-b", "main")
+    git("config", "user.name", "Fixture")
+    git("config", "user.email", "fixture@example.invalid")
+    (source / "state.json").write_text(json.dumps({"version": 1, "slices": []}))
+    (source / "outbox.jsonl").write_text("")
+
+    def commit():
+        git("add", ".")
+        git("commit", "--allow-empty", "-m", "fixture")
+
+    commit()
+    logs = []
+    planning = bot_modules.planning
+    mirror = planning.Planning(
+        planning.Config(str(source), "main", "state.json", "outbox.jsonl"),
+        logs.append,
+        directory=tmp_path / "data",
+        ready=lambda: True,
+    )
+    environment = mirror.git_environment()
+    environment["GIT_ALLOW_PROTOCOL"] = "file"
+    monkeypatch.setattr(planning.Planning, "git_environment", lambda self: environment)
+    return SimpleNamespace(mirror=mirror, source=source, commit=commit, logs=logs)
+
+
+def planning_slice(**changes):
+    return (
+        dict(
+            id="fixture/item",
+            repo="fixture",
+            feature="fixture",
+            title="Fixture title",
+            state="planned",
+            slot=None,
+            pr=None,
+            attention=None,
+        )
+        | changes
+    )
+
+
+@pytest.mark.parametrize(
+    "state,group",
+    [
+        ("planned", "planned"),
+        ("researching", "planned"),
+        ("ready", "ready"),
+        ("issued", "running"),
+        ("awaiting handover", "running"),
+        ("in review", "needs attention"),
+        ("escalated", "needs attention"),
+    ],
+)
+def test_planning_every_state(bot_modules, state, group):
+    groups = bot_modules.planning.group_pending([planning_slice(state=state)])
+    assert [key for key, values in groups.items() if values] == [group]
+    assert not any(bot_modules.planning.group_pending([planning_slice(state="accepted")]).values())
+
+
+@pytest.mark.parametrize("kind", ["question", "escalation", "merge", "node-step", "owner-check"])
+@pytest.mark.parametrize("resolved", [False, True])
+def test_planning_attention_precedence(bot_modules, kind, resolved):
+    attention = dict(
+        kind=kind,
+        body="Private body",
+        since="2026-01-01T00:00:00Z",
+        answer="Answer" if resolved else None,
+        approved=resolved,
+    )
+    item = planning_slice(state="ready", slot="2026-01-01T00:00:00Z", attention=attention)
+    groups = bot_modules.planning.group_pending([item])
+    expected = (
+        "needs attention" if not resolved or kind in ("node-step", "owner-check") else "scheduled"
+    )
+    assert groups[expected] == [item]
+    item["state"] = "accepted"
+    assert not any(bot_modules.planning.group_pending([item]).values())
+
+
+def test_planning_commands_pull_and_group(planning_repo, bot_modules):
+    fixture = planning_repo
+    items = [
+        planning_slice(id="fixture/later", state="ready", slot="2026-02-01T00:00:00Z"),
+        planning_slice(id="fixture/earlier", slot="2026-01-01T00:00:00Z"),
+        planning_slice(id="fixture/planned"),
+    ]
+    (fixture.source / "state.json").write_text(json.dumps({"version": 1, "slices": items}))
+    fixture.commit()
+    mirror = fixture.mirror
+    result = mirror.command("pending", [])
+    assert result.index("fixture/earlier") < result.index("fixture/later")
+    assert "Planned: 1" in result
+    assert "fixture/planned" not in result
+    attention = dict(
+        kind="question",
+        body="Private body" * 1000,
+        since="2026-01-01T00:00:00Z",
+        answer=None,
+        approved=False,
+    )
+    items[0]["attention"] = attention
+    (fixture.source / "state.json").write_text(json.dumps({"version": 2, "slices": items}))
+    fixture.commit()
+    result = mirror.command("slice", ["fixture/later"])
+    assert json.loads(result) == items[0]
+    assert mirror.command("slice", ["missing"]) == "Slice not found."
+    assert "Private body" not in "\n".join(fixture.logs)
+    assert "planning clone ready" in fixture.logs
+    assert "planning pull succeeded" in fixture.logs
+    router = make_router(bot_modules, fixture.logs)
+    mirror.register(router)
+    assert all(
+        router.executors[name].capability is bot_modules.router.Capability.READ
+        for name in ("/pending", "/recap", "/slice")
+    )
+    assert "/pending" in router.dispatch(0, "/help")
+    router.dispatch(0, "/slice private-argument")
+    assert "private-argument" not in "\n".join(fixture.logs)
+
+
+def test_planning_locked_missing_and_invalid_config(planning_repo, bot_modules, tmp_path):
+    mirror = planning_repo.mirror
+    mirror.ready = lambda: False
+    for name, args in [("pending", []), ("slice", ["fixture/item"]), ("recap", [])]:
+        assert "locked" in mirror.command(name, args)
+    assert not mirror.directory.exists()
+    mirror.ready = lambda: True
+    assert "Planned: 0" in mirror.command("pending", [])
+    logs = []
+    assert bot_modules.planning.load_config(logs.append, tmp_path / "absent") is None
+    assert logs == ["planning not configured; feature disabled"]
+    mirror.config = None
+    assert mirror.command("pending", []) == "Planning is not configured."
+    path = tmp_path / "bad"
+    path.write_text("{private")
+    assert bot_modules.planning.load_config(logs.append, path) is None
+    assert "private" not in "\n".join(logs)
+
+
+def test_planning_sync_failure_and_path_escape(planning_repo, monkeypatch):
+    import subprocess
+
+    mirror = planning_repo.mirror
+    assert "Planned: 0" in mirror.command("pending", [])
+
+    def fail(*args):
+        raise subprocess.CalledProcessError(1, "Private URL", stderr="Private content")
+
+    monkeypatch.setattr(mirror, "git", fail)
+    assert "sync failed" in mirror.command("pending", [])
+    assert "Private" not in "\n".join(planning_repo.logs)
+    with pytest.raises(ValueError):
+        mirror.read_file("../outside")
+    (mirror.clone / "escape").symlink_to(planning_repo.source / "state.json")
+    with pytest.raises(ValueError):
+        mirror.read_file("escape")
+
+
+def test_planning_recap_and_long_notice(planning_repo, bot_modules):
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    events = [
+        dict(
+            at=(now - timedelta(hours=h)).isoformat(),
+            id=f"fixture/{name}",
+            event=event,
+            text="Private text",
+        )
+        for h, name, event in [
+            (25, "old", "start"),
+            (2, "one", "start"),
+            (1, "two", "attention"),
+            (0, "one", "finished"),
+        ]
+    ]
+    (planning_repo.source / "outbox.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events)
+    )
+    planning_repo.commit()
+    reply = planning_repo.mirror.command("recap", [])
+    assert "fixture/old" not in reply
+    assert reply.count("fixture/one") == 1
+    assert reply.index("finished") < reply.index("fixture/two")
+    assert "fixture/old" in planning_repo.mirror.command("recap", ["48"])
+    for args in (["nan"], ["inf"], ["0"], ["-1"], ["bad"], ["1", "2"]):
+        assert planning_repo.mirror.command("recap", args).startswith("Usage:")
+    text = bot_modules.planning.notice(events[0] | {"text": "X" * 3000})
+    assert "X" * 600 in text and "X" * 601 not in text
+    assert "/slice fixture/old" in text
+
+
+def append_planning_event(fixture, **changes):
+    from datetime import UTC, datetime
+
+    event = (
+        dict(
+            at=datetime.now(UTC).isoformat(),
+            id="fixture/item",
+            event="attention",
+            text="Private notice body",
+        )
+        | changes
+    )
+    with (fixture.source / "outbox.jsonl").open("a") as file:
+        file.write(json.dumps(event) + "\n")
+    fixture.commit()
+    return event
+
+
+async def test_planning_first_run_skips_history_and_once_across_restarts(
+    planning_repo, bot_modules
+):
+    fixture = planning_repo
+    append_planning_event(fixture, event="start")
+    sent = []
+
+    async def send(user, text):
+        sent.append((user, text))
+
+    await fixture.mirror.notify_once({0, 1}, send)
+    assert sent == []
+    assert json.loads(fixture.mirror.marker.read_text()) == {"line": 1, "sent_to": []}
+    append_planning_event(fixture, event="finished", text="X" * 3000)
+    await fixture.mirror.notify_once({0, 1}, send)
+    assert [user for user, _ in sent] == [0, 1]
+    assert all("X" * 600 in text and "X" * 601 not in text for _, text in sent)
+    assert all("/slice fixture/item" in text for _, text in sent)
+    assert json.loads(fixture.mirror.marker.read_text()) == {"line": 2, "sent_to": []}
+    restarted = bot_modules.planning.Planning(
+        fixture.mirror.config,
+        fixture.logs.append,
+        directory=fixture.mirror.directory,
+        ready=lambda: True,
+    )
+    await restarted.notify_once({0, 1}, send)
+    await restarted.notify_once({0, 1}, send)
+    assert len(sent) == 2
+    assert "Private notice body" not in "\n".join(fixture.logs)
+    assert "X" * 20 not in "\n".join(fixture.logs)
+
+
+async def test_planning_partial_delivery_persisted_immediately_and_retried(
+    planning_repo, bot_modules
+):
+    fixture = planning_repo
+    mirror = fixture.mirror
+    sent = []
+
+    async def send(user, text):
+        sent.append(user)
+        if user == 1:
+            assert json.loads(mirror.marker.read_text()) == {"line": 0, "sent_to": [0]}
+            raise OSError("Private failure")
+
+    await mirror.notify_once({0, 1}, send)
+    append_planning_event(fixture)
+    with pytest.raises(OSError):
+        await mirror.notify_once({0, 1}, send)
+    assert sent == [0, 1]
+    assert json.loads(mirror.marker.read_text()) == {"line": 0, "sent_to": [0]}
+    restarted = bot_modules.planning.Planning(
+        mirror.config, fixture.logs.append, directory=mirror.directory, ready=lambda: True
+    )
+
+    async def confirmed(user, text):
+        sent.append(user)
+
+    await restarted.notify_once({0, 1}, confirmed)
+    assert sent == [0, 1, 1]
+    assert json.loads(mirror.marker.read_text()) == {"line": 1, "sent_to": []}
+    await restarted.notify_once({0, 1}, confirmed)
+    assert sent == [0, 1, 1]
+
+
+async def test_planning_marker_failure_retries_uncertain_delivery(planning_repo, monkeypatch):
+    mirror = planning_repo.mirror
+    sent = []
+
+    async def send(user, text):
+        sent.append(user)
+
+    await mirror.notify_once({0}, send)
+    append_planning_event(planning_repo)
+    save = mirror.save_marker
+
+    def fail(marker):
+        raise OSError("Private path")
+
+    monkeypatch.setattr(mirror, "save_marker", fail)
+    with pytest.raises(OSError):
+        await mirror.notify_once({0}, send)
+    assert json.loads(mirror.marker.read_text()) == {"line": 0, "sent_to": []}
+    monkeypatch.setattr(mirror, "save_marker", save)
+    await mirror.notify_once({0}, send)
+    assert sent == [0, 0]  # accepted duplicate window, never skip
+
+
+async def test_planning_notices_wait_for_unlock(planning_repo):
+    mirror = planning_repo.mirror
+    sent = []
+
+    async def send(user, text):
+        sent.append(text)
+
+    mirror.ready = lambda: False
+    await mirror.notify_once({0}, send)
+    assert not mirror.directory.exists()
+    mirror.ready = lambda: True
+    await mirror.notify_once({0}, send)
+    append_planning_event(planning_repo)
+    mirror.ready = lambda: False
+    await mirror.notify_once({0}, send)
+    assert sent == []
+    assert json.loads(mirror.marker.read_text())["line"] == 0
+    mirror.ready = lambda: True
+    await mirror.notify_once({0}, send)
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        {"line": 99, "sent_to": []},
+        {"line": -1, "sent_to": []},
+        {"line": 0, "sent_to": [0]},
+        {"line": False, "sent_to": []},
+    ],
+)
+async def test_planning_invalid_marker_never_skips_or_replays(planning_repo, marker):
+    mirror = planning_repo.mirror
+    assert mirror.refresh() is None
+    mirror.marker.write_text(json.dumps(marker))
+
+    async def fail(*args):
+        pytest.fail("invalid marker sent notices")
+
+    with pytest.raises(ValueError):
+        await mirror.notify_once({0}, fail)
+    assert json.loads(mirror.marker.read_text()) == marker
+
+
+async def test_planning_poll_failure_logs_no_content_and_retries(planning_repo, monkeypatch):
+    import asyncio
+
+    mirror = planning_repo.mirror
+    attempts = []
+
+    async def failure(*args):
+        attempts.append(True)
+        raise OSError("Private content and URL")
+
+    async def stop(seconds):
+        assert seconds == 60
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(mirror, "notify_once", failure)
+    monkeypatch.setattr(asyncio, "sleep", stop)
+    with pytest.raises(asyncio.CancelledError):
+        await mirror.run({0}, failure)
+    assert len(attempts) == 1
+    assert planning_repo.logs == ["WARNING: planning notice failed; retry pending"]
+
+
+async def test_planning_registered_and_gated_by_main_allowlist(telegram_app, planning_repo):
+    app, request, router, logs = telegram_app
+    planning_repo.mirror.register(router)
+    await app.post_init(app)
+    commands = dict(request.calls)["setMyCommands"]["commands"]
+    assert {"pending", "recap", "slice"} <= {command["command"] for command in commands}
+    assert len(dict(request.calls)["setMyDescription"]["description"]) <= 512
+    await deliver(app, "/pending", user=99)
+    assert request.calls[-1][1]["text"] == "Not authorised."
+    assert not planning_repo.mirror.directory.exists()
+    await deliver(app, "/pending", user=0)
+    assert "Planned: 0" in request.calls[-1][1]["text"]
+    await deliver(app, "/slice private-fixture-id", user=0)
+    assert request.calls[-1][1]["text"] == "Slice not found."
+    assert "private-fixture-id" not in "\n".join(logs)
+
+
+async def test_planning_lifecycle_and_strict_send(bot_modules, monkeypatch, planning_repo):
+    import asyncio
+
+    from telegram.error import NetworkError
+    from telegram.ext import ExtBot
+
+    request = TelegramRequest()
+    monkeypatch.setattr(
+        bot_modules.bot,
+        "AuditedBot",
+        lambda token: ExtBot(token, request=request, get_updates_request=request),
+    )
+    mirror = planning_repo.mirror
+    router = make_router(bot_modules, [])
+    mirror.register(router)
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def worker(users, send):
+        try:
+            assert users == {0}
+            await send(0, "Private notice")
+
+            # Failures must reach Planning.run so the marker stays pending.
+            async def failed(*args, **kwargs):
+                raise OSError("Private error")
+
+            monkeypatch.setattr(request, "do_request", failed)
+            with pytest.raises(NetworkError):
+                await send(0, "Retry me")
+            entered.set()
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(mirror, "run", worker)
+    app = bot_modules.bot.build_application("123:fixture", {0}, router, mirror)
+    async with app:
+        await app.post_init(app)
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        await app.post_stop(app)
+        assert cancelled.is_set()
+        await app.post_shutdown(app)
+
+
+async def test_planning_no_config_keeps_status_and_has_no_background_task(
+    bot_modules, tmp_path, monkeypatch
+):
+    from telegram.ext import ExtBot
+
+    logs = []
+    planning = bot_modules.planning
+    mirror = planning.Planning(
+        planning.load_config(logs.append, tmp_path / "absent"), logs.append, ready=lambda: True
+    )
+    router = make_router(bot_modules, logs)
+    mirror.register(router)
+    request = TelegramRequest()
+    monkeypatch.setattr(
+        bot_modules.bot,
+        "AuditedBot",
+        lambda token: ExtBot(token, request=request, get_updates_request=request),
+    )
+    for name in ("host_name", "host_uptime", "host_load", "host_memory", "host_disk"):
+        monkeypatch.setattr(bot_modules.executors, name, lambda: "fixture")
+
+    async def must_not_run(*args):
+        pytest.fail("disabled feature scheduled a background task")
+
+    monkeypatch.setattr(mirror, "run", must_not_run)
+    app = bot_modules.bot.build_application("123:fixture", {0}, router, mirror)
+    async with app:
+        await app.post_init(app)
+        await deliver(app, "/status")
+        assert "host:   fixture" in request.calls[-1][1]["text"]
+        assert mirror.command("pending", []) == "Planning is not configured."
+        await deliver(app, "/help")
+        assert "/status" in request.calls[-1][1]["text"]
+        await app.post_stop(app)
+        await app.post_shutdown(app)
+    assert logs.count("planning not configured; feature disabled") == 1
+
+
+@pytest.mark.parametrize(
+    "mounted,target_active,starts", [(True, False, True), (True, True, False), (False, False, True)]
+)
+def test_release_helper_waits_for_unmount_or_defers_to_unlock(
+    tmp_path, mounted, target_active, starts
+):
+    import os
+    import shlex
+    import subprocess
+    from configparser import ConfigParser
+
+    unit = ConfigParser(interpolation=None)
+    unit.read(BOT_DIR.parents[1] / "etc/systemd/system/homelab-bot-data-released.service")
+    command = unit.get("Service", "ExecStart")
+    mount_marker = tmp_path / "mounted"
+    target_marker = tmp_path / "target-active"
+    calls = tmp_path / "calls"
+    if mounted:
+        mount_marker.touch()
+    if target_active:
+        target_marker.touch()
+    scripts = {
+        "mountpoint": 'test -e "$FAKE_MOUNTED"',
+        "systemctl": """case "$1" in
+is-active) test -e "$FAKE_TARGET";;
+start) printf '%s\\n' "$*" >> "$FAKE_CALLS";;
+*) exit 1;;
+esac""",
+        "sleep": 'rm -f "$FAKE_MOUNTED"',
+    }
+    for name, script in scripts.items():
+        path = tmp_path / name
+        path.write_text("#!/bin/sh\n" + script + "\n")
+        path.chmod(0o700)
+        command = command.replace("/usr/bin/" + name, shlex.quote(str(path)))
+    environment = dict(
+        os.environ,
+        FAKE_MOUNTED=str(mount_marker),
+        FAKE_TARGET=str(target_marker),
+        FAKE_CALLS=str(calls),
+    )
+    subprocess.run(
+        shlex.split(command), env=environment, check=True, capture_output=True, timeout=5
+    )
+    assert calls.exists() is starts
+    if starts:
+        assert not mount_marker.exists()
+        assert calls.read_text() == "start homelab-telegram-bot.service\n"
+
+
+def test_planning_jsonl_final_newline_optional_and_invalid_line_blocks(planning_repo):
+    event = append_planning_event(planning_repo, text="Fixture\u0085text")
+    path = planning_repo.source / "outbox.jsonl"
+    path.write_text(json.dumps(event, ensure_ascii=False))
+    planning_repo.commit()
+    mirror = planning_repo.mirror
+    assert mirror.refresh() is None
+    assert mirror.events() == [event]
+    path.write_text(path.read_text() + "\n{")
+    planning_repo.commit()
+    assert mirror.refresh() is None
+    with pytest.raises(ValueError):
+        mirror.notification_batch()
+    assert not mirror.marker.exists()

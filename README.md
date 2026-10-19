@@ -48,7 +48,10 @@ Solid parts are built; dashed parts are planned.
 
 The Telegram bot runs as a sandboxed host service using python-telegram-bot in its own
 hash-pinned virtual environment. It long-polls with no listening port and remains available
-before the data volumes are unlocked; see the [bot runbook](docs/operations.md#run-it).
+before the data volumes are unlocked. After unlock, an optional read-only planning mirror
+supplies `/pending`, `/recap [hours]`, `/slice <id>` and notices for new outbox events.
+Private configuration and a read-only deploy key stay on the node; see the
+[bot runbook](docs/operations.md#run-it).
 
 Docker state and rebuildable files live on the encrypted second SSD at `/srv/homelab-bulk`;
 databases, originals and corpus stay on `/srv/homelab`. After boot the owner unlocks main,

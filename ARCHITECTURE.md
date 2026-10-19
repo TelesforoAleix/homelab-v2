@@ -67,7 +67,8 @@ their installed modes are recorded in `AGENTS.md` and the rebuild runbook. Recov
 [Rebuilding the node](docs/operations.md#rebuilding-the-node) procedure: no node backup, a public code
 clone, Brain from the owner's Mac, originals restored from an encrypted copy (or the
 owner's Mac corpus), re-ingestion and re-issued secrets.
-The rebuilt node needs no GitHub credential. Rebuild the Samsung independently; recover an
+The optional planning mirror uses its own read-only GitHub deploy key; the public code clone
+and Brain recovery need no GitHub credential on the node. Rebuild the Samsung independently; recover an
 existing Micron using its owner passphrase, never reformat it. Provision a blank replacement
 through the runbook.
 
@@ -94,6 +95,29 @@ Telegram's length limit. The router also supplies startup `setMyCommands` and `s
 registration failures are nonfatal.
 User IDs remain audit metadata in the node's journal; `/ask` logs its argument length only.
 Handler errors log the registered command and exception type, never exception text.
+
+An optional private `planning.json` enables a read-only Git mirror and outbox notices.
+Git runs as a bounded subprocess, with SSH restricted to a root-owned deploy key and pinned
+GitHub host key under `/etc/homelab-telegram-bot/`; that key grants no write access. The clone
+and durable outbox marker live only under the bot-owned `/srv/homelab/frontline/` on the
+encrypted volume. The sole new sandbox write exception is that directory. A new
+`homelab-bot-data-ready.service`, wanted by and part of `homelab-data.target`, restarts the
+boot-independent bot after unlock to refresh its mount namespace. On target stop, it stops
+the bot to release private volume binds; `homelab-bot-data-released.service` waits for the
+host unmount and starts the bot against the locked root filesystem. The bot is briefly
+unavailable during lock. If unlock is retried first, its hook owns the restart. Existing
+unlock units and script stay unchanged. The bot queries PID 1's data-target state before accessing planning
+data, including after a lock when its namespace might retain a mount.
+
+The mirror pulls about once a minute and before `/pending`, `/recap [hours]` and `/slice <id>`.
+These are read capabilities behind the existing main allowlist; they use no model and issue
+no orders. Missing configuration disables planning without stopping the bot. While locked,
+commands report the locked volume and notices wait. The first successful outbox read creates
+a marker at its current end without replay. New events go to each allowlisted user, with
+notice text cut to 600 characters and a `/slice` pointer. Each confirmed recipient send is
+followed immediately by an atomic, flushed marker update. Uncertain deliveries retry, so a
+crash or network ambiguity can cause a rare duplicate; notices are never deliberately skipped.
+Git output, configuration values, arguments and event content stay out of the journal.
 
 The first node-to-Mac action channel is the owner's launchd user agent on TCP 8091, binding
 only the runtime Tailscale IPv4. The tailnet grant permits only the node; there is no key.
