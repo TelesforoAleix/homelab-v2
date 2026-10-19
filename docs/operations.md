@@ -1523,7 +1523,7 @@ SSH accounts work through Tailscale.
 
     ```bash
     sudo test ! -e /etc/homelab-telegram-bot/planning_ed25519 || exit 1
-    sudo ssh-keygen -q -t ed25519 -N '' -C homelab-planning-readonly -f /etc/homelab-telegram-bot/planning_ed25519
+    sudo ssh-keygen -q -t ed25519 -N '' -C frontline-readonly -f /etc/homelab-telegram-bot/planning_ed25519
     sudo chown root:homelab-bot /etc/homelab-telegram-bot/planning_ed25519
     sudo chmod 0640 /etc/homelab-telegram-bot/planning_ed25519
     sudo cat /etc/homelab-telegram-bot/planning_ed25519.pub
