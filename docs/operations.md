@@ -45,6 +45,42 @@ is locked or the API is unavailable, `/ask` reports that the knowledge service i
 `/spend` and `/model` are no longer commands. Startup registers the router's command list and
 description with Telegram; registration failure is logged and polling continues.
 
+Optional planning reads use `/pending` (needs attention, running, scheduled, ready; planned
+only as a count), `/recap [hours]` (default 24, positive hours, grouped by
+slice), and `/slice <id>` (all fields including the full attention body). They share `/status`'s
+main allowlist and use no model. Accepted slices are omitted from pending; unresolved attention
+and review/escalated states take precedence over running, slots and ready. Scheduled entries
+sort by slot. Configuration is read at startup from private
+`/etc/homelab-telegram-bot/planning.json`; see the provisioning steps under
+[Rebuilding the node](#rebuilding-the-node). An absent file logs
+`planning not configured; feature disabled` once and leaves existing commands working.
+
+The bot pulls its read-only mirror about once a minute and on demand for these commands.
+The mirror and outbox marker live under `/srv/homelab/frontline/`. While the data target is
+inactive the new commands report a locked volume, notices wait, and no planning directory is
+created. `homelab-bot-data-ready.service` restarts the bot automatically after unlock to refresh
+its mount namespace. On target stop, the hook stops the bot to release the private writable
+bind that would otherwise pin the encrypted filesystem. Its
+`homelab-bot-data-released.service` helper waits for host unmount, then starts the bot again
+against the locked root filesystem. Expect a brief interruption during lock. A retried
+unlock takes over the restart. Neither the unlock script nor existing data units change.
+The bot still starts at boot and opens no listening port. If lock fails with the volume still
+mounted, the release helper keeps waiting: retry the owner lock/unlock operation. To restore
+status while intentionally leaving the target inactive and the volume mounted, start
+`homelab-telegram-bot.service` manually; stop it again before retrying unmount.
+
+On the first successful read, the marker starts at the outbox's current end, with no historical
+notices. Subsequent events are sent to every main-allowlist recipient; nothing is sent when
+there is nothing new. Notice text is cut to 600 characters and points to `/slice <id>`;
+`/recap` returns event text and `/slice` returns the full attention body. After each confirmed
+recipient send the bot atomically saves and flushes its line/recipient marker. Uncertain
+sends retry: a crash or network ambiguity before marker persistence can produce a rare
+duplicate. Never delete the marker to retry a notice: a missing marker intentionally skips
+to the current end. A bad marker or truncated outbox fails closed with a metadata-only warning.
+Sync failures do not advance it; commands report failure rather than returning stale state.
+The journal contains fixed sync outcomes, line/recipient counts and failure metadata, never
+Git output, repository settings or event text.
+
 Private bot configuration stays on the node under `/etc/homelab-telegram-bot/`: `allowlist`
 and `privileged-allowlist` contain numeric Telegram user IDs, one per line; `restart-allowlist`
 contains unit names, one per line (a missing `.service` suffix is added). All three ignore blank
@@ -1110,7 +1146,8 @@ repository through the owner's Mac clone. Brain is copied from the Mac; original
 (see [Restoring originals from a copy](#restoring-originals-from-a-copy)). The corpus can
 also be copied from the owner’s Mac;
 Postgres is derived by re-ingesting, models are fetched upstream, and secrets are re-issued.
-The rebuilt node holds no GitHub credential and never clones Brain.
+The rebuilt node never clones Brain. Optional planning reads use a separate read-only GitHub
+deploy key; the public application checkout needs no GitHub credential.
 
 This procedure describes the node verified on 2026-10-05: Ubuntu 26.04.1 LTS, kernel 7.0,
 systemd 259, Docker 29.8 with Compose v5.5, and Tailscale 1.102. Vendor apt repositories supply
@@ -1140,7 +1177,7 @@ SSH accounts work through Tailscale.
    sudo vgs ubuntu-vg
    sudo lvs -o lv_name,lv_size ubuntu-vg
    sudo apt-get update
-   sudo apt-get install ca-certificates curl git rsync openssh-server lvm2 cryptsetup ufw iw chrony polkitd python3 openssl age parted
+   sudo apt-get install ca-certificates curl git rsync openssh-server lvm2 cryptsetup ufw iw chrony polkitd python3 openssl age parted acl
    ```
 
 2. **Create, format and register the encrypted data volume.** These commands apply only to
@@ -1316,7 +1353,7 @@ SSH accounts work through Tailscale.
    sudo containerd --config /etc/containerd/config.toml config dump >/dev/null
    sudo visudo -c
    sudo sshd -t
-   sudo systemd-analyze --generators=yes verify /etc/systemd/system/homelab.service /etc/systemd/system/homelab-data.target /etc/systemd/system/homelab-notify@.service /etc/systemd/system/homelab-watchdog.service /etc/systemd/system/homelab-watchdog.timer /etc/systemd/system/homelab-telegram-bot.service /etc/systemd/system/wifi-powersave-off.service /etc/systemd/system/homelab-copy-reminder.service /etc/systemd/system/homelab-copy-reminder.timer
+   sudo systemd-analyze --generators=yes verify /etc/systemd/system/homelab.service /etc/systemd/system/homelab-data.target /etc/systemd/system/homelab-notify@.service /etc/systemd/system/homelab-watchdog.service /etc/systemd/system/homelab-watchdog.timer /etc/systemd/system/homelab-telegram-bot.service /etc/systemd/system/homelab-bot-data-ready.service /etc/systemd/system/homelab-bot-data-released.service /etc/systemd/system/wifi-powersave-off.service /etc/systemd/system/homelab-copy-reminder.service /etc/systemd/system/homelab-copy-reminder.timer
    ```
 
    The bot environment stays on the root filesystem so it works before unlock. Venv
@@ -1324,7 +1361,11 @@ SSH accounts work through Tailscale.
    all `root:root`; the service can read but cannot modify it. For an update, first save
    the installed bot `.py` files and unit in a root-only rollback directory and show their
    diffs against the committed tree. Restore those files, run `systemctl daemon-reload`
-   and restart `homelab-telegram-bot.service` to roll back. Restarting the Docker stack
+   and restart `homelab-telegram-bot.service` to roll back. When reverting the planning feature,
+   first disable and stop `homelab-bot-data-ready.service`, stop its release helper, then
+   restore the prior bot files and unit, remove the two added hook unit files, reload units
+   and start the bot. Keep the encrypted planning directory, key and config for recovery;
+   deleting them is a separate owner decision. Restarting the Docker stack
    does not update this environment.
 
    `--generators=yes` supplies the mount unit from fstab during verification. Vendor units
@@ -1341,7 +1382,7 @@ SSH accounts work through Tailscale.
    sudo systemctl reload ssh.service
    sudo systemctl disable docker.service docker.socket containerd.service
    sudo systemctl enable --now tailscaled.service chrony.service wifi-powersave-off.service
-   sudo systemctl enable homelab-telegram-bot.service homelab-watchdog.timer homelab-copy-reminder.timer
+   sudo systemctl enable homelab-telegram-bot.service homelab-bot-data-ready.service homelab-watchdog.timer homelab-copy-reminder.timer
    sudo ufw default deny incoming
    sudo ufw default allow outgoing
    sudo ufw default deny routed
@@ -1463,6 +1504,72 @@ SSH accounts work through Tailscale.
     values, addresses, tailnet names, emails, Wi-Fi names, chat IDs and UUIDs stay outside
     the repository. Only the owner-approved login name appears in SSH hardening.
     The token is TPM2-sealed without PCR binding; no plaintext token file is created.
+
+    For optional planning reads, unlock the data volume first. Give the bot only traverse
+    access to its parent and ownership of its own private directory; no membership in the
+    owner's group is needed. Preserve all existing ACL entries:
+
+    ```bash
+    mountpoint -q /srv/homelab || exit 1
+    sudo setfacl -m u:homelab-bot:--x /srv/homelab
+    sudo install -d -m 0700 -o homelab-bot -g homelab-bot /srv/homelab/frontline
+    sudo getfacl -p /srv/homelab /srv/homelab/frontline
+    ```
+
+    Generate a new ed25519 deploy key only if none exists. Never overwrite an existing key.
+    Its private half remains root-owned and readable only by root and the bot's group.
+    Register the public half on the private planning repository with **Allow write access
+    unchecked**. Never copy the private half off the node:
+
+    ```bash
+    sudo test ! -e /etc/homelab-telegram-bot/planning_ed25519 || exit 1
+    sudo ssh-keygen -q -t ed25519 -N '' -C frontline-readonly -f /etc/homelab-telegram-bot/planning_ed25519
+    sudo chown root:homelab-bot /etc/homelab-telegram-bot/planning_ed25519
+    sudo chmod 0640 /etc/homelab-telegram-bot/planning_ed25519
+    sudo cat /etc/homelab-telegram-bot/planning_ed25519.pub
+    ```
+
+    Pin GitHub's published ed25519 host key in
+    `/etc/homelab-telegram-bot/known_hosts`, owned `root:homelab-bot`, mode `0640`.
+    Obtain it from [GitHub's SSH key documentation](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints)
+    over verified HTTPS and compare `ssh-keygen -lf` with the fingerprint published there;
+    do not trust an unverified `ssh-keyscan` result. Git uses only this known-hosts file,
+    strict host checking, this identity, no agent and no interactive authentication.
+
+    Create `planning.json` as `root:homelab-bot` `0640`, and fill it privately using `sudoedit`.
+    This is its schema with neutral placeholders, not deployable values:
+
+    ```json
+    {
+      "repo_url": "git@github.com:<OWNER>/<REPOSITORY>.git",
+      "branch": "<BRANCH>",
+      "state_path": "<RELATIVE-STATE-PATH>",
+      "outbox_path": "<RELATIVE-OUTBOX-PATH>",
+      "poll_seconds": 60
+    }
+    ```
+
+    The four string keys are required. `repo_url` uses GitHub's SCP-style SSH syntax;
+    paths are relative to the clone and cannot escape it. `poll_seconds` is optional,
+    defaults to 60 and accepts integer values from 10 through 3600. Keep the actual repository
+    identity, branch and both paths out of Git, tests, PRs, docs and logs. The data directory,
+    key and known-hosts paths are fixed above. The config and SSH files stay on the root
+    filesystem so missing or locked-volume planning never prevents boot-time status.
+
+    After installing the committed bot modules and all three bot units, enable
+    `homelab-bot-data-ready.service`, run `systemctl daemon-reload` and restart
+    `homelab-telegram-bot.service`. The hook only refreshes access after future unlocks;
+    the bot itself stays enabled at boot. Do not enable the release helper: the hook starts it
+    only when the target stops. Record `systemd-analyze security
+    homelab-telegram-bot.service` before and after (the reviewed sandbox scores 1.3), and run
+    `systemd-analyze --generators=yes verify` on all three units. With no config, confirm the
+    single not-configured journal line and working `/status`. With config, confirm
+    `planning clone ready`, successful pulls and `planning outbox initialized lines=N;
+    history skipped`; inspect only the numeric marker fields, never planning content in logs.
+    Keep the marker with the clone on the encrypted volume. Have the owner check `/pending`,
+    `/slice <id>` and a new event arriving once. After a reboot, `/status` must answer while
+    locked; after unlock these read commands and notices must resume without a manual restart.
+    Only this bot's files and units need deployment; the Docker stack is unaffected.
 
     For Telegram `/backup`, provision `/etc/homelab-telegram-bot/mac-listener-url` with the
     owner-confirmed `http://<MAC-TAILSCALE-IP>:8091` base URL (no action path). The address is

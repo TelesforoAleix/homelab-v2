@@ -1,0 +1,23 @@
+# Refresh access after unlock; release private volume binds before lock.
+# The bot itself stays a boot service. The release helper resumes it after unmount.
+[Unit]
+Description=Manage Telegram planning access across data unlock and lock
+ConditionPathIsMountPoint=/srv/homelab
+After=homelab-data.target
+PartOf=homelab-data.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/systemctl restart homelab-telegram-bot.service
+ExecStop=/usr/bin/systemctl stop homelab-telegram-bot.service
+ExecStopPost=/usr/bin/systemctl --no-block start homelab-bot-data-released.service
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=homelab-data.target

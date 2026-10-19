@@ -5,7 +5,7 @@
 #
 # Host metrics and /ask are read capabilities. /restart invokes systemctl with
 # NoNewPrivileges retained; polkit grants only chrony.service restart.
-# bot.py, router.py and executors.py must be installed together. Python adds the
+# All bot Python modules must be installed together. Python adds the
 # script directory to sys.path, so no PYTHONPATH is needed.
 #
 # Network.target avoids a boot ordering barrier: polling backs off and retries
@@ -66,6 +66,8 @@ DevicePolicy=closed
 ProtectProc=invisible
 
 ReadOnlyPaths=/etc/homelab-telegram-bot
+# Optional before unlock; the data-ready hook refreshes the mount namespace.
+ReadWritePaths=-/srv/homelab/frontline
 
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

@@ -590,3 +590,23 @@ under `/opt/homelab-telegram-bot/.venv`, built with host Python and installed wi
 `pip --require-hashes`, keeps the bot independent of Docker and volume unlock. The host
 user, sandbox, TPM-sealed credential, TLS verification and no-listening-port boundary stay
 unchanged. Tests use the same library through the `telegram-bot` dependency group.
+
+
+**2026-10-19 — Planning stays a read-only encrypted-volume mirror, with event notices.**
+The host bot gains optional planning reads through a private configuration file and a
+read-only deploy key generated on the node. Git owns clone/pull machinery; no model, listening
+port or planning write channel is introduced. The mirror and outbox marker belong to
+`homelab-bot` under `/srv/homelab/frontline/`. Only that path becomes writable in the sandbox.
+A separate data-target hook restarts the bot after unlock to refresh its mount namespace.
+On target stop it stops the bot to release its private writable bind, which otherwise pins
+the filesystem after host unmount. A separate release helper waits for host unmount and
+starts the bot against the locked root filesystem; a retried unlock owns the restart instead.
+This briefly interrupts the bot during lock without making boot-time status depend on the
+volume or changing the unlock script or its existing units. PID 1's target state gates reads so retained namespace mounts do not expose
+planning while locked. Missing configuration disables only the feature.
+
+The first outbox read starts at the current end. Thereafter each confirmed send immediately
+persists line and recipient progress through an atomic replacement with fsync. The owner
+chose at-least-once delivery: uncertain sends retry, accepting a rare duplicate between
+Telegram delivery and durable local acknowledgement rather than losing a notice. No periodic
+summary is sent; read commands provide pending groups, a requested recap and full slice details.

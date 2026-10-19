@@ -31,7 +31,7 @@ jobs:
           "$RUNNER_TEMP/bot-venv/bin/python" -c 'import telegram; print(telegram.__version__)'
           sudo mkdir -p /opt/homelab-telegram-bot
           sudo ln -s "$RUNNER_TEMP/bot-venv" /opt/homelab-telegram-bot/.venv
-          sudo systemd-analyze verify node/etc/systemd/system/homelab-telegram-bot.service
+          sudo systemd-analyze verify node/etc/systemd/system/homelab-telegram-bot.service node/etc/systemd/system/homelab-bot-data-ready.service node/etc/systemd/system/homelab-bot-data-released.service
       - run: uv run pytest
       - run: docker build -t homelab:ci .
       - name: Verify the pinned LiteLLM image without external networking or real secrets

@@ -1,0 +1,18 @@
+# Started only by the data-ready hook on stop, never enabled at boot.
+# No private bind under /srv: the host unmount propagates into this namespace.
+[Unit]
+Description=Resume boot-independent Telegram bot after data unmount
+After=homelab-data.target
+
+[Service]
+Type=oneshot
+# If unlock is retried, its data-ready hook owns the restart instead.
+ExecStart=/bin/sh -c 'while /usr/bin/mountpoint -q /srv/homelab; do /usr/bin/systemctl is-active --quiet homelab-data.target && exit 0; /usr/bin/sleep 1; done; /usr/bin/systemctl start homelab-telegram-bot.service'
+TimeoutStartSec=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
