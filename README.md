@@ -46,6 +46,10 @@ Solid parts are built; dashed parts are planned.
 - [ARCHITECTURE.md](ARCHITECTURE.md) explains the boundaries and rules;
   [DECISIONS.md](DECISIONS.md) records the choices behind them.
 
+The Telegram bot runs as a sandboxed host service using python-telegram-bot in its own
+hash-pinned virtual environment. It long-polls with no listening port and remains available
+before the data volumes are unlocked; see the [bot runbook](docs/operations.md#run-it).
+
 Docker state and rebuildable files live on the encrypted second SSD at `/srv/homelab-bulk`;
 databases, originals and corpus stay on `/srv/homelab`. After boot the owner unlocks main,
 which supplies bulk’s key, then Docker and the applications start. See

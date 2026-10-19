@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from telegram import Update
+from telegram.request import BaseRequest
 
 BOT_DIR = Path(__file__).resolve().parents[1] / "node/opt/homelab-telegram-bot"
 
@@ -112,31 +114,94 @@ def test_model_output_remains_text_and_privileged_gate_remains(bot_modules, monk
     assert "not authorised" in router.dispatch(0, "/restart chrony.service")
 
 
+class TelegramRequest(BaseRequest):
+    """Exercise the real Application/Bot serializers without contacting Telegram."""
+
+    def __init__(self, failure=None):
+        self.calls = []
+        self.failure = failure
+
+    @property
+    def read_timeout(self):
+        return 15
+
+    async def initialize(self):
+        pass
+
+    async def shutdown(self):
+        pass
+
+    async def do_request(self, url, method, request_data=None, **kwargs):
+        name = url.rsplit("/", 1)[-1]
+        params = request_data.parameters if request_data else {}
+        self.calls.append((name, params))
+        if name == "getMe":
+            result = {"id": 123, "is_bot": True, "first_name": "Fixture", "username": "fixture_bot"}
+        elif name in {"setMyCommands", "setMyDescription"}:
+            if self.failure == "exception":
+                raise RuntimeError("Private exception text")
+            result = self.failure != "not-ok"
+        elif name == "sendMessage":
+            result = {
+                "message_id": 1,
+                "date": 0,
+                "chat": {"id": params["chat_id"], "type": "private"},
+                "text": params["text"],
+            }
+        else:
+            result = []
+        return 200, json.dumps({"ok": True, "result": result}).encode()
+
+
+@pytest.fixture
+async def telegram_app(bot_modules, monkeypatch):
+    from telegram.ext import ExtBot
+
+    request = TelegramRequest()
+    monkeypatch.setattr(
+        bot_modules.bot,
+        "AuditedBot",
+        lambda token: ExtBot(token, request=request, get_updates_request=request),
+    )
+    logs = []
+    monkeypatch.setattr(bot_modules.bot, "log", logs.append)
+    router = bot_modules.router.Router(privileged_users={1}, log=logs.append)
+    bot_modules.executors.register_all(router, allowed_units={"chrony.service"}, log=logs.append)
+    app = bot_modules.bot.build_application("123:fixture", {0, 1}, router)
+    async with app:
+        yield app, request, router, logs
+
+
+async def deliver(app, text, user=0, *, edited=False):
+    update = Update.de_json(
+        {
+            "update_id": 1,
+            "edited_message" if edited else "message": {
+                "message_id": 1,
+                "date": 0,
+                "chat": {"id": 10, "type": "private"},
+                "from": {"id": user, "is_bot": False, "first_name": "Fixture"},
+                **({"text": text} if text is not None else {}),
+            },
+        },
+        app.bot,
+    )
+    await app.process_update(update)
+
+
 @pytest.mark.parametrize("failure", [None, "not-ok", "exception"])
-def test_startup_registers_profile_from_router_and_failure_continues(
-    bot_modules, monkeypatch, failure
-):
-    bot = bot_modules.bot
-    monkeypatch.setattr(bot, "load_token", lambda: "")
-    monkeypatch.setattr(bot, "load_allowlist", lambda: {0})
-    monkeypatch.setattr(bot, "load_privileged", set)
-    monkeypatch.setattr(bot, "load_restart_units", set)
-    calls, polls, logs = [], [], []
-    monkeypatch.setattr(bot, "log", logs.append)
-
-    def api_call(method, params):
-        calls.append((method, params))
-        if failure == "exception":
-            raise RuntimeError("Private exception text")
-        return {"ok": failure != "not-ok"}
-
-    monkeypatch.setattr(bot, "api_call", api_call)
-    monkeypatch.setattr(bot, "poll_forever", lambda allowlist, router: polls.append(router))
-    bot.main()
-    assert len(polls) == 1
-    assert [method for method, _ in calls] == ["setMyCommands", "setMyDescription"]
-    commands = json.loads(calls[0][1]["commands"])
-    assert {command["command"] for command in commands} == {
+async def test_startup_registers_profile_from_router_and_failure_continues(telegram_app, failure):
+    app, request, router, logs = telegram_app
+    request.failure = failure
+    await app.post_init(app)
+    await deliver(app, "/help")
+    calls = dict(request.calls)
+    commands = calls["setMyCommands"]["commands"]
+    assert commands == [
+        {"command": name[1:], "description": executor.summary}
+        for name, executor in router.executors.items()
+    ]
+    assert {c["command"] for c in commands} == {
         "status",
         "disk",
         "uptime",
@@ -146,21 +211,41 @@ def test_startup_registers_profile_from_router_and_failure_continues(
         "help",
         "start",
     }
-    assert commands == [
-        {"command": name[1:], "description": executor.summary}
-        for name, executor in polls[0].executors.items()
-    ]
-    description = calls[1][1]["description"]
+    description = calls["setMyDescription"]["description"]
     assert len(description) <= 512
-    assert all(
-        f"/{command['command']}: {command['description']}" in description for command in commands
-    )
+    assert all(f"/{c['command']}: {c['description']}" in description for c in commands)
+    assert "Home Lab bot" in calls["sendMessage"]["text"]
     assert "Private exception text" not in "\n".join(logs)
-    assert all(
-        ("succeeded" if failure is None else "WARNING") in line
-        for line in logs
-        if "command registration" in line
+    registration = [line for line in logs if "command registration" in line]
+    assert len(registration) == 2
+    assert all(("succeeded" if failure is None else "WARNING") in line for line in registration)
+
+
+async def test_library_dispatch_gates_and_locked_volume(telegram_app, bot_modules, monkeypatch):
+    app, request, router, logs = telegram_app
+
+    def offline(*args, **kwargs):
+        raise urllib.error.URLError("private question")
+
+    monkeypatch.setattr(bot_modules.executors.urllib.request, "urlopen", offline)
+    subprocess = []
+    monkeypatch.setattr(
+        bot_modules.executors.subprocess, "run", lambda *a, **k: subprocess.append(a)
     )
+    for text, user, expected in (
+        ("/status", 99, "Not authorised."),
+        ("/restart chrony", 0, "not authorised"),
+        ("/backup", 0, "not authorised"),
+        ("/restart ssh", 1, "is not permitted"),
+        ("/ask private question", 0, "knowledge service is down"),
+        (None, 0, "Unknown command"),
+        ("/help@fixture_bot", 0, "Home Lab bot"),
+        ("/start", 0, "Home Lab bot"),
+    ):
+        await deliver(app, text, user, edited=True)
+        assert expected in request.calls[-1][1]["text"]
+    assert not subprocess
+    assert "private question" not in "\n".join(logs)
 
 
 def test_handler_error_logs_command_and_type_without_content(bot_modules, monkeypatch):
@@ -179,23 +264,15 @@ def test_handler_error_logs_command_and_type_without_content(bot_modules, monkey
     assert question not in "\n".join(logs)
 
 
-def test_long_replies_sent_in_order_within_telegram_limit(bot_modules, monkeypatch):
-    calls = []
+async def test_long_replies_sent_in_order_within_telegram_limit(telegram_app, bot_modules):
+    app, request, _, _ = telegram_app
     text = "Fixture [1]\n" + "😀" * 5000 + "\nSources:\n[1] Fixture title"
-
-    def api_call(method, params, *, timeout):
-        calls.append((method, params, timeout))
-        return {"ok": True}
-
-    monkeypatch.setattr(bot_modules.bot, "api_call", api_call)
-    bot_modules.bot.send_message(0, text)
+    await bot_modules.bot.send_message(app.bot, 10, text)
+    calls = [params for method, params in request.calls if method == "sendMessage"]
     assert len(calls) > 1
-    assert "".join(params["text"] for _, params, _ in calls) == text
-    assert all(len(params["text"].encode("utf-16-le")) // 2 <= 4096 for _, params, _ in calls)
-    assert all(
-        method == "sendMessage" and params["chat_id"] == 0 and timeout == 30
-        for method, params, timeout in calls
-    )
+    assert "".join(params["text"] for params in calls) == text
+    assert all(len(params["text"].encode("utf-16-le")) // 2 <= 4096 for params in calls)
+    assert all(params["chat_id"] == 10 for params in calls)
 
 
 @pytest.mark.parametrize("code", [302, 404, 500])
@@ -360,3 +437,81 @@ def test_backup_privilege_gate_prevents_call_and_argument_logging(bot_modules, m
     assert "private argument" not in "\n".join(logs)
     assert router.executors["/backup"].capability is bot_modules.router.Capability.PRIVILEGED
     assert "/backup" in router.dispatch(0, "/help")
+
+
+async def test_library_backup_and_allowlisted_restart(
+    telegram_app, bot_modules, backup_listener, monkeypatch
+):
+    app, request, _, _ = telegram_app
+    await deliver(app, "/backup", user=1)
+    assert request.calls[-1][1]["text"] == "Connect the SD card and send /backup again."
+    assert backup_listener.calls == [("/backup", b"")]
+    calls = []
+
+    def restart(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(bot_modules.executors.subprocess, "run", restart)
+    await deliver(app, "/restart chrony", user=1)
+    assert request.calls[-1][1]["text"] == "restarted chrony.service"
+    assert calls[0][0] == ["/usr/bin/systemctl", "--no-ask-password", "restart", "chrony.service"]
+    assert calls[0][1]["timeout"] == 30
+
+
+def test_startup_empty_main_and_privileged_subset(bot_modules, tmp_path, monkeypatch):
+    bot = bot_modules.bot
+    allowlist = tmp_path / "allowlist"
+    allowlist.write_text("# empty\n")
+    monkeypatch.setenv("HOMELAB_BOT_ALLOWLIST", str(allowlist))
+    with pytest.raises(SystemExit, match="empty"):
+        bot.load_allowlist()
+    allowlist.write_text("0 # owner\ninvalid\n")
+    assert bot.load_allowlist() == {0}
+    monkeypatch.setattr(bot, "load_token", lambda: "123:fixture")
+    monkeypatch.setattr(bot, "load_privileged", lambda: {1})
+    monkeypatch.setattr(bot, "load_restart_units", set)
+    with pytest.raises(SystemExit, match="privileged allowlist but not"):
+        bot.main()
+    # main disables vendor logging; don't alter logging for unrelated tests.
+    import logging
+
+    logging.disable(logging.NOTSET)
+
+
+def test_token_only_from_systemd_credential(bot_modules, monkeypatch, tmp_path):
+    monkeypatch.delenv("CREDENTIALS_DIRECTORY", raising=False)
+    monkeypatch.setenv("BOT_TOKEN", "must-not-use")
+    with pytest.raises(SystemExit, match="CREDENTIALS_DIRECTORY"):
+        bot_modules.bot.load_token()
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(tmp_path))
+    (tmp_path / "bot-token").write_text("123:fixture\n")
+    assert bot_modules.bot.load_token() == "123:fixture"
+
+
+async def test_poll_outage_logs_once_and_recovery_without_content(bot_modules, monkeypatch):
+    from telegram.error import NetworkError
+    from telegram.ext import ExtBot
+
+    logs = []
+    monkeypatch.setattr(bot_modules.bot, "log", logs.append)
+    results = iter([NetworkError("Private token and prose"), NetworkError("private"), (), ()])
+
+    async def updates(*args, **kwargs):
+        result = next(results)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(ExtBot, "get_updates", updates)
+    bot = bot_modules.bot.AuditedBot("123:fixture")
+    for _ in range(2):
+        with pytest.raises(NetworkError):
+            await bot.get_updates()
+    await bot.get_updates()
+    await bot.get_updates()
+    assert logs == [
+        "WARNING: Telegram unreachable, backing off: NetworkError",
+        "Telegram reachable again",
+    ]
+    await bot.shutdown()

@@ -12,7 +12,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
-      - run: uv sync --group benchmark
+      - run: uv sync --group benchmark --group telegram-bot
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - name: Validate node shell and runtime configuration
@@ -23,6 +23,15 @@ jobs:
           shellcheck node/usr/local/sbin/*.sh
           dockerd --validate --config-file=node/etc/docker/daemon.json
           containerd --config node/etc/containerd/config.toml config dump > /dev/null
+      - name: Verify host bot requirements on Python 3.14
+        run: |
+          uv python install 3.14
+          uv run --python 3.14 --no-project python -m venv "$RUNNER_TEMP/bot-venv"
+          "$RUNNER_TEMP/bot-venv/bin/python" -m pip install --require-hashes -r node/opt/homelab-telegram-bot/requirements.txt
+          "$RUNNER_TEMP/bot-venv/bin/python" -c 'import telegram; print(telegram.__version__)'
+          sudo mkdir -p /opt/homelab-telegram-bot
+          sudo ln -s "$RUNNER_TEMP/bot-venv" /opt/homelab-telegram-bot/.venv
+          sudo systemd-analyze verify node/etc/systemd/system/homelab-telegram-bot.service
       - run: uv run pytest
       - run: docker build -t homelab:ci .
       - name: Verify the pinned LiteLLM image without external networking or real secrets

@@ -33,7 +33,10 @@ approved task; the exceptions requiring approval are in `AGENTS.md`. Deploy with
 `sudo systemctl restart homelab.service`; it pulls public `main` over HTTPS and builds images.
 Host-file installation is explicit; restarting the stack does not install those files.
 
-The Telegram bot stays a stdlib-only host service running as `homelab-bot`. Its code lives at
+The Telegram bot is a host service using python-telegram-bot, running as `homelab-bot`.
+It uses `/opt/homelab-telegram-bot/.venv/bin/python` with hash-pinned requirements, keeps
+its existing systemd sandbox and long polling, and needs no Docker or listening port.
+Its code lives at
 `node/opt/homelab-telegram-bot/`, installed at `/opt/homelab-telegram-bot/`. `/ask <question>`
 calls the loopback answer endpoint and replies with the answer and numbered source titles;
 refusals have no sources. Long replies are split into Telegram-sized messages. When the volume
@@ -1291,6 +1294,13 @@ SSH accounts work through Tailscale.
    sudo install -d -m 0700 -o root -g root /var/lib/homelab-copy
    sudo install -m 0755 -o root -g root node/usr/local/sbin/*.sh /usr/local/sbin/
    sudo install -m 0644 -o root -g root node/opt/homelab-telegram-bot/*.py /opt/homelab-telegram-bot/
+   sudo install -m 0644 -o root -g root node/opt/homelab-telegram-bot/requirements.txt /opt/homelab-telegram-bot/
+   sudo apt-get install -y python3-venv
+   sudo python3 -m venv /opt/homelab-telegram-bot/.venv
+   sudo /opt/homelab-telegram-bot/.venv/bin/python -m pip install --require-hashes -r /opt/homelab-telegram-bot/requirements.txt
+   sudo chown -R root:root /opt/homelab-telegram-bot/.venv
+   sudo chmod -R u=rwX,go=rX /opt/homelab-telegram-bot/.venv
+   sudo /opt/homelab-telegram-bot/.venv/bin/python -c 'import telegram; print(telegram.__version__)'
    sudo install -m 0644 -o root -g root node/etc/polkit-1/rules.d/50-homelab-bot.rules /etc/polkit-1/rules.d/50-homelab-bot.rules
    sudo install -m 0644 -o root -g root node/etc/systemd/system/*.service node/etc/systemd/system/*.timer node/etc/systemd/system/*.target /etc/systemd/system/
    sudo install -m 0644 -o root -g root node/etc/systemd/system/homelab-notify@.service.d/*.conf /etc/systemd/system/homelab-notify@.service.d/
@@ -1308,6 +1318,14 @@ SSH accounts work through Tailscale.
    sudo sshd -t
    sudo systemd-analyze --generators=yes verify /etc/systemd/system/homelab.service /etc/systemd/system/homelab-data.target /etc/systemd/system/homelab-notify@.service /etc/systemd/system/homelab-watchdog.service /etc/systemd/system/homelab-watchdog.timer /etc/systemd/system/homelab-telegram-bot.service /etc/systemd/system/wifi-powersave-off.service /etc/systemd/system/homelab-copy-reminder.service /etc/systemd/system/homelab-copy-reminder.timer
    ```
+
+   The bot environment stays on the root filesystem so it works before unlock. Venv
+   directories are `0755`, data/Python files `0644`, and executable entry points `0755`,
+   all `root:root`; the service can read but cannot modify it. For an update, first save
+   the installed bot `.py` files and unit in a root-only rollback directory and show their
+   diffs against the committed tree. Restore those files, run `systemctl daemon-reload`
+   and restart `homelab-telegram-bot.service` to roll back. Restarting the Docker stack
+   does not update this environment.
 
    `--generators=yes` supplies the mount unit from fstab during verification. Vendor units
    may warn about removed directives; resolve failures in the recorded units before proceeding.

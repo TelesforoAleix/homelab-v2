@@ -42,7 +42,7 @@ Type=simple
 User=homelab-bot
 Group=homelab-bot
 
-ExecStart=/usr/bin/python3 /opt/homelab-telegram-bot/bot.py
+ExecStart=/opt/homelab-telegram-bot/.venv/bin/python /opt/homelab-telegram-bot/bot.py
 
 LoadCredential=bot-token:/etc/homelab-telegram-bot/token
 
