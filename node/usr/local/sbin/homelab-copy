@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stream encrypted originals; acknowledge only a checked destination copy."""
+"""Stream encrypted originals and the bot inbox; acknowledge only a checked copy."""
 
 import argparse
 import json
@@ -19,7 +19,10 @@ def stream(output, report):
     if not os.path.ismount(ROOT):
         raise ValueError("data volume is locked")
     folders = sorted(ROOT.glob("*-data/originals"))
-    if not folders:
+    inbox = ROOT / "frontline/inbox"
+    if inbox.exists() or inbox.is_symlink():
+        folders.append(inbox)
+    if not any(folder.parent.name.endswith("-data") for folder in folders):
         raise ValueError("no originals folders")
     manifest = []
     for folder in folders:

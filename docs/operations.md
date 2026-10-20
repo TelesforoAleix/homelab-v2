@@ -11,8 +11,9 @@ then main. `status` reports both mounts and the runtime units. A partial unlock 
 The Telegram bot, watchdog and alerts remain available while locked.
 
 All clients put fetchable/rebuildable files (models, downloads, generated images) under
-`/srv/homelab-bulk/<client>/`. Databases, originals and corpus stay on `/srv/homelab`;
-only the `*-data/originals/` directories are included in the weekly copy. Models default to
+`/srv/homelab-bulk/<client>/`. Databases, originals, corpus and the bot inbox stay on `/srv/homelab`;
+the weekly copy includes each `*-data/originals/` directory and, when present, the bot inbox at
+`frontline/inbox/`. Other frontline state is excluded. Models default to
 `/srv/homelab-bulk/models`, including both embedding servers. Docker uses
 `/srv/homelab-bulk/docker`, containerd uses `/srv/homelab-bulk/containerd`. The default Docker
 builder enables periodic GC with a 50 GB target; this is not a filesystem quota and active
@@ -1419,6 +1420,10 @@ Postgres is derived by re-ingesting, models are fetched upstream, and secrets ar
 The rebuilt node never clones Brain. Optional planning reads use a separate read-only GitHub
 deploy key; the public application checkout needs no GitHub credential.
 
+The weekly archive also carries `/srv/homelab/frontline/inbox` at `frontline/inbox` when that
+directory exists. Restore it using the ownership and modes in the restore procedure; the
+planning clone, orders and markers are rebuilt or transient and are not in the archive.
+
 This procedure describes the node verified on 2026-10-05: Ubuntu 26.04.1 LTS, kernel 7.0,
 systemd 259, Docker 29.8 with Compose v5.5, and Tailscale 1.102. Vendor apt repositories supply
 Docker and Tailscale; check the versions available when rebuilding. These commands have not
@@ -2287,7 +2292,7 @@ accepts mounted removable or ejectable volumes, including cards in a built-in SD
 It refuses the startup volume, every APFS volume in its boot container, fixed internal disks,
 and existing `homelab-originals-YYYY-MM-DD.tar.age`
 files. Use a different card or explicitly move an existing file before another copy that day.
-It prints every `*-data/originals` folder and its size, streams one tar archive through
+It prints every `*-data/originals` folder and the inbox when present, with each size, and streams one tar archive through
 age on the node directly onto the card, flushes the card, compares encrypted byte counts,
 then records the successful copy on the node. Folder sizes are allocated bytes (`du -sk`
 multiplied by 1024); the archive count is its exact encrypted length. Failed/partial files remain on the card for
@@ -2327,7 +2332,17 @@ printf 'restore exit status: %s\n' "$COPY_RESTORE_STATUS"
 ```
 
 Check the pipeline exit status and inspect the restored files. Each `<project>-data/originals/`
-goes back to `/srv/homelab/<project>-data/originals/` on the unlocked rebuilt node.
+goes back to `/srv/homelab/<project>-data/originals/` on the unlocked rebuilt node. Restore
+`frontline/inbox/` to `/srv/homelab/frontline/inbox/`, owned by `homelab-bot`. As root, apply
+ownership and modes after extraction:
+
+```bash
+chown -R homelab-bot:homelab-bot /srv/homelab/frontline/inbox
+find /srv/homelab/frontline/inbox -type d -exec chmod 0700 {} +
+find /srv/homelab/frontline/inbox -type f -exec chmod 0600 {} +
+```
+
+Do not restore the planning clone, orders or markers.
 `homelab-v2-data/originals/corpus/about-aleix/` contains `corpus.json` and `eval.json`;
 use it instead of the Mac corpus copy in rebuild step 11. Copy directories without changing
 their inner layout; as root on Linux restore numeric ownership and modes from the archive

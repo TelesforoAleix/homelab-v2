@@ -55,6 +55,40 @@ def test_stream_takes_only_originals_and_counts_output(tmp_path, monkeypatch):
         ]
 
 
+def test_stream_includes_inbox_when_present(tmp_path, monkeypatch):
+    originals = tmp_path / "alpha-data/originals"
+    originals.mkdir(parents=True)
+    (tmp_path / "frontline/inbox/item/file").mkdir(parents=True)
+    (tmp_path / "frontline/inbox/item/file/attachment").write_bytes(b"private")
+    age = tmp_path / "age"
+    age.write_text('#!/bin/sh\nprintf "age-encryption.org/v1\\n"\ncat\n')
+    age.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{node.os.environ['PATH']}")
+    monkeypatch.setattr(node, "ROOT", tmp_path)
+    monkeypatch.setattr(node.os.path, "ismount", lambda path: True)
+    output, report = io.BytesIO(), io.StringIO()
+    node.stream(output, report)
+    result = json.loads(report.getvalue())
+    assert [entry["folder"] for entry in result["manifest"]] == [
+        "alpha-data/originals",
+        "frontline/inbox",
+    ]
+    archive = output.getvalue().split(b"\n", 1)[1]
+    with tarfile.open(fileobj=io.BytesIO(archive)) as handle:
+        assert "frontline/inbox/item/file/attachment" in handle.getnames()
+
+
+def test_stream_refuses_inbox_symlink(tmp_path, monkeypatch):
+    (tmp_path / "alpha-data/originals").mkdir(parents=True)
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "frontline").mkdir()
+    (tmp_path / "frontline/inbox").symlink_to(tmp_path / "outside")
+    monkeypatch.setattr(node, "ROOT", tmp_path)
+    monkeypatch.setattr(node.os.path, "ismount", lambda path: True)
+    with pytest.raises(ValueError, match="real directories"):
+        node.stream(io.BytesIO(), io.StringIO())
+
+
 def test_stream_failure_does_not_report_success(tmp_path, monkeypatch):
     (tmp_path / "alpha-data/originals").mkdir(parents=True)
     age = tmp_path / "age"
