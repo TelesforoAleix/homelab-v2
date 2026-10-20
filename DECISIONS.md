@@ -649,3 +649,23 @@ retained without automatic pruning. Long confirmations display all content befor
 Only order metadata is logged. Existing sandbox permissions suffice: the unit changes a
 comment only, with exposure 1.3 before and for the candidate. No dependency, credential,
 polkit, allowlist or planning-write change is needed.
+
+
+**2026-10-20 — The bot keeps an encrypted inbox without turning inputs into actions.**
+Free text can be a question, an order, or something to keep. A separate clarification-only
+call asks no more than two questions; the owner can force saving immediately. Stored episodes
+and reply mappings are removed, so inbox content does not become future question context.
+An atomic directory per id publishes JSON metadata and optional original attachment together;
+fsync precedes acknowledgement. This avoids partial visible records without another dependency.
+Items remain new and local; orchestrator targets are validated repository names, with no new
+network route or change to orders. The store layout is documented for a future Mac reader.
+
+Public-page fetching uses standard-library HTTP with checked numeric socket destinations and
+original-host TLS/SNI. Every DNS result and redirect must pass the public-address gate; IPv6
+transition/site-local addresses are conservatively refused too. Five seconds, three redirects
+and 1 MiB bound fetching. Only an isolated action-free call sees raw page text; its bounded
+metadata reaches only clarification. Failures retain the URL without a summary. Attachments
+use the existing Telegram library, stay opaque, and have declared/actual 20 MiB checks and a
+2 GiB aggregate admission cap including the incoming file. No sandbox/dependency changes.
+Inbox data stays on the encrypted volume beside orders, outside the clone and the current
+weekly originals copy. No automatic deletion or processing is introduced.
