@@ -212,7 +212,7 @@ class Orders:
                 return "Unknown order.", None
             if order["status"] != "proposed":
                 return "already " + order["status"], order["owner"]
-            if self.planning.refresh():
+            if yes and self.planning.refresh():
                 return "Planning sync failed; try again shortly.", None
             data = self.load()
             order = data[order_id]

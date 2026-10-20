@@ -1996,3 +1996,26 @@ def test_order_http_body_framing_and_no_content_logging(order_http, capsys):
     assert http_order(address, path, "POST", "Private invalid JSON")[0] == 400
     captured = capsys.readouterr()
     assert captured.out == captured.err == ""
+
+
+@pytest.mark.parametrize("yes,status", [(False, "cancelled"), (True, "proposed")])
+def test_order_no_cancels_without_network_but_yes_requires_pull(
+    order_repo, monkeypatch, yes, status
+):
+    fixture = order_repo
+    order = fixture.orders.propose(proposal(), "start", (10, 0))
+    pulls = []
+
+    def failed_refresh():
+        pulls.append(True)
+        return "Planning sync failed."
+
+    monkeypatch.setattr(fixture.mirror, "refresh", failed_refresh)
+    reply, owner = fixture.orders.tap(order["id"], yes, 10)
+    assert bool(pulls) is yes
+    assert fixture.orders.load()[order["id"]]["status"] == status
+    assert fixture.orders.queued() == []
+    if yes:
+        assert "sync failed" in reply and owner is None
+    else:
+        assert reply == "cancelled" and owner == [10, 0]

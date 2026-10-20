@@ -125,7 +125,8 @@ In conversation, the model can propose one of these orders. The bot refreshes th
 and validates before sending the exact action with **Yes** and **No** buttons. Long
 confirmations show every part before their final buttons, without truncating arguments or
 reviews. No cancels; Yes queues; either closes the episode. Only main-allowlisted users can
-tap. A late tap says `already <status>` and makes no change.
+tap. No cancels from stored state without a network pull; Yes refreshes before queuing.
+A late tap says `already <status>` and makes no change.
 
 | Action | `slice` target | `argument` | Required current state |
 |---|---|---|---|
