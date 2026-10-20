@@ -66,7 +66,7 @@ one additional named clone file through a JSON second pass. Reads accept regular
 only, at most 128 KiB per file; absolute paths, parent traversal, Git internals, escaping
 symlinks and binary files are refused. Base context is capped at 256 KiB. The model may
 propose exactly one order for Yes/No confirmation; it has no command-dispatch capability,
-execution or writes. Each completion is capped at 1,600 tokens,
+execution or writes. Each completion is capped at 4,000 tokens,
 with at most two 60-second HTTP calls per question and no retries.
 
 Episodes are memory-only, scoped to chat and allowlisted user. Follow-up pronouns/openings
