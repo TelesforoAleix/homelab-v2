@@ -670,6 +670,12 @@ use the existing Telegram library, stay opaque, and have declared/actual 20 MiB 
 Inbox data stays on the encrypted volume beside orders, outside the clone and the current
 weekly originals copy. No automatic deletion or processing is introduced.
 
+**2026-10-20 — The encrypted weekly copy includes the bot inbox.** `homelab-copy` adds the
+real `/srv/homelab/frontline/inbox` directory at the stable archive path `frontline/inbox`
+when it exists. It uses the same age encryption and checked streaming as originals, rejects
+a symlinked inbox, and leaves the planning clone, orders and markers out. The restore procedure
+assigns inbox ownership to `homelab-bot`, with directories `0700` and files `0600`.
+
 
 **2026-10-20 — Mac orchestrators consume the inbox through the existing root SSH account.**
 A single isolated, standard-library `homelab-inbox` helper owns the fixed-path list, file and
