@@ -25,7 +25,8 @@
 # AF_UNIX lets systemctl reach PID 1 for the polkit-authorised restart. It does
 # not grant socket permissions: homelab-bot has no docker group membership and
 # cannot use the root:docker Docker socket. AF_INET/AF_INET6 permit outbound
-# Telegram HTTPS and the loopback knowledge API; the bot opens no listening port.
+# Telegram HTTPS, loopback APIs and the orders listener on the runtime
+# Tailscale IPv4, TCP 8110. No sandbox directive changes are needed for this bind.
 # NoNewPrivileges refuses setuid sudo; polkit leaves this hardening intact.
 
 [Unit]

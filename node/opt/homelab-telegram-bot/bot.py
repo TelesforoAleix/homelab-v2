@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Home Lab Telegram client, using python-telegram-bot long polling.
 
-Long polling needs outbound HTTPS and no inbound port. The main allowlist is
+Telegram uses outbound HTTPS; orders are served only on the Tailscale IPv4. The main allowlist is
 checked once before dispatch, so new handlers cannot accidentally be public.
 The router separately gates /restart; /ask only returns text for Telegram.
 The token comes from systemd's credential directory, never the environment.
@@ -17,10 +17,20 @@ from contextlib import suppress
 
 import executors
 from conversation import Conversation
+from order_listener import Listener
+from orders import status_text, valid_id
 from planning import Planning, load_config
 from router import Router, load_ids
-from telegram import Bot, BotCommand, Update
-from telegram.ext import Application, ContextTypes, ExtBot, MessageHandler, filters
+from telegram import Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    ContextTypes,
+    ExtBot,
+    MessageHandler,
+    filters,
+)
 from telegram.request import HTTPXRequest
 
 POLL_TIMEOUT = 50
@@ -251,11 +261,107 @@ def build_application(
 ) -> Application:
     notice_task = None
     conversation = Conversation(planning, log)
+    orders = planning.orders if planning is not None else None
+    listener = Listener(orders, log) if orders is not None else None
+    listener_task = None
+    edit_task = None
+    edit_lock = asyncio.Lock()
+
+    async def edit_orders(bot):
+        # Serialize edits so an older in-flight status cannot overwrite a receipt.
+        async with edit_lock:
+            if orders is None or not await asyncio.to_thread(orders.available):
+                return
+            for order in await asyncio.to_thread(orders.pending_edits):
+                try:
+                    await bot.edit_message_text(
+                        chat_id=order["owner"][0],
+                        message_id=order["messages"][-1]["id"],
+                        text=status_text(order),
+                        reply_markup=None,
+                    )
+                except BadRequest as exc:
+                    # A crash after a successful edit but before persistence retries it.
+                    if "message is not modified" not in str(exc).lower():
+                        log("WARNING: order message edit failed; retry pending")
+                        continue
+                except Exception:
+                    log("WARNING: order message edit failed; retry pending")
+                    continue
+                await asyncio.to_thread(orders.edited, order)
+
+    async def edit_loop(bot):
+        while True:
+            try:
+                await edit_orders(bot)
+            except Exception:
+                log("WARNING: order edits unavailable; retry pending")
+            await asyncio.sleep(1)
+
+    async def propose(bot, owner, proposal, owner_text):
+        try:
+            order = await asyncio.to_thread(orders.propose, proposal, owner_text, owner)
+            # Long confirmations show every word before the final action buttons.
+            parts = split_message(order["confirmation"])
+            if len(parts) > 1:
+                for part in parts:
+                    await bot.send_message(chat_id=owner[0], text=part, read_timeout=30)
+                control = f"Queue {order['action']} {order['slice']} as shown above?"
+            else:
+                control = parts[0]
+            controls = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton("Yes", callback_data=f"order:yes:{order['id']}"),
+                        InlineKeyboardButton("No", callback_data=f"order:no:{order['id']}"),
+                    ]
+                ]
+            )
+            sent = await bot.send_message(
+                chat_id=owner[0],
+                text=control,
+                reply_markup=controls,
+                read_timeout=30,
+            )
+            await asyncio.to_thread(orders.attach, order["id"], sent.message_id, sent.text)
+        except Exception:
+            log("WARNING: order confirmation unavailable")
+            await send_message(bot, owner[0], "Could not confirm that order. Please try again.")
+
+    async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        if query is None:
+            return
+        user = update.effective_user
+        if user is None or user.id not in allowlist:
+            await query.answer("Not authorised.")
+            return
+        data = (query.data or "").split(":")
+        if (
+            orders is None
+            or len(data) != 3
+            or data[0] != "order"
+            or data[1] not in {"yes", "no"}
+            or not valid_id(data[2])
+            or update.effective_chat is None
+        ):
+            await query.answer("Unknown order.")
+            return
+        reply, owner = await asyncio.to_thread(
+            orders.tap, data[2], data[1] == "yes", update.effective_chat.id
+        )
+        if owner is not None:
+            conversation.close(tuple(owner))
+        await query.answer(reply)
+        await edit_orders(context.bot)
 
     async def startup(application: Application) -> None:
-        nonlocal notice_task
+        nonlocal notice_task, listener_task, edit_task
         await register_profile(application.bot, router)
-        log(f"started; {len(allowlist)} allowlisted user(s); long polling, no listening socket")
+        log(f"started; {len(allowlist)} allowlisted user(s); long polling")
+        if listener is not None:
+            listener_task = asyncio.create_task(listener.run())
+            edit_task = asyncio.create_task(edit_loop(application.bot))
         if planning is not None and planning.config is not None:
 
             async def send_notice(user_id, text):
@@ -266,10 +372,13 @@ def build_application(
             notice_task = asyncio.create_task(planning.run(allowlist, send_notice))
 
     async def shutdown(application: Application) -> None:
-        if notice_task is not None:
-            notice_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await notice_task
+        for task in (notice_task, listener_task, edit_task):
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        if listener is not None:
+            await listener.stop()
 
     async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.effective_message
@@ -291,6 +400,10 @@ def build_application(
                 if reply_to and reply_to.from_user and reply_to.from_user.id == context.bot.id
                 else None,
             )
+            proposal = conversation.proposals.pop(owner, None)
+            if proposal is not None and orders is not None:
+                await propose(context.bot, owner, proposal, message.text)
+                return
             message_ids = await send_message(context.bot, chat_id, reply)
             if episode is not None:
                 conversation.remember(owner, episode, message_ids)
@@ -314,6 +427,7 @@ def build_application(
         .post_shutdown(shutdown)
         .build()
     )
+    application.add_handler(CallbackQueryHandler(callback))
     application.add_handler(MessageHandler(filters.ALL, receive))
     application.add_error_handler(error)
     return application
@@ -358,7 +472,7 @@ def main() -> None:
         application.run_polling(
             timeout=POLL_TIMEOUT,
             bootstrap_retries=-1,
-            allowed_updates=["message", "edited_message"],
+            allowed_updates=["message", "edited_message", "callback_query"],
         )
     except Exception as exc:
         sys.exit(f"ERROR: Telegram client failed: {type(exc).__name__}")
