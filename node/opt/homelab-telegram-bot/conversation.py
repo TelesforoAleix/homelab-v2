@@ -19,9 +19,11 @@ from orders import validate
 from planning import pending_summary
 
 UNAVAILABLE = "Answers need the node unlocked and the model gateway up. Try again shortly."
+FAILED = "I couldn't produce a usable answer this time. Try again, or rephrase."
+INVALID_ORDER = "That proposed order is not possible now."
 FILE_LIMIT = 128 * 1024
 CONTEXT_LIMIT = 256 * 1024
-REPLY_TOKENS = 1600
+REPLY_TOKENS = 4000
 ATTENTION_BODY_LIMIT = 2000
 ATTENTION_BODY_MARKER = "… [truncated]"
 SYSTEM = """Answer the owner's planning question using only the supplied planning data.
@@ -296,7 +298,10 @@ class Conversation:
             if len(answer) > 16000:
                 raise ValueError("answer too large")
             if result.get("order") is not None:
-                validate(result["order"], data["slices"], question)
+                try:
+                    validate(result["order"], data["slices"], question)
+                except ValueError as exc:
+                    raise InvalidOrder from exc
                 self.proposals[owner] = result["order"]
             episode.messages.extend(
                 [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
@@ -317,4 +322,18 @@ class Conversation:
             return answer, key
         except Exception as exc:  # noqa: BLE001 - no exception text or content in logs
             self.log(f"WARNING: planning answer unavailable: {type(exc).__name__}")
-            return UNAVAILABLE, None
+            if isinstance(exc, InvalidOrder):
+                return INVALID_ORDER, None
+            if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)) or (
+                isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500
+            ):
+                return UNAVAILABLE, None
+            if isinstance(exc, ValueError) and str(exc) == "planning unavailable":
+                return UNAVAILABLE, None
+            if self.planning is not None and not self.planning.ready():
+                return UNAVAILABLE, None
+            return FAILED, None
+
+
+class InvalidOrder(Exception):
+    """A model-proposed order failed local validation."""

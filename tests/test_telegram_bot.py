@@ -1100,7 +1100,7 @@ def fake_frontline(bot_modules, fixture, replies, requests):
         requests.append(body)
         assert str(request.url) == "http://127.0.0.1:4000/v1/chat/completions"
         assert body["model"] == "frontline"
-        assert body["max_tokens"] == bot_modules.conversation.REPLY_TOKENS
+        assert body["max_tokens"] == 4000
         response = replies.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -1109,7 +1109,12 @@ def fake_frontline(bot_modules, fixture, replies, requests):
         return httpx.Response(
             200,
             json={
-                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(response)}}]
+                "choices": [
+                    {
+                        "finish_reason": response.get("_finish_reason", "stop"),
+                        "message": {"content": json.dumps(response)},
+                    }
+                ]
             },
         )
 
@@ -1205,7 +1210,7 @@ async def test_frontline_denied_read_second_pass_is_bounded(conversation_repo, b
     )
     async with conversation.client:
         answer, key = await conversation.answer((10, 0), "Private question")
-    assert answer == bot_modules.conversation.UNAVAILABLE and key is None
+    assert answer == bot_modules.conversation.FAILED and key is None
     assert len(requests) == 2
     assert "read_error" in json.dumps(requests[1])
 
@@ -1274,6 +1279,29 @@ async def test_frontline_unavailable_logs_no_content_and_commands_work(
     assert "/status" in router.dispatch(0, "/help")
     if failure == "locked":
         assert not fixture.mirror.directory.exists() and not requests
+
+
+async def test_frontline_length_cutoff_uses_honest_failure(conversation_repo, bot_modules):
+    conversation = fake_frontline(
+        bot_modules,
+        conversation_repo,
+        [{"_finish_reason": "length", "answer": "partial"}],
+        [],
+    )
+    async with conversation.client:
+        answer, key = await conversation.answer((10, 0), "Private question")
+    assert answer == bot_modules.conversation.FAILED and key is None
+
+
+async def test_frontline_connection_error_keeps_gateway_reply(conversation_repo, bot_modules):
+    import httpx
+
+    conversation = fake_frontline(
+        bot_modules, conversation_repo, [httpx.ConnectError("private")], []
+    )
+    async with conversation.client:
+        answer, key = await conversation.answer((10, 0), "Private question")
+    assert answer == bot_modules.conversation.UNAVAILABLE and key is None
 
 
 def test_paragraph_splitting_and_oversize_fallback(bot_modules):
@@ -1633,7 +1661,7 @@ async def test_model_proposal_is_read_only_and_rejects_paraphrase(order_repo, bo
     )
     async with conversation.client:
         answer, key = await conversation.answer((10, 0), "Owner's original words")
-    assert answer == bot_modules.conversation.UNAVAILABLE and key is None
+    assert answer == bot_modules.conversation.INVALID_ORDER and key is None
     assert not conversation.proposals
     assert "Private" not in "\n".join(fixture.logs)
 
@@ -2521,7 +2549,7 @@ async def test_inbox_clarification_cannot_act(conversation_repo, bot_modules, ba
     conversation = fake_frontline(bot_modules, conversation_repo, [keep_result(**bad)], [])
     async with conversation.client:
         reply, _ = await conversation.answer((10, 0), "save Private idea")
-    assert reply == bot_modules.conversation.UNAVAILABLE
+    assert reply == bot_modules.conversation.FAILED
     assert not conversation.proposals and not kept_items(conversation)
     assert not conversation_repo.mirror.orders.path.exists()
     # The known draft can still be kept without a model call after a failure.
