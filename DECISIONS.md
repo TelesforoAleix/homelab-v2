@@ -669,3 +669,15 @@ use the existing Telegram library, stay opaque, and have declared/actual 20 MiB 
 2 GiB aggregate admission cap including the incoming file. No sandbox/dependency changes.
 Inbox data stays on the encrypted volume beside orders, outside the clone and the current
 weekly originals copy. No automatic deletion or processing is introduced.
+
+
+**2026-10-20 — Mac orchestrators consume the inbox through the existing root SSH account.**
+A single isolated, standard-library `homelab-inbox` helper owns the fixed-path list, file and
+receipt operations. Existing passwordless root sudo adds no privilege and needs no listener
+or grant. Development receives general kept items and its messages; repositories receive only
+their addressed messages. Receipts atomically replace metadata, preserving bot ownership and
+mode; per-directory advisory locks serialize concurrent receipts without another state file.
+Files and directory entries are flushed before success. Multi-id receipts commit independently
+and retry idempotently. Descriptor-relative opens reject symlinks throughout the path and
+non-regular/multiply linked files; attachments are read only for explicit file streaming.
+The bot already renders arbitrary status values, so it needs no change to display read items.

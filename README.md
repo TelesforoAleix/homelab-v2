@@ -61,7 +61,9 @@ The inbox keeps ideas, links, unprocessed attachments and messages for repositor
 The model classifies free text and asks at most two short clarifying questions; “just save it”
 keeps what is known. `/inbox [id]` lists or shows kept items. Public links have a guarded
 fetch and isolated summary; files are limited to 20 MiB each and 2 GiB in total.
-The inbox lives beside orders on the encrypted volume and adds no network route.
+The inbox lives beside orders on the encrypted volume. Mac orchestrators use the root-owned
+[`homelab-inbox` helper over SSH](docs/operations.md#inbox-helper-over-ssh) to list new items,
+stream attachments and mark records read; it adds no network route.
 Answers and new proposals require unlock and the model gateway; host commands remain available while locked.
 Private configuration and a read-only deploy key stay on the node; see the
 [bot runbook](docs/operations.md#run-it).
