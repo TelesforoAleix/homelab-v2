@@ -1,4 +1,4 @@
-# Home Lab v2 — the whole stack. Only `api` publishes a port, on loopback. Everything derived
+# Home Lab v2 — the whole stack. Only `api` and LiteLLM publish ports, on loopback. Derived data
 # (Postgres data, model files) lives on the encrypted volume; Brain is mounted read-only.
 # Paths and the database password come from .env (see .env.example); the gateway key is a secret.
 
@@ -30,6 +30,8 @@ x-app: &app
 
 services:
   litellm:
+    ports:
+      - "127.0.0.1:4000:4000"
     # Official release 2026-10-03. Deliberate digest updates only; never PyPI or latest.
     image: ghcr.io/berriai/litellm:v1.103.3@sha256:e6e1c46cec92ab58b7ff95c790420aba9f05269b662a66c0dd11714171b9c64b
     user: "10001:10001"

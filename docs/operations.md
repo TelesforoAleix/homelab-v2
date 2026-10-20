@@ -39,7 +39,8 @@ its existing systemd sandbox and long polling, and needs no Docker or listening 
 Its code lives at
 `node/opt/homelab-telegram-bot/`, installed at `/opt/homelab-telegram-bot/`. `/ask <question>`
 calls the loopback answer endpoint and replies with the answer and numbered source titles;
-refusals have no sources. Long replies are split into Telegram-sized messages. When the volume
+refusals have no sources. Long replies split at paragraph boundaries within Telegram’s UTF-16 limit; oversized
+paragraphs fall back to sentence, line or word boundaries, then characters. When the volume
 is locked or the API is unavailable, `/ask` reports that the knowledge service is down.
 `/status`, `/disk`, `/uptime`, `/restart`, `/backup`, `/help` and `/start` keep working independently.
 `/spend` and `/model` are no longer commands. Startup registers the router's command list and
@@ -47,13 +48,41 @@ description with Telegram; registration failure is logged and polling continues.
 
 Optional planning reads use `/pending` (needs attention, running, scheduled, ready; planned
 only as a count), `/recap [hours]` (default 24, positive hours, grouped by
-slice), and `/slice <id>` (all fields including the full attention body). They share `/status`'s
+slice), and `/slice <id>` (all fields including the full attention body, displayed as labeled
+paragraphs rather than escaped JSON). They share `/status`'s
 main allowlist and use no model. Accepted slices are omitted from pending; unresolved attention
 and review/escalated states take precedence over running, slots and ready. Scheduled entries
 sort by slot. Configuration is read at startup from private
 `/etc/homelab-telegram-bot/planning.json`; see the provisioning steps under
 [Rebuilding the node](#rebuilding-the-node). An absent file logs
 `planning not configured; feature disabled` once and leaves existing commands working.
+
+Allowlisted free text is a planning question. The bot calls the `frontline` purpose at
+`http://127.0.0.1:4000/v1`, sending the private `context_files` and computed pending summary.
+The optional `context_files` list defaults to empty; the orchestrator supplies the owner's
+summary-file paths in the private config, never in this repository. A question may request
+one additional named clone file through a JSON second pass. Reads accept regular UTF-8 text
+only, at most 128 KiB per file; absolute paths, parent traversal, Git internals, escaping
+symlinks and binary files are refused. Base context is capped at 256 KiB. The model has no
+orders, command-dispatch capability or writes. Each completion is capped at 1,600 tokens,
+with at most two 60-second HTTP calls per question and no retries.
+
+Episodes are memory-only, scoped to chat and allowlisted user. Follow-up pronouns/openings
+or shared topic words retain the episode; other questions start fresh. A command closes it,
+as does 30 minutes of silence. Replying to any part of a retained bot answer explicitly
+reopens its episode. Only that episode's messages accompany a question. Memory retains up
+to 128 episodes and 1,024 answer-message mappings; a restart clears them. Long episodes
+close after 16 exchanges or 48,000 characters; explicit reopening keeps only that bounded
+recent history. Locked/unavailable answers say that the node
+must be unlocked and the gateway up, and logs never include questions, answers or file text.
+The model base URL and arbitrary client key use `HOMELAB_MODELS_BASE_URL` and
+`HOMELAB_MODELS_API_KEY` if set (defaults are loopback and a nonsecret client label).
+No unit sandbox or credential changes are needed.
+
+Zero data retention is **off** for `frontline`: a synthetic request with
+`providerOptions: {"gateway": {"zeroDataRetention": true}}` returned HTTP 403 because the
+current Vercel team is on Hobby; it requires Pro or Enterprise. No account or billing change
+was made. `frontline` otherwise shares `chat`'s model and low effort.
 
 The bot pulls its read-only mirror about once a minute and on demand for these commands.
 The mirror and outbox marker live under `/srv/homelab/frontline/`. While the data target is
@@ -150,8 +179,8 @@ docker compose exec api homelab eval
 ```
 
 `/health` returns `status`, `version`, `routes` and `models_base_url`; the former
-`gateway_key_present` field retires because the API no longer holds the gateway key. No host
-port is published for LiteLLM. Its official image is pinned by digest in Compose and updated
+`gateway_key_present` field retires because the API no longer holds the gateway key. LiteLLM publishes only
+`127.0.0.1:4000` for host clients. Its official image is pinned by digest in Compose and updated
 deliberately. Telemetry, remote model-price updates, hosted callbacks and the admin UI are off;
 tokenizers are bundled. Its external model calls go only to Vercel AI Gateway; embeddings go
 to `llama-embed` or `llama-embed-large` on the private network. The journal records one line
@@ -163,9 +192,10 @@ Content, embeddings and keys are excluded, including on errors and streaming cal
 Attach a client container from another Compose project to the external Docker network
 `homelab-models`, created by this stack. Only LiteLLM joins it; Postgres, API and both
 embedding servers remain on the stack's private network. Give the client its base URL `http://litellm:4000/v1`
-and an arbitrary API key through its environment, then use OpenAI-shaped `GET /v1/models`,
+and an arbitrary API key through its environment (host clients use
+`http://127.0.0.1:4000/v1`), then use OpenAI-shaped `GET /v1/models`,
 `GET /v1/model/info`, `POST /v1/chat/completions`, `POST /v1/embeddings`,
-`POST /v1/images/edits` and `POST /v1/images/generations`. The existing ten names are `chat`
+`POST /v1/images/edits` and `POST /v1/images/generations`. The text and embedding names are `frontline`, `chat`
 (standard), `chat:high`, `chat:xhigh`, `embed`, `embed-large`, `embed-large-bulk`, `grade`,
 `translate`, `vision` and `vision:xhigh`.
 `grade` makes yes/no relevance judgements per candidate passage, using the same model and low effort as `chat`.
@@ -1366,7 +1396,13 @@ SSH accounts work through Tailscale.
    restore the prior bot files and unit, remove the two added hook unit files, reload units
    and start the bot. Keep the encrypted planning directory, key and config for recovery;
    deleting them is a separate owner decision. Restarting the Docker stack
-   does not update this environment.
+   does not update this environment. Install every committed `.py` module, including
+   `conversation.py`, together; the requirements remain unchanged. After stack restart,
+   verify `curl -fsS http://127.0.0.1:4000/v1/models` includes `frontline` and `ss -ltn`
+   shows port 4000 only on `127.0.0.1`. Record the bot's active/restart state and unchanged
+   security score (1.3), then check med-ask and image studio health. The owner checks natural
+   questions, a follow-up, a changed topic, an explicit reply to an older answer, and a long
+   `/slice` from their phone after the private `context_files` list is configured.
 
    `--generators=yes` supplies the mount unit from fstab during verification. Vendor units
    may warn about removed directives; resolve failures in the recorded units before proceeding.
@@ -1545,13 +1581,17 @@ SSH accounts work through Tailscale.
       "branch": "<BRANCH>",
       "state_path": "<RELATIVE-STATE-PATH>",
       "outbox_path": "<RELATIVE-OUTBOX-PATH>",
-      "poll_seconds": 60
+      "poll_seconds": 60,
+      "context_files": ["<RELATIVE-SUMMARY-PATH>"]
     }
     ```
 
     The four string keys are required. `repo_url` uses GitHub's SCP-style SSH syntax;
     paths are relative to the clone and cannot escape it. `poll_seconds` is optional,
-    defaults to 60 and accepts integer values from 10 through 3600. Keep the actual repository
+    defaults to 60 and accepts integer values from 10 through 3600. `context_files` is an
+    optional list of up to 16 relative text-file paths (default `[]`); the orchestrator adds
+    the owner’s two summary files privately. Each must fit the 128 KiB file cap and together
+    with pending work fit the 256 KiB context cap. Keep the actual repository
     identity, branch and both paths out of Git, tests, PRs, docs and logs. The data directory,
     key and known-hosts paths are fixed above. The config and SSH files stay on the root
     filesystem so missing or locked-volume planning never prevents boot-time status.

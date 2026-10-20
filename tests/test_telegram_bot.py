@@ -16,7 +16,7 @@ BOT_DIR = Path(__file__).resolve().parents[1] / "node/opt/homelab-telegram-bot"
 @pytest.fixture
 def bot_modules(monkeypatch):
     modules = {}
-    for name in ("router", "executors", "planning", "bot"):
+    for name in ("router", "executors", "planning", "conversation", "bot"):
         spec = importlib.util.spec_from_file_location(name, BOT_DIR / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         monkeypatch.setitem(sys.modules, name, module)
@@ -631,7 +631,10 @@ def test_planning_commands_pull_and_group(planning_repo, bot_modules):
     (fixture.source / "state.json").write_text(json.dumps({"version": 2, "slices": items}))
     fixture.commit()
     result = mirror.command("slice", ["fixture/later"])
-    assert json.loads(result) == items[0]
+    assert "id: fixture/later" in result
+    assert "attention.body: " + attention["body"] in result
+    assert "attention.answer: null" in result
+    assert "attention.approved: false" in result
     assert mirror.command("slice", ["missing"]) == "Slice not found."
     assert "Private body" not in "\n".join(fixture.logs)
     assert "planning clone ready" in fixture.logs
@@ -1055,3 +1058,300 @@ def test_planning_jsonl_final_newline_optional_and_invalid_line_blocks(planning_
     with pytest.raises(ValueError):
         mirror.notification_batch()
     assert not mirror.marker.exists()
+
+
+@pytest.fixture
+def conversation_repo(planning_repo, bot_modules):
+    from dataclasses import replace
+
+    fixture = planning_repo
+    (fixture.source / "overview.md").write_text("Private overview: fixture/item is ready.")
+    (fixture.source / "backlog.md").write_text("Private backlog: fixture next feature.")
+    (fixture.source / "detail.md").write_text("Private detail: more evidence.")
+    (fixture.source / "binary.dat").write_bytes(b"\x00\xff")
+    (fixture.source / "state.json").write_text(
+        json.dumps({"slices": [planning_slice(state="ready")]})
+    )
+    fixture.commit()
+    fixture.mirror.config = replace(
+        fixture.mirror.config, context_files=["overview.md", "backlog.md"]
+    )
+    return fixture
+
+
+def fake_frontline(bot_modules, fixture, replies, requests):
+    import httpx
+
+    def endpoint(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        assert str(request.url) == "http://127.0.0.1:4000/v1/chat/completions"
+        assert body["model"] == "frontline"
+        assert body["max_tokens"] == bot_modules.conversation.REPLY_TOKENS
+        response = replies.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        if isinstance(response, int):
+            return httpx.Response(response)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(response)}}]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(endpoint))
+    return bot_modules.conversation.Conversation(fixture.mirror, fixture.logs.append, client=client)
+
+
+async def test_frontline_grounding_second_pass_and_content_free_logs(
+    conversation_repo, bot_modules
+):
+    fixture = conversation_repo
+    requests = []
+    conversation = fake_frontline(
+        bot_modules,
+        fixture,
+        [
+            {"read_file": "detail.md", "answer": ""},
+            {"read_file": None, "answer": "/restart ssh — Private grounded answer"},
+        ],
+        requests,
+    )
+    async with conversation.client:
+        answer, key = await conversation.answer((10, 0), "Private fixture question")
+    assert key is not None
+    assert answer.startswith("/restart ssh")
+    first = json.dumps(requests[0])
+    assert "Private overview" in first and "Private backlog" in first
+    assert "Fixture title" in first and "Ready (1)" in first
+    assert "Private detail" not in first
+    assert "Private detail" in json.dumps(requests[1])
+    assert "Private" not in "\n".join(fixture.logs)
+    assert not (fixture.mirror.clone / "new-file").exists()
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../outside.md", "/etc/passwd", "binary.dat", ".git/config", "escape", "large.md", "fifo"],
+)
+def test_frontline_reader_rejects_unsafe_files(conversation_repo, bot_modules, tmp_path, name):
+    import os
+
+    fixture = conversation_repo
+    assert fixture.mirror.refresh() is None
+    clone = fixture.mirror.clone
+    outside = tmp_path / "outside.md"
+    outside.write_text("Private outside")
+    (clone / "escape").symlink_to(outside)
+    (clone / "large.md").write_bytes(b"a" * (bot_modules.conversation.FILE_LIMIT + 1))
+    os.mkfifo(clone / "fifo")
+    with pytest.raises((OSError, ValueError)):
+        bot_modules.conversation.read_text(clone, name)
+
+
+async def test_frontline_denied_read_second_pass_is_bounded(conversation_repo, bot_modules):
+    requests = []
+    conversation = fake_frontline(
+        bot_modules,
+        conversation_repo,
+        [
+            {"read_file": "../outside.md", "answer": ""},
+            {"read_file": "detail.md", "answer": "no"},
+        ],
+        requests,
+    )
+    async with conversation.client:
+        answer, key = await conversation.answer((10, 0), "Private question")
+    assert answer == bot_modules.conversation.UNAVAILABLE and key is None
+    assert len(requests) == 2
+    assert "read_error" in json.dumps(requests[1])
+
+
+async def test_frontline_episodes_new_topics_timeout_commands_and_reply_reopen(
+    conversation_repo, bot_modules
+):
+    requests = []
+    replies = [{"answer": "Private answer", "read_file": None} for _ in range(8)]
+    conversation = fake_frontline(bot_modules, conversation_repo, replies, requests)
+    now = [0]
+    conversation.clock = lambda: now[0]
+    owner = (10, 0)
+    async with conversation.client:
+        _, first = await conversation.answer(owner, "What is fixture about?")
+        conversation.remember(owner, first, [100, 101])
+        _, same = await conversation.answer(owner, "Why is that waiting?")
+        assert same == first
+        assert "What is fixture about?" in json.dumps(requests[-1])
+        _, second = await conversation.answer(owner, "Explain another-project")
+        assert second != first
+        assert "What is fixture about?" not in json.dumps(requests[-1])
+        _, reopened = await conversation.answer(owner, "More?", reply_to=101)
+        assert reopened == first
+        assert "Explain another-project" not in json.dumps(requests[-1])
+        now[0] += 1801
+        _, expired = await conversation.answer(owner, "Why is that?")
+        assert expired != first
+        assert "What is fixture about?" not in json.dumps(requests[-1])
+        conversation.close(owner)
+        _, closed = await conversation.answer(owner, "Why is that?")
+        assert closed != expired
+        _, other = await conversation.answer((10, 1), "More?", reply_to=100)
+        assert other != first
+        assert "What is fixture about?" not in json.dumps(requests[-1])
+        _, reopened = await conversation.answer(owner, "More?", reply_to=100)
+        assert reopened == first
+
+
+@pytest.mark.parametrize("failure", ["locked", "down", "exception", "sync"])
+async def test_frontline_unavailable_logs_no_content_and_commands_work(
+    conversation_repo, bot_modules, monkeypatch, failure
+):
+    import httpx
+
+    fixture = conversation_repo
+    requests = []
+    conversation = fake_frontline(
+        bot_modules,
+        fixture,
+        [httpx.ConnectError("Private question") if failure == "exception" else 503],
+        requests,
+    )
+    if failure == "locked":
+        fixture.mirror.ready = lambda: False
+    if failure == "sync":
+        monkeypatch.setattr(fixture.mirror, "refresh", lambda: "Planning sync failed")
+    async with conversation.client:
+        answer, key = await conversation.answer((10, 0), "Private question")
+    assert answer == bot_modules.conversation.UNAVAILABLE and key is None
+    assert "Private" not in "\n".join(fixture.logs)
+    router = make_router(bot_modules, fixture.logs)
+    assert "/status" in router.dispatch(0, "/help")
+    if failure == "locked":
+        assert not fixture.mirror.directory.exists() and not requests
+
+
+def test_paragraph_splitting_and_oversize_fallback(bot_modules):
+    split = bot_modules.bot.split_message
+    text = "a" * 3000 + "\n\n" + "b" * 2000 + "\n\n" + "c" * 2000
+    parts = split(text)
+    assert parts[0] == "a" * 3000 + "\n\n"
+    assert "".join(parts) == text
+    for text in ["😀" * 5000, "word " * 3000, ("A sentence. " * 1000), "x" * 4095 + "\n\nZ"]:
+        parts = split(text)
+        assert "".join(parts) == text
+        assert all(len(p.encode("utf-16-le")) // 2 <= 4096 for p in parts)
+
+
+@pytest.mark.parametrize("files", ["file.md", ["../escape"], ["/absolute"], [1], None])
+def test_frontline_invalid_context_config(bot_modules, tmp_path, files):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            dict(
+                repo_url="git@github.com:fixture/repo.git",
+                branch="main",
+                state_path="state.json",
+                outbox_path="outbox.jsonl",
+                context_files=files,
+            )
+        )
+    )
+    logs = []
+    assert bot_modules.planning.load_config(logs.append, path) is None
+    assert logs == ["WARNING: planning configuration invalid; feature disabled"]
+
+
+async def test_frontline_telegram_gate_reply_mapping_and_commands(
+    telegram_app, conversation_repo, bot_modules, monkeypatch
+):
+    app, request, router, logs = telegram_app
+    seen = []
+    conversation = fake_frontline(
+        bot_modules,
+        conversation_repo,
+        [
+            {"answer": "Private episode answer", "read_file": None},
+            {"answer": "Different topic answer", "read_file": None},
+            {"answer": "Reopened answer", "read_file": None},
+        ],
+        seen,
+    )
+    monkeypatch.setattr(bot_modules.bot, "Conversation", lambda *args: conversation)
+    # Rebuild with the real receive closure and the already initialized fixture Bot.
+    monkeypatch.setattr(bot_modules.bot, "AuditedBot", lambda token: app.bot)
+    configured = bot_modules.bot.build_application(
+        "123:fixture", {0, 1}, router, conversation_repo.mirror
+    )
+    async with conversation.client, configured:
+        await deliver(configured, "Private unauthorized question", user=99)
+        assert request.calls[-1][1]["text"] == "Not authorised."
+        assert not seen and not conversation_repo.mirror.directory.exists()
+        await deliver(configured, "Private question about fixture")
+        await deliver(configured, "Explain another-project")
+        assert "Private question about fixture" not in json.dumps(seen[-1])
+        update = Update.de_json(
+            {
+                "update_id": 3,
+                "message": {
+                    "message_id": 3,
+                    "date": 0,
+                    "chat": {"id": 10, "type": "private"},
+                    "from": {"id": 0, "is_bot": False, "first_name": "Fixture"},
+                    "text": "More?",
+                    "reply_to_message": {
+                        "message_id": 1,
+                        "date": 0,
+                        "chat": {"id": 10, "type": "private"},
+                        "from": {"id": 123, "is_bot": True, "first_name": "Fixture"},
+                        "text": "Private episode answer",
+                    },
+                },
+            },
+            configured.bot,
+        )
+        # Fixture sendMessage normally reuses id 1. Map a distinct first answer id
+        # so the reopened episode test reflects Telegram's unique message ids.
+        first_key = next(iter(conversation.episodes))
+        conversation.remember((10, 0), first_key, [1])
+        await configured.process_update(update)
+        assert "Private question about fixture" in json.dumps(seen[-1])
+        assert "Explain another-project" not in json.dumps(seen[-1])
+        await deliver(configured, "/help")
+        assert (10, 0) not in conversation.active
+        assert "Home Lab bot" in request.calls[-1][1]["text"]
+    assert "Private" not in "\n".join(logs + conversation_repo.logs)
+
+
+def test_long_slice_preserves_prose_paragraphs(conversation_repo, bot_modules):
+    fixture = conversation_repo
+    body = "First paragraph. " * 100 + "\n\n" + "Second paragraph. " * 150
+    item = planning_slice(attention={"body": body, "kind": "question"})
+    (fixture.source / "state.json").write_text(json.dumps({"slices": [item]}))
+    fixture.commit()
+    text = fixture.mirror.command("slice", [item["id"]])
+    parts = bot_modules.bot.split_message(text)
+    assert len(parts) > 1
+    assert "\n\n" in text and body in text
+    assert all(part.endswith("\n\n") for part in parts[:-1])
+    assert "".join(parts) == text
+
+
+@pytest.mark.parametrize(
+    "first,next_question,follows",
+    [
+        ("What's next for med-ask?", "What about image-studio?", False),
+        ("Qué sigue para med-ask?", "Qué sigue para image-studio?", False),
+        ("What is FA3?", "Explain FA3 further", True),
+        ("What is FA3?", "And FA4?", False),
+    ],
+)
+def test_episode_topic_identifiers(bot_modules, first, next_question, follows):
+    conversation = bot_modules.conversation
+    episode = conversation.Episode(
+        messages=[
+            {"role": "user", "content": first},
+            {"role": "assistant", "content": "Fixture answer"},
+        ]
+    )
+    assert conversation.Conversation.follows(episode, next_question) is follows

@@ -7,7 +7,8 @@
                      │ knowledge and jobs
                 api / worker / CLI
                      │ OpenAI-compatible HTTP, purpose names
-Other Compose clients ── homelab-models ── LiteLLM (no published port)
+Other Compose clients ── homelab-models ── LiteLLM (127.0.0.1:4000)
+Host Telegram bot ── loopback HTTP ───────────┤
                                             │ default network
                               ┌─────────────┴──────────────┐
                        Vercel AI Gateway       llama-embed / llama-embed-large
@@ -118,6 +119,18 @@ notice text cut to 600 characters and a `/slice` pointer. Each confirmed recipie
 followed immediately by an atomic, flushed marker update. Uncertain deliveries retry, so a
 crash or network ambiguity can cause a rare duplicate; notices are never deliberately skipped.
 Git output, configuration values, arguments and event content stay out of the journal.
+
+Allowlisted free text asks the `frontline` purpose over loopback, using the configured
+`context_files` plus the computed pending summary. One optional second pass can read a
+named regular UTF-8 file inside the clone (128 KiB maximum); paths cannot escape the clone
+or expose Git internals. There are no model actions or writes. Context is capped at 256 KiB,
+each completion at 1,600 tokens, and each question at two calls with 60-second HTTP timeouts.
+Only the active episode's question/answer pairs are history. Episodes live in bounded memory,
+close on a changed topic, command or 30-minute silence, and reopen on an explicit reply to
+a retained bot answer. Restarting the bot clears them. Logs contain only success/failure metadata.
+Locked volumes or unavailable models get a short availability reply; commands remain independent.
+`frontline` has the same gateway route and low reasoning effort as `chat`. Zero data retention
+was requested but the current Hobby team rejected it with HTTP 403; the option remains off.
 
 The first node-to-Mac action channel is the owner's launchd user agent on TCP 8091, binding
 only the runtime Tailscale IPv4. The tailnet grant permits only the node; there is no key.
@@ -329,7 +342,7 @@ Moving embeddings through this proxy does not change the embedding model or inde
 Other Compose projects attach trusted clients to `homelab-models`. Only LiteLLM joins that
 named network, alongside the private default network it uses to reach both embedding servers.
 Postgres, API and both embedding servers do not join the client network. LiteLLM publishes
-no host port.
+only `127.0.0.1:4000`, for the host Telegram bot.
 The key sent by a client is accepted and ignored; there is no master key, database, UI or
 virtual key configuration. HTTP middleware exposes `GET /v1/models`, `GET /v1/model/info`,
 `POST /v1/chat/completions`, `POST /v1/embeddings`, `POST /v1/images/edits`,
@@ -410,7 +423,7 @@ including quotes). Only counts are exposed, without text or match details.
 ## Rules
 
 1. Secrets never in git or images — Compose secrets or systemd `LoadCredential=`.
-2. Only `api` publishes a port, on loopback.
+2. Only `api` and LiteLLM publish ports, on loopback.
 3. Brain is mounted read-only; everything derived lives on the encrypted volume.
 4. Containers run as non-root with `cap_drop: ALL`.
 5. Content is not logged by default; ids, sizes, timings and costs are.
