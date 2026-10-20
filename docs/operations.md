@@ -35,7 +35,8 @@ Host-file installation is explicit; restarting the stack does not install those 
 
 The Telegram bot is a host service using python-telegram-bot, running as `homelab-bot`.
 It uses `/opt/homelab-telegram-bot/.venv/bin/python` with hash-pinned requirements, keeps
-its existing systemd sandbox and long polling, and needs no Docker or listening port.
+its existing systemd sandbox and long polling, and needs no Docker. Its order listener
+binds only the runtime Tailscale IPv4 on TCP 8110 (see [the contract](#bot-order-endpoint)).
 Its code lives at
 `node/opt/homelab-telegram-bot/`, installed at `/opt/homelab-telegram-bot/`. `/ask <question>`
 calls the loopback answer endpoint and replies with the answer and numbered source titles;
@@ -63,8 +64,9 @@ The optional `context_files` list defaults to empty; the orchestrator supplies t
 summary-file paths in the private config, never in this repository. A question may request
 one additional named clone file through a JSON second pass. Reads accept regular UTF-8 text
 only, at most 128 KiB per file; absolute paths, parent traversal, Git internals, escaping
-symlinks and binary files are refused. Base context is capped at 256 KiB. The model has no
-orders, command-dispatch capability or writes. Each completion is capped at 1,600 tokens,
+symlinks and binary files are refused. Base context is capped at 256 KiB. The model may
+propose exactly one order for Yes/No confirmation; it has no command-dispatch capability,
+execution or writes. Each completion is capped at 1,600 tokens,
 with at most two 60-second HTTP calls per question and no retries.
 
 Episodes are memory-only, scoped to chat and allowlisted user. Follow-up pronouns/openings
@@ -93,8 +95,8 @@ bind that would otherwise pin the encrypted filesystem. Its
 `homelab-bot-data-released.service` helper waits for host unmount, then starts the bot again
 against the locked root filesystem. Expect a brief interruption during lock. A retried
 unlock takes over the restart. Neither the unlock script nor existing data units change.
-The bot still starts at boot and opens no listening port. If lock fails with the volume still
-mounted, the release helper keeps waiting: retry the owner lock/unlock operation. To restore
+The bot still starts at boot; its order endpoint returns 503 while locked. If lock fails
+with the volume still mounted, the release helper keeps waiting: retry the owner lock/unlock operation. To restore
 status while intentionally leaving the target inactive and the volume mounted, start
 `homelab-telegram-bot.service` manually; stop it again before retrying unmount.
 
@@ -109,6 +111,125 @@ to the current end. A bad marker or truncated outbox fails closed with a metadat
 Sync failures do not advance it; commands report failure rather than returning stale state.
 The journal contains fixed sync outcomes, line/recipient counts and failure metadata, never
 Git output, repository settings or event text.
+
+### Bot order endpoint
+
+The owner must allow the Mac collector to reach **the node's TCP 8110** in the Tailscale
+policy. The node already accepts `tailscale0`; do not change ufw or add a listener key.
+The bot discovers its own IPv4 with `/usr/bin/tailscale ip -4` and binds only that address,
+never loopback, LAN, wildcard or IPv6. Discovery/bind failures retry every five seconds.
+Telegram polling and host commands continue while the interface is absent. There is no Mac
+collector in this repository yet and the bot never executes an order.
+
+In conversation, the model can propose one of these orders. The bot refreshes the mirror
+and validates before sending the exact action with **Yes** and **No** buttons. Long
+confirmations show every part before their final buttons, without truncating arguments or
+reviews. No cancels; Yes queues; either closes the episode. Only main-allowlisted users can
+tap. A late tap says `already <status>` and makes no change.
+
+| Action | `slice` target | `argument` | Required current state |
+|---|---|---|---|
+| `start` | slice id | null | `ready` |
+| `slot` | slice id | ISO date-time or phrase for the Mac to parse | `ready` |
+| `pause`, `resume` | slice id | null | anything except `accepted` |
+| `answer` | slice id | owner's verbatim words from their current message | question/escalation attention with null `answer` |
+| `approve` | slice id | null | merge attention, `approved: false`, and an orchestrator `review` |
+| `orchestrator` | repository name from state `repo`, or `development` | task text | known repository, or the main orchestrator |
+
+Approve always requires review, including slices without ⛔. Its confirmation shows the PR
+number and the review's verdict verbatim. Optional private `github_owner` in `planning.json`
+adds `https://github.com/<owner>/<repo>/pull/<number>`; without it the PR number still appears.
+Arguments are never interpreted or executed by the bot. The Mac must enforce its own
+preconditions before execution, including date parsing and merge safeguards.
+
+The HTTP contract has **exactly two routes**. No authentication header or key is required;
+Tailscale policy is the sole network gate. All other method/path combinations return 404,
+including trailing slashes and query strings. Both valid routes return 503 before the data
+volume is unlocked, when planning is unconfigured, or when their store is unavailable.
+
+`GET /orders` returns 200 with `Content-Type: application/json`:
+
+```json
+{"orders":[{"id":"0123456789abcdef0123456789abcdef","created":"2026-10-20T10:00:00+00:00","action":"start","slice":"example/task","argument":null,"expect":{"state":"ready","paused":false,"attention":null}}]}
+```
+
+`id` is an opaque 32-character lowercase hex order identifier; `created` is a UTC ISO timestamp.
+`slice` is the slice id (`<repo>/<name>`), or the repository name for `orchestrator`.
+The six fields shown are the complete order payload. Only queued orders appear, oldest
+`created` first, with id breaking ties. A GET neither reserves nor removes anything: repeated
+GETs return the same orders until acknowledged or overtaken (new orders can arrive).
+The empty result is `{"orders": []}`. The collector must retain order ids to avoid executing
+the same order twice after an uncertain acknowledgement.
+
+`expect` is copied when confirmation is prepared and is exactly
+`{"state": "<state>", "paused": false, "attention": null}` or
+`{"state": "<state>", "paused": false, "attention": {"kind": "<kind>", "since": "<timestamp>"}}`.
+For `orchestrator`, `expect` is null. After every successful pull, a proposed or queued
+slice order becomes `overtaken` if these fields differ, the slice disappeared, or the action's
+precondition no longer holds. The latter catches an answer/approval recorded by the
+orchestrator even when attention kind/since stayed the same. Overtaken orders leave the
+queue and their confirmation is edited with what changed, removing buttons. The collector
+must compare `expect` with its own current scheduler state before carrying out an order;
+it must not treat receipt of an order as permission to bypass current preconditions.
+
+`POST /orders/<id>/ack` requires a JSON body and a single `Content-Length` (chunked bodies
+are refused). It accepts exactly these fields:
+
+```json
+{"outcome":"dropped","detail":"Cancelled by the owner on the Mac"}
+```
+
+`outcome` is `done`, `dropped` or `failed`; `detail` is a string (empty is permitted).
+204 means the receipt is durably recorded, with no response body. The order leaves the
+queue and its Telegram confirmation is edited to `Done`, `Dropped: <detail>` or
+`Failed: <detail>`, with no buttons. Telegram delivery can lag: pending edits retry every
+second and survive restarts. Repeating an ack of a known closed order returns 204 and does
+nothing, even if outcome/detail differ. An ack cannot queue a proposal or change a cancelled
+or overtaken order. Unknown ids return 404. Invalid JSON, missing/extra fields, wrong types,
+invalid outcomes or body framing return 400. A body over **4096 bytes** returns 413.
+HTTP connections close after each request, with a three-second socket timeout.
+
+Orders persist in `/srv/homelab/frontline/orders.json`, outside the read-only clone, mode
+0600. Writes atomically replace and fsync the file and its directory before success.
+Transitions are `proposed → queued | cancelled | overtaken` and
+`queued → done | dropped | failed | overtaken`. Closed records are currently retained
+without automatic pruning, keeping late taps and repeated receipts meaningful. Do not
+delete the store to retry delivery. Arguments and verdicts are private volume/Telegram
+content: neither HTTP access logs nor exception text are logged; order audit lines contain
+only order ids, actions, slice ids and statuses.
+
+After installation, verify `systemctl is-active homelab-telegram-bot.service`, `NRestarts`,
+`ss -ltn` (8110 only on the node's Tailscale IPv4), and `systemd-analyze security
+homelab-telegram-bot.service`. The unit changes only a networking comment; its sandbox
+score is unchanged at 1.3. From the Mac:
+
+```bash
+NODE_TS_IP="<node Tailscale IPv4>"
+curl -s --max-time 5 "http://$NODE_TS_IP:8110/orders"
+curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 "http://$NODE_TS_IP:8110/unknown"
+```
+
+Expect `{"orders": []}` and 404. A timeout means the owner needs to check the Tailscale
+grant; do not broaden the bind or change firewall policy. The owner's remaining phone check:
+request an order, inspect its exact confirmation, tap Yes, see it in GET, then discard it:
+
+```bash
+ORDER_ID="<id from GET /orders>"
+curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 \
+  -H 'Content-Type: application/json' \
+  --data '{"outcome":"dropped","detail":"Owner validation; do not execute"}' \
+  "http://$NODE_TS_IP:8110/orders/$ORDER_ID/ack"
+```
+
+Expect 204, the order absent from the next GET, and `Dropped: Owner validation; do not execute`
+on the phone. These checks do not run an order. Also check No, a late tap and an overtaken
+proposal from the phone. The orchestrator coordinates these owner checks after deployment.
+
+Rollback: restore the dated pre-install bot Python files and unit from the root-only rollback
+directory described under [Rebuilding the node](#rebuilding-the-node), then `systemctl
+daemon-reload` and restart only `homelab-telegram-bot.service`. The prior bot has no order
+listener; verify 8110 is absent and `/status` works. Retain `orders.json`, clone, key and
+private configuration for recovery. No stack, volume, polkit or credential rollback is needed.
 
 Private bot configuration stays on the node under `/etc/homelab-telegram-bot/`: `allowlist`
 and `privileged-allowlist` contain numeric Telegram user IDs, one per line; `restart-allowlist`
@@ -1397,7 +1518,13 @@ SSH accounts work through Tailscale.
    and start the bot. Keep the encrypted planning directory, key and config for recovery;
    deleting them is a separate owner decision. Restarting the Docker stack
    does not update this environment. Install every committed `.py` module, including
-   `conversation.py`, together; the requirements remain unchanged. After stack restart,
+   `conversation.py`, `orders.py` and `order_listener.py`, together; the requirements remain unchanged.
+   The order listener uses the existing AF_INET permission and writable frontline directory;
+   the unit changes only its networking comment. Before copying, show the installed-file diffs
+   and save a dated root-only rollback copy of all installed bot modules and the unit. Verify
+   the unit with `systemd-analyze verify`, reload and restart only the bot. Follow the
+   [order endpoint contract](#bot-order-endpoint) for the owner's Tailscale policy step,
+   port/address proof, curl checks and rollback; do not install a Mac runner here. After stack restart,
    verify `curl -fsS http://127.0.0.1:4000/v1/models` includes `frontline` and `ss -ltn`
    shows port 4000 only on `127.0.0.1`. Record the bot's active/restart state and unchanged
    security score (1.3), then check med-ask and image studio health. The owner checks natural
@@ -1592,7 +1719,9 @@ SSH accounts work through Tailscale.
     optional list of up to 16 relative text-file paths (default `[]`); the orchestrator adds
     the owner’s two summary files privately. Each must fit the 128 KiB file cap and together
     with pending work fit the 256 KiB context cap. Keep the actual repository
-    identity, branch and both paths out of Git, tests, PRs, docs and logs. The data directory,
+    identity, branch and both paths out of Git, tests, PRs, docs and logs.
+    Optional `github_owner` is a GitHub user/organization name for approval PR links;
+    omit it to show PR numbers without links. The data directory,
     key and known-hosts paths are fixed above. The config and SSH files stay on the root
     filesystem so missing or locked-volume planning never prevents boot-time status.
 

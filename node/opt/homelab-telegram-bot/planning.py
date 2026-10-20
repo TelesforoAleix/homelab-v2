@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from orders import Orders
 from router import Capability, Executor
 
 CONFIG = Path("/etc/homelab-telegram-bot/planning.json")
@@ -31,6 +32,7 @@ class Config:
     outbox_path: str
     poll_seconds: int = 60
     context_files: list[str] = field(default_factory=list)
+    github_owner: str | None = None
 
 
 def load_config(log, path=CONFIG):
@@ -51,6 +53,11 @@ def load_config(log, path=CONFIG):
                 raise ValueError("relative path required")
         if type(config.poll_seconds) is not int or not 10 <= config.poll_seconds <= 3600:
             raise ValueError("invalid interval")
+        if config.github_owner is not None and (
+            not isinstance(config.github_owner, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", config.github_owner)
+        ):
+            raise ValueError("invalid GitHub owner")
         return config
     except FileNotFoundError:
         log("planning not configured; feature disabled")
@@ -151,7 +158,8 @@ class Planning:
         self.clone = directory / "clone"
         self.marker = directory / "outbox-marker.json"
         self.ready = ready
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        self.orders = Orders(self)
 
     def git_environment(self):
         return {
@@ -213,7 +221,8 @@ class Planning:
                     self.config.branch,
                 )
                 self.log("planning pull succeeded")
-        except (OSError, subprocess.SubprocessError):
+            self.orders.reconcile()
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
             self.log("WARNING: planning sync failed")
             return "Planning sync failed; try again shortly."
         return None

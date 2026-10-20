@@ -16,7 +16,15 @@ BOT_DIR = Path(__file__).resolve().parents[1] / "node/opt/homelab-telegram-bot"
 @pytest.fixture
 def bot_modules(monkeypatch):
     modules = {}
-    for name in ("router", "executors", "planning", "conversation", "bot"):
+    for name in (
+        "router",
+        "executors",
+        "orders",
+        "order_listener",
+        "planning",
+        "conversation",
+        "bot",
+    ):
         spec = importlib.util.spec_from_file_location(name, BOT_DIR / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         monkeypatch.setitem(sys.modules, name, module)
@@ -141,6 +149,8 @@ class TelegramRequest(BaseRequest):
             if self.failure == "exception":
                 raise RuntimeError("Private exception text")
             result = self.failure != "not-ok"
+        elif name in {"editMessageText", "answerCallbackQuery"}:
+            result = True
         elif name == "sendMessage":
             result = {
                 "message_id": 1,
@@ -1355,3 +1365,634 @@ def test_episode_topic_identifiers(bot_modules, first, next_question, follows):
         ]
     )
     assert conversation.Conversation.follows(episode, next_question) is follows
+
+
+@pytest.fixture
+def order_repo(conversation_repo):
+    fixture = conversation_repo
+    item = planning_slice(state="ready", paused=False, stop_before_merge=False)
+    (fixture.source / "state.json").write_text(json.dumps({"slices": [item]}))
+    fixture.commit()
+    fixture.item = item
+    fixture.orders = fixture.mirror.orders
+    return fixture
+
+
+def write_order_state(fixture, **changes):
+    fixture.item.update(changes)
+    (fixture.source / "state.json").write_text(json.dumps({"slices": [fixture.item]}))
+    fixture.commit()
+
+
+def proposal(action="start", argument=None, target="fixture/item"):
+    return {"action": action, "id": target, "argument": argument}
+
+
+def attention(kind="question", **changes):
+    return (
+        dict(
+            kind=kind,
+            body="Private attention",
+            since="2026-10-20T10:00:00Z",
+            answer=None,
+            approved=False,
+        )
+        | changes
+    )
+
+
+@pytest.mark.parametrize(
+    "action,state,att,argument,allowed",
+    [
+        ("start", "ready", None, None, True),
+        ("start", "issued", None, None, False),
+        ("slot", "ready", None, "tomorrow at 10", True),
+        ("slot", "planned", None, "tomorrow at 10", False),
+        ("pause", "issued", None, None, True),
+        ("pause", "accepted", None, None, False),
+        ("resume", "ready", None, None, True),
+        ("resume", "accepted", None, None, False),
+        ("answer", "escalated", attention(), "Private owner words", True),
+        ("answer", "escalated", attention("escalation"), "Private owner words", True),
+        ("answer", "escalated", attention(answer="answered"), "Private owner words", False),
+        ("answer", "ready", None, "Private owner words", False),
+        ("approve", "in review", attention("merge"), None, False),
+        (
+            "approve",
+            "in review",
+            attention("merge", review={"verdict": "Private verdict"}),
+            None,
+            True,
+        ),
+        (
+            "approve",
+            "in review",
+            attention("merge", approved=True, review={"verdict": "Private verdict"}),
+            None,
+            False,
+        ),
+        ("approve", "ready", attention(review={"verdict": "Private verdict"}), None, False),
+    ],
+)
+@pytest.mark.parametrize("stop_before_merge", [False, True])
+def test_order_preconditions(order_repo, action, state, att, argument, allowed, stop_before_merge):
+    fixture = order_repo
+    write_order_state(fixture, state=state, attention=att, stop_before_merge=stop_before_merge)
+    if allowed:
+        order = fixture.orders.propose(proposal(action, argument), "Private owner words", (10, 0))
+        assert order["status"] == "proposed" and fixture.orders.queued() == []
+        assert order["expect"] == {
+            "state": state,
+            "paused": False,
+            "attention": {"kind": att["kind"], "since": att["since"]} if att else None,
+        }
+        if action == "approve":
+            assert "Private verdict" in order["confirmation"]
+    else:
+        with pytest.raises(ValueError):
+            fixture.orders.propose(proposal(action, argument), "Private owner words", (10, 0))
+    assert "Private" not in "\n".join(fixture.logs)
+
+
+@pytest.mark.parametrize(
+    "target,allowed",
+    [("fixture", True), ("development", True), ("unknown", False), ("fixture/item", False)],
+)
+def test_orchestrator_proposal(order_repo, target, allowed):
+    fixture = order_repo
+    if not allowed:
+        with pytest.raises(ValueError):
+            fixture.orders.propose(proposal("orchestrator", "Private task", target), "", (10, 0))
+        return
+    order = fixture.orders.propose(proposal("orchestrator", "Private task", target), "", (10, 0))
+    assert order["expect"] is None
+    assert fixture.orders.queued() == []
+    fixture.orders.tap(order["id"], True, 10)
+    write_order_state(fixture, state="accepted")
+    with fixture.mirror.lock:
+        assert fixture.mirror.refresh() is None
+    assert fixture.orders.queued()[0]["expect"] is None
+
+
+def test_order_verbatim_answer_and_pr_link(order_repo, bot_modules):
+    from dataclasses import replace
+
+    fixture = order_repo
+    words = "Sí.\n  Use the original — exactly!  "
+    write_order_state(fixture, attention=attention())
+    with pytest.raises(ValueError):
+        fixture.orders.propose(proposal("answer", "Use a paraphrase"), words, (10, 0))
+    order = fixture.orders.propose(proposal("answer", words), "Answer: " + words, (10, 0))
+    assert order["argument"] == words and words in order["confirmation"]
+    fixture.mirror.config = replace(fixture.mirror.config, github_owner="fixture-owner")
+    write_order_state(
+        fixture,
+        pr=42,
+        attention=attention(
+            "merge",
+            review={
+                "verdict": "Private verdict\nApproved with caveats.",
+                "at": "now",
+                "actor": "fixture",
+            },
+        ),
+    )
+    order = fixture.orders.propose(proposal("approve"), "approve", (10, 0))
+    assert "PR #42\nhttps://github.com/fixture-owner/fixture/pull/42" in order["confirmation"]
+    assert "Private verdict\nApproved with caveats." in order["confirmation"]
+    assert "Private" not in "\n".join(fixture.logs)
+    config = fixture.mirror.directory / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "repo_url": "git@github.com:fixture/planning.git",
+                "branch": "main",
+                "state_path": "state.json",
+                "outbox_path": "outbox.jsonl",
+                "github_owner": "bad/owner",
+            }
+        )
+    )
+    assert bot_modules.planning.load_config(fixture.logs.append, config) is None
+
+
+@pytest.mark.parametrize("yes,status", [(True, "queued"), (False, "cancelled")])
+def test_order_taps_restart_and_metadata(order_repo, bot_modules, yes, status):
+    fixture = order_repo
+    order = fixture.orders.propose(proposal(), "start", (10, 0))
+    assert fixture.orders.tap(order["id"], yes, 999) == ("Unknown order.", None)
+    assert fixture.orders.tap(order["id"], yes, 10) == (status, [10, 0])
+    assert fixture.orders.tap(order["id"], not yes, 10) == ("already " + status, [10, 0])
+    restarted = bot_modules.orders.Orders(fixture.mirror)
+    assert len(restarted.queued()) == int(yes)
+    assert restarted.path.stat().st_mode & 0o777 == 0o600
+    if yes:
+        assert set(restarted.queued()[0]) == set(bot_modules.orders.PUBLIC)
+    fixture.mirror.ready = lambda: False
+    assert "unlocked" in fixture.orders.tap(order["id"], yes, 10)[0]
+    with pytest.raises(ValueError):
+        fixture.orders.queued()
+
+
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ({"state": "issued"}, "state changed from ready to issued"),
+        ({"paused": True}, "pause state changed"),
+        ({"attention": attention()}, "attention changed"),
+    ],
+)
+def test_order_overtaken_every_pull(order_repo, queued, change, reason):
+    fixture = order_repo
+    order = fixture.orders.propose(proposal(), "start", (10, 0))
+    if queued:
+        fixture.orders.tap(order["id"], True, 10)
+    write_order_state(fixture, **change)
+    # A normal command pull must reconcile orders too.
+    fixture.mirror.command("pending", [])
+    current = fixture.orders.load()[order["id"]]
+    assert current["status"] == "overtaken" and current["detail"] == reason
+    assert fixture.orders.queued() == []
+    assert fixture.orders.tap(order["id"], True, 10)[0] == "already overtaken"
+    assert fixture.orders.ack(order["id"], {"outcome": "done", "detail": "Private"}) == 204
+    assert fixture.orders.load()[order["id"]]["status"] == "overtaken"
+
+
+def test_answer_overtaken_same_attention_timestamp(order_repo):
+    fixture = order_repo
+    write_order_state(fixture, attention=attention())
+    order = fixture.orders.propose(proposal("answer", "Private words"), "Private words", (10, 0))
+    write_order_state(fixture, attention=attention(answer="Private orchestrator answer"))
+    # Tap pulls first and must not enqueue even though expect itself still matches.
+    assert fixture.orders.tap(order["id"], True, 10)[0] == "already overtaken"
+    assert fixture.orders.load()[order["id"]]["detail"] == "answered from the orchestrator"
+
+
+async def test_model_proposal_is_read_only_and_rejects_paraphrase(order_repo, bot_modules):
+    fixture = order_repo
+    requests = []
+    conversation = fake_frontline(
+        bot_modules,
+        fixture,
+        [
+            {"answer": "Private proposal", "read_file": None, "order": proposal()},
+        ],
+        requests,
+    )
+    async with conversation.client:
+        _, key = await conversation.answer((10, 0), "Start fixture/item")
+    assert key is not None
+    assert conversation.proposals[(10, 0)] == proposal()
+    assert not fixture.orders.path.exists()  # Model output alone cannot even create a proposal.
+    assert "only an allowlisted owner's Yes queues" in requests[0]["messages"][0]["content"]
+    assert "paused" in json.dumps(requests[0])
+    write_order_state(fixture, attention=attention())
+    conversation = fake_frontline(
+        bot_modules,
+        fixture,
+        [
+            {"answer": "Private", "read_file": None, "order": proposal("answer", "Paraphrase")},
+        ],
+        [],
+    )
+    async with conversation.client:
+        answer, key = await conversation.answer((10, 0), "Owner's original words")
+    assert answer == bot_modules.conversation.UNAVAILABLE and key is None
+    assert not conversation.proposals
+    assert "Private" not in "\n".join(fixture.logs)
+
+
+@pytest.fixture
+async def order_app(order_repo, bot_modules, monkeypatch):
+    from telegram.ext import ExtBot
+
+    request = TelegramRequest()
+    monkeypatch.setattr(
+        bot_modules.bot,
+        "AuditedBot",
+        lambda token: ExtBot(
+            token,
+            request=request,
+            get_updates_request=request,
+        ),
+    )
+    conversation = fake_frontline(
+        bot_modules,
+        order_repo,
+        [
+            {"answer": "Private proposal", "read_file": None, "order": proposal()},
+        ],
+        [],
+    )
+    monkeypatch.setattr(bot_modules.bot, "Conversation", lambda *args: conversation)
+    logs = order_repo.logs
+    monkeypatch.setattr(bot_modules.bot, "log", logs.append)
+    app = bot_modules.bot.build_application(
+        "123:fixture",
+        {0, 1},
+        make_router(bot_modules, logs),
+        order_repo.mirror,
+    )
+    async with conversation.client, app:
+        yield SimpleNamespace(
+            app=app, request=request, conversation=conversation, fixture=order_repo
+        )
+
+
+async def tap(app, order_id, choice="yes", user=0, chat=10):
+    update = Update.de_json(
+        {
+            "update_id": 2,
+            "callback_query": {
+                "id": "fixture-callback",
+                "chat_instance": "fixture",
+                "from": {"id": user, "is_bot": False, "first_name": "Fixture"},
+                "data": f"order:{choice}:{order_id}",
+                "message": {"message_id": 1, "date": 0, "chat": {"id": chat, "type": "private"}},
+            },
+        },
+        app.bot,
+    )
+    await app.process_update(update)
+
+
+@pytest.mark.parametrize("choice,status", [("yes", "queued"), ("no", "cancelled")])
+async def test_confirmation_callbacks_and_episode_close(order_app, choice, status):
+    fixture, app, request = order_app.fixture, order_app.app, order_app.request
+    await deliver(app, "Start fixture/item", user=999)
+    assert not fixture.orders.path.exists()
+    await deliver(app, "Start fixture/item")
+    order = next(iter(fixture.orders.load().values()))
+    assert fixture.orders.queued() == []
+    sent = [params for name, params in request.calls if name == "sendMessage"]
+    assert sent[-1]["text"] == "Queue start fixture/item?"
+    buttons = sent[-1]["reply_markup"]["inline_keyboard"][0]
+    assert [b["text"] for b in buttons] == ["Yes", "No"]
+    assert (10, 0) in order_app.conversation.active
+    await tap(app, order["id"], choice, user=999)
+    assert request.calls[-1][1]["text"] == "Not authorised."
+    assert fixture.orders.queued() == []
+    await tap(app, order["id"], choice)
+    assert (10, 0) not in order_app.conversation.active
+    edits = [params for name, params in request.calls if name == "editMessageText"]
+    assert edits[-1]["text"] == status.capitalize()
+    assert not edits[-1].get("reply_markup")
+    await tap(app, order["id"], choice)
+    assert request.calls[-1][1]["text"] == "already " + status
+    assert fixture.orders.load()[order["id"]]["status"] == status
+    assert "Private" not in "\n".join(fixture.logs)
+
+
+async def test_ack_edits_and_retries_after_telegram_failure(order_app, monkeypatch):
+    import asyncio
+
+    fixture, app, request = order_app.fixture, order_app.app, order_app.request
+    await deliver(app, "Start fixture/item")
+    order = next(iter(fixture.orders.load().values()))
+    await tap(app, order["id"])
+    fixture.orders.ack(order["id"], {"outcome": "dropped", "detail": "Private runner detail"})
+    original = request.do_request
+
+    async def fail_edit(url, *args, **kwargs):
+        if url.endswith("editMessageText"):
+            raise OSError("Private network failure")
+        return await original(url, *args, **kwargs)
+
+    monkeypatch.setattr(request, "do_request", fail_edit)
+    # A late tap also attempts outstanding edits.
+    await tap(app, order["id"])
+    assert fixture.orders.pending_edits()
+    monkeypatch.setattr(request, "do_request", original)
+    await tap(app, order["id"])
+    assert not fixture.orders.pending_edits()
+    assert [p for n, p in request.calls if n == "editMessageText"][-1]["text"] == (
+        "Dropped: Private runner detail"
+    )
+    assert "Private" not in "\n".join(fixture.logs)
+
+    # Lifecycle starts retry workers and cancels them without contacting a real interface.
+    async def no_listener(self):
+        await asyncio.Future()
+
+    import order_listener
+
+    monkeypatch.setattr(order_listener.Listener, "run", no_listener)
+    await app.post_init(app)
+    await asyncio.sleep(0)
+    await app.post_stop(app)
+
+
+@pytest.fixture
+def order_http(order_repo, bot_modules):
+    import threading
+
+    listener = bot_modules.order_listener
+    # Only the test server uses loopback and an ephemeral port. Production bind is tested below.
+    server = listener.Server(("127.0.0.1", 0), listener.handler_for(order_repo.orders))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield order_repo, server.server_address
+    server.shutdown()
+    server.server_close()
+    thread.join()
+
+
+def http_order(address, path="/orders", method="GET", body=None, headers=None):
+    import http.client
+
+    connection = http.client.HTTPConnection(*address, timeout=5)
+    connection.request(method, path, body=body, headers=headers or {})
+    response = connection.getresponse()
+    result = response.status, response.read()
+    connection.close()
+    return result
+
+
+def test_order_http_contract(order_http, bot_modules):
+    fixture, address = order_http
+    assert http_order(address) == (200, b'{"orders": []}')
+    first = fixture.orders.propose(proposal(), "start", (10, 0))
+    second = fixture.orders.propose(proposal("pause"), "pause", (10, 0))
+    assert http_order(address) == (200, b'{"orders": []}')
+    fixture.orders.tap(second["id"], True, 10)
+    fixture.orders.tap(first["id"], True, 10)
+    expected = fixture.orders.queued()
+    assert [o["id"] for o in expected] == [first["id"], second["id"]]
+    assert json.loads(http_order(address)[1]) == {"orders": expected}
+    assert json.loads(http_order(address)[1]) == {"orders": expected}
+    path = f"/orders/{first['id']}/ack"
+    for outcome in ["dropped", "done", "failed"]:
+        assert http_order(
+            address,
+            path,
+            "POST",
+            json.dumps(
+                {
+                    "outcome": outcome,
+                    "detail": "Private runner detail",
+                }
+            ),
+        ) == (204, b"")
+    assert fixture.orders.load()[first["id"]]["status"] == "dropped"
+    assert len(json.loads(http_order(address)[1])["orders"]) == 1
+    assert fixture.orders.load()[first["id"]]["dirty"]
+    assert (
+        http_order(
+            address,
+            f"/orders/{'0' * 32}/ack",
+            "POST",
+            json.dumps(
+                {
+                    "outcome": "done",
+                    "detail": "",
+                }
+            ),
+        )[0]
+        == 404
+    )
+    for body in [
+        "no JSON",
+        "[]",
+        "null",
+        "{}",
+        '{"outcome":"other","detail":""}',
+        '{"outcome":"done","detail":4}',
+        '{"outcome":"done"}',
+    ]:
+        assert http_order(address, path, "POST", body)[0] == 400
+    assert http_order(address, path, "POST", "a" * 4097)[0] == 413
+    assert http_order(address, path, "POST", "{}", {"Transfer-Encoding": "chunked"})[0] == 400
+    for method, route in [
+        ("GET", "/"),
+        ("POST", "/orders"),
+        ("GET", path),
+        ("GET", "/orders?x=1"),
+        ("PUT", "/orders"),
+        ("OPTIONS", "/orders"),
+        ("TRACE", "/orders"),
+        ("GET", "/orders/"),
+        ("POST", path + "/"),
+    ]:
+        assert http_order(address, route, method)[0] == 404
+    fixture.mirror.ready = lambda: False
+    assert http_order(address)[0] == 503
+    assert http_order(address, path, "POST", "{}")[0] == 503
+    assert http_order(address, "/unknown")[0] == 404
+    assert "Private" not in "\n".join(fixture.logs)
+
+
+@pytest.mark.parametrize(
+    "outcome,text",
+    [
+        ("done", "Done"),
+        ("failed", "Failed: Private detail"),
+        ("dropped", "Dropped: Private detail"),
+    ],
+)
+def test_order_ack_statuses(order_repo, bot_modules, outcome, text):
+    fixture = order_repo
+    order = fixture.orders.propose(proposal(), "start", (10, 0))
+    fixture.orders.tap(order["id"], True, 10)
+    fixture.orders.ack(order["id"], {"outcome": outcome, "detail": "Private detail"})
+    assert fixture.orders.queued() == []
+    assert bot_modules.orders.status_text(fixture.orders.load()[order["id"]]) == text
+
+
+async def test_listener_retries_only_tailscale(order_repo, bot_modules, monkeypatch):
+    import asyncio
+
+    module = bot_modules.order_listener
+    calls, sleeps = [], []
+    results = [OSError("no interface"), "100.64.1.2"]
+
+    def address():
+        value = results.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    class FakeServer:
+        def __init__(self, bind, handler):
+            calls.append(bind)
+
+        def serve_forever(self):
+            pass
+
+        def shutdown(self):
+            pass
+
+        def server_close(self):
+            pass
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(module, "tailscale_address", address)
+    monkeypatch.setattr(module, "Server", FakeServer)
+    monkeypatch.setattr(module.asyncio, "sleep", sleep)
+    listener = module.Listener(order_repo.orders, order_repo.logs.append)
+    await listener.run()
+    assert sleeps == [5] and calls == [("100.64.1.2", 8110)]
+    await listener.stop()
+    assert listener.server is None
+    await asyncio.to_thread(lambda: None)
+
+
+@pytest.mark.parametrize(
+    "output,valid",
+    [
+        ("100.64.1.2\n", True),
+        ("", False),
+        ("127.0.0.1", False),
+        ("0.0.0.0", False),
+        ("192.168.1.2", False),
+        ("::1", False),
+    ],
+)
+def test_listener_runtime_address_validation(bot_modules, monkeypatch, output, valid):
+    module = bot_modules.order_listener
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(stdout=output)
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    if valid:
+        assert module.tailscale_address() == output.strip()
+    else:
+        with pytest.raises(ValueError):
+            module.tailscale_address()
+    assert calls == [["/usr/bin/tailscale", "ip", "-4"]]
+
+
+async def test_long_answer_confirmation_verbatim_before_buttons(order_app, bot_modules):
+    fixture = order_app.fixture
+    words = "Private owner words — 😀\n" * 220
+    write_order_state(fixture, attention=attention())
+
+    async def completion(messages):
+        return {"answer": "", "read_file": None, "order": proposal("answer", words)}
+
+    order_app.conversation.completion = completion
+    await deliver(order_app.app, "Answer with: " + words)
+    sent = [params for name, params in order_app.request.calls if name == "sendMessage"]
+    expected = "Queue answer fixture/item?\n\n" + words
+    assert "".join(part["text"] for part in sent[:-1]) == expected
+    assert all(not part.get("reply_markup") for part in sent[:-1])
+    assert sent[-1]["text"] == "Queue answer fixture/item as shown above?"
+    assert sent[-1]["reply_markup"]
+    assert all(len(part["text"].encode("utf-16-le")) // 2 <= 4096 for part in sent)
+    assert fixture.orders.queued() == []
+    order = next(iter(fixture.orders.load().values()))
+    await tap(order_app.app, order["id"])
+    assert fixture.orders.queued()[0]["argument"] == words
+
+
+async def test_overtaken_message_edit_survives_restart(order_app, bot_modules):
+    fixture = order_app.fixture
+    await deliver(order_app.app, "Start fixture/item")
+    order = next(iter(fixture.orders.load().values()))
+    write_order_state(fixture, paused=True)
+    fixture.mirror.command("pending", [])
+    restarted = bot_modules.orders.Orders(fixture.mirror)
+    assert restarted.pending_edits()[0]["status"] == "overtaken"
+    await tap(order_app.app, order["id"])
+    replies = [p["text"] for n, p in order_app.request.calls if n == "answerCallbackQuery"]
+    assert replies[-1] == "already overtaken"
+    edits = [p for n, p in order_app.request.calls if n == "editMessageText"]
+    assert edits[-1]["text"] == "Overtaken: pause state changed"
+    assert not edits[-1].get("reply_markup")
+    assert not restarted.pending_edits()
+
+
+def test_order_invalid_proposals_and_atomic_write_failure(order_repo, bot_modules, monkeypatch):
+    fixture = order_repo
+    for invalid in [
+        [],
+        [proposal(), proposal()],
+        proposal("restart"),
+        proposal(target="unknown"),
+        proposal("start", "unexpected"),
+        proposal("slot"),
+        proposal("answer", ""),
+        {"action": "start", "id": "fixture/item"},
+    ]:
+        with pytest.raises(ValueError):
+            fixture.orders.propose(invalid, "Private words", (10, 0))
+    order = fixture.orders.propose(proposal(), "start", (10, 0))
+    original = fixture.orders.path.read_bytes()
+
+    def fail_replace(*args):
+        raise OSError("Private disk failure")
+
+    monkeypatch.setattr(bot_modules.orders.os, "replace", fail_replace)
+    with pytest.raises(OSError):
+        fixture.orders.tap(order["id"], True, 10)
+    assert fixture.orders.path.read_bytes() == original
+    assert fixture.orders.queued() == []
+    assert list(fixture.mirror.directory.glob("tmp*")) == []
+    assert "Private" not in "\n".join(fixture.logs)
+
+
+def test_order_http_body_framing_and_no_content_logging(order_http, capsys):
+    import socket
+
+    fixture, address = order_http
+    order = fixture.orders.propose(proposal(), "start", (10, 0))
+    path = f"/orders/{order['id']}/ack"
+    requests = [
+        f"POST {path} HTTP/1.0\r\n\r\n",
+        f"POST {path} HTTP/1.0\r\nContent-Length: -1\r\n\r\n",
+        f"POST {path} HTTP/1.0\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{{}}",
+        f"POST {path} HTTP/1.0\r\nContent-Length: 50\r\n\r\nPrivate partial body",
+    ]
+    for request in requests:
+        with socket.create_connection(address, timeout=5) as connection:
+            connection.sendall(request.encode())
+            connection.shutdown(socket.SHUT_WR)
+            assert connection.recv(1024).startswith(b"HTTP/1.0 400")
+    assert http_order(address, path, "POST", "Private invalid JSON")[0] == 400
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""

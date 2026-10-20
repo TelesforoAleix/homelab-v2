@@ -86,7 +86,7 @@ No archive is staged, and the private identity remains in the owner's password m
 The Telegram client is a host service using python-telegram-bot, running as `homelab-bot`
 with its existing sandbox and TPM-sealed token. Its own `/opt/homelab-telegram-bot/.venv`
 is built with host Python from hash-pinned requirements; the library owns Telegram transport,
-polling and registration. It long-polls Telegram with no listening port. The main
+polling and registration. It long-polls Telegram; its order listener is described below. The main
 allowlist gates dispatch; the privileged allowlist is a subset and gates `/backup` and
 `/restart`, which also checks its unit allowlist. Polkit independently permits only restarting `chrony.service`.
 `/ask` posts to the loopback answer API, returns only text and never dispatches model output.
@@ -123,7 +123,8 @@ Git output, configuration values, arguments and event content stay out of the jo
 Allowlisted free text asks the `frontline` purpose over loopback, using the configured
 `context_files` plus the computed pending summary. One optional second pass can read a
 named regular UTF-8 file inside the clone (128 KiB maximum); paths cannot escape the clone
-or expose Git internals. There are no model actions or writes. Context is capped at 256 KiB,
+or expose Git internals. The model can propose an order but cannot execute or write.
+Context is capped at 256 KiB,
 each completion at 1,600 tokens, and each question at two calls with 60-second HTTP timeouts.
 Only the active episode's question/answer pairs are history. Episodes live in bounded memory,
 close on a changed topic, command or 30-minute silence, and reopen on an explicit reply to
@@ -131,6 +132,28 @@ a retained bot answer. Restarting the bot clears them. Logs contain only success
 Locked volumes or unavailable models get a short availability reply; commands remain independent.
 `frontline` has the same gateway route and low reasoning effort as `chat`. Zero data retention
 was requested but the current Hobby team rejected it with HTTP 403; the option remains off.
+
+The bot validates one structured order proposal against the current mirror before showing
+Yes/No buttons. Only an allowlisted callback queues it; either choice closes the episode.
+Answers are verbatim excerpts of the owner's current message. Merge approval requires an
+orchestrator review for every slice and displays its full verdict and PR. Orders record the
+slice's state, paused flag and attention kind/since; every successful mirror pull reconciles
+open orders, including attention already answered or approved. Changed expectations or lost
+preconditions mark an order overtaken and remove its buttons. The model's output never enters
+the command router or an executor.
+
+`orders.json` lives beside the clone under `/srv/homelab/frontline/`, with atomic replacement
+and file/directory fsync before acknowledgements. Telegram message edits are durable pending
+work and retry after failures or restart. Closed orders are retained; no automatic deletion
+is introduced. Only order id, action, slice id and status enter order audit lines.
+A standard-library HTTP server hands out queued orders oldest first and accepts idempotent
+receipts; it runs no orders. It binds only the node's runtime Tailscale IPv4 on TCP 8110,
+retrying when Tailscale is absent, with no fallback address. Before unlock the two routes
+return 503. Like the Mac's 8091 listener, it has no key: the owner's Tailscale policy gates
+access (the node already permits tailscale0 traffic). This is a host listener, leaving the
+container API boundary unchanged. Existing AF_INET and writable-directory permissions suffice;
+no sandbox directives, credentials, polkit rules or allowlists change. The HTTP contract is in
+[operations](docs/operations.md#bot-order-endpoint); the Mac runner is built separately.
 
 The first node-to-Mac action channel is the owner's launchd user agent on TCP 8091, binding
 only the runtime Tailscale IPv4. The tailnet grant permits only the node; there is no key.
@@ -423,7 +446,9 @@ including quotes). Only counts are exposed, without text or match details.
 ## Rules
 
 1. Secrets never in git or images — Compose secrets or systemd `LoadCredential=`.
-2. Only `api` and LiteLLM publish ports, on loopback.
+2. Only `api` and LiteLLM publish container ports, on loopback. The host bot's order
+   listener is the explicit tailnet-only exception: runtime Tailscale IPv4, TCP 8110,
+   gated by Tailscale policy, following the Mac host listener on 8091.
 3. Brain is mounted read-only; everything derived lives on the encrypted volume.
 4. Containers run as non-root with `cap_drop: ALL`.
 5. Content is not logged by default; ids, sizes, timings and costs are.

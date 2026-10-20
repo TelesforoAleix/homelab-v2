@@ -628,3 +628,24 @@ heuristics retain the topic; a new topic, command or 30-minute silence closes it
 Telegram replies reopen retained episodes. Restarts clear history rather than persisting
 conversation content. Existing commands, allowlists, sandbox and content-free logs remain.
 Long replies prefer paragraph boundaries, with smaller boundaries for oversized paragraphs.
+
+
+**2026-10-20 — The bot proposes orders; only an owner's tap queues them.**
+The frontline model returns at most one structured proposal, never executable commands.
+The bot refreshes and validates against the read-only mirror, displays the exact action,
+verbatim owner answer or full merge-review verdict, then requires an allowlisted Yes/No tap.
+All merge approvals require an orchestrator review, not only ⛔ slices. Either tap closes
+the episode. Orders snapshot state, paused and attention kind/since; every successful pull
+invalidates changed expectations or lost preconditions as overtaken, including attention
+answered from the orchestrator without a changed timestamp.
+
+A standard-library HTTP listener binds only the node's runtime Tailscale IPv4 on TCP 8110,
+retrying absence without fallback. Like the Mac's 8091 channel it has no key: the owner's
+Tailscale policy gates it. This host exception leaves loopback container APIs unchanged.
+GET lists durable queued orders repeatedly; POST receipts remove them idempotently. The
+Mac executor is separate work. Both routes refuse access before unlock. Atomic, fsynced
+orders and pending Telegram edits live beside the clone, never in it; closed records are
+retained without automatic pruning. Long confirmations display all content before buttons.
+Only order metadata is logged. Existing sandbox permissions suffice: the unit changes a
+comment only, with exposure 1.3 before and for the candidate. No dependency, credential,
+polkit, allowlist or planning-write change is needed.

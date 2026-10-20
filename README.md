@@ -47,14 +47,17 @@ Solid parts are built; dashed parts are planned.
   [DECISIONS.md](DECISIONS.md) records the choices behind them.
 
 The Telegram bot runs as a sandboxed host service using python-telegram-bot in its own
-hash-pinned virtual environment. It long-polls with no listening port and remains available
+hash-pinned virtual environment. It long-polls Telegram and remains available
 before the data volumes are unlocked. After unlock, an optional read-only planning mirror
 supplies `/pending`, `/recap [hours]`, `/slice <id>` and notices for new outbox events.
 Allowlisted free-text questions use the `frontline` purpose through LiteLLM on
 `127.0.0.1:4000`, grounded in privately configured planning files and pending work.
 In-memory episodes keep follow-ups together; replying to an older answer reopens its episode.
-The model can read one extra bounded clone file and cannot act or write. Answers require
-unlock and the model gateway; host commands remain available while locked.
+The model can read one extra bounded clone file and propose one order; it cannot execute.
+The bot validates proposals and shows Yes/No buttons. Only an allowlisted tap queues an order
+on the encrypted volume. A [tailnet-only HTTP endpoint on TCP 8110](docs/operations.md#bot-order-endpoint)
+hands queued orders to a future Mac runner; Tailscale policy gates it, with no key.
+Answers and new proposals require unlock and the model gateway; host commands remain available while locked.
 Private configuration and a read-only deploy key stay on the node; see the
 [bot runbook](docs/operations.md#run-it).
 
