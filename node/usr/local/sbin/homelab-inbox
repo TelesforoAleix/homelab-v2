@@ -1,0 +1,161 @@
+#!/usr/bin/python3 -I
+"""Hand the private bot inbox to orchestrators over the existing SSH connection."""
+
+import fcntl
+import json
+import os
+import re
+import shutil
+import stat
+import sys
+import uuid
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+
+INBOX = Path("/srv/homelab/frontline/inbox")
+ID = re.compile(r"[0-9a-f]{32}")
+TARGET = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+class Locked(Exception):
+    pass
+
+
+@contextmanager
+def directory(name, parent=None):
+    descriptor = os.open(name, DIRECTORY, dir_fd=parent)
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def inbox():
+    # Open every component independently: O_NOFOLLOW on the final path alone is insufficient.
+    descriptor = os.open("/", DIRECTORY)
+    try:
+        try:
+            for part in INBOX.parts[1:]:
+                child = os.open(part, DIRECTORY, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+            os.listdir(descriptor)  # Also check readability before dispatching a command.
+        except (FileNotFoundError, PermissionError) as error:
+            raise Locked from error
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def regular(name, parent):
+    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            yield stream, info
+    finally:
+        os.close(descriptor)
+
+
+def record(folder):
+    with regular("item.json", folder) as (stream, info):
+        item = json.load(stream)
+    if not isinstance(item, dict):
+        raise ValueError
+    return item, info
+
+
+def listing(root, target):
+    items = []
+    for identity in os.listdir(root):
+        if not ID.fullmatch(identity):
+            continue
+        with directory(identity, root) as folder:
+            item, _ = record(folder)
+        addressed = item.get("kind") == "message" and item.get("target") == target
+        general = target == "development" and item.get("kind") in ("idea", "link", "file")
+        if item.get("status") == "new" and (addressed or general):
+            items.append(item)
+    items.sort(key=lambda item: (datetime.fromisoformat(item["created"]), item["id"]))
+    print(json.dumps(items, ensure_ascii=False))
+
+
+def attachment(folder):
+    item, _ = record(folder)
+    path = item.get("file")
+    if not isinstance(path, str):
+        raise ValueError
+    parts = path.split("/")
+    if len(parts) != 2 or parts[0] != "file" or parts[1] in ("", ".", ".."):
+        raise ValueError
+    with directory("file", folder) as files, regular(parts[1], files) as (stream, _):
+        shutil.copyfileobj(stream, sys.stdout.buffer)
+
+
+def done(folder):
+    # The directory inode survives item.json replacement; concurrent receipts serialize here.
+    fcntl.flock(folder, fcntl.LOCK_EX)
+    item, info = record(folder)
+    if item.get("status") == "read":
+        return
+    item.update(status="read", read_at=datetime.now(UTC).isoformat())
+    temporary = ".read-" + uuid.uuid4().hex
+    descriptor = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            os.fchown(stream.fileno(), info.st_uid, info.st_gid)
+            os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
+            json.dump(item, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, "item.json", src_dir_fd=folder, dst_dir_fd=folder)
+        os.fsync(folder)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=folder)
+        except FileNotFoundError:
+            pass
+
+
+def main(args=None):
+    args = sys.argv[1:] if args is None else args
+    valid = bool(args) and (
+        (args[0] == "list" and len(args) == 2 and TARGET.fullmatch(args[1]))
+        or (args[0] == "file" and len(args) == 2 and ID.fullmatch(args[1]))
+        or (args[0] == "done" and len(args) >= 2 and all(ID.fullmatch(i) for i in args[1:]))
+    )
+    if not valid:
+        print(
+            "usage: homelab-inbox list <target> | file <id> | done <id> [<id> ...]", file=sys.stderr
+        )
+        return 2
+    try:
+        with inbox() as root:
+            if args[0] == "list":
+                listing(root, args[1])
+            else:
+                for identity in args[1:]:
+                    with directory(identity, root) as folder:
+                        if args[0] == "file":
+                            attachment(folder)
+                        else:
+                            done(folder)
+    except Locked:
+        print("locked", file=sys.stderr)
+        return 3
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
+        print("homelab-inbox: operation failed", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

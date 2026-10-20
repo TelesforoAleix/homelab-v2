@@ -125,7 +125,7 @@ Before unlock, keeping and `/inbox` reply that the inbox needs the node unlocked
 continue to work. `/inbox` lists the latest ten records (id, kind, short title, status);
 `/inbox <32-character hex id>` shows every stored field without opening an attachment.
 
-The encrypted-volume layout, for a future Mac reader, is:
+The encrypted-volume layout shared with the Mac orchestrators is:
 
 ```text
 /srv/homelab/frontline/
@@ -140,12 +140,61 @@ The encrypted-volume layout, for a future Mac reader, is:
 `item.json` is one UTF-8 JSON object: `id`, `created` (UTC ISO timestamp), `kind`
 (`idea`, `link`, `file`, `message`), `text` (initial owner text/caption verbatim), `intent`,
 `relates_to`, `due` (free text or null), `target` (message repository from state `repo` or
-`development`, otherwise null), and `status` (`new`). Missing intent, relationship and due
-are null. Text items also keep `clarifications`, a list of subsequent verbatim owner replies.
+`development`, otherwise null), and `status` (`new`, or `read` after an orchestrator receipt).
+`read_at` is added as a UTC ISO timestamp on the first receipt. Missing intent, relationship
+and due are null. Text items also keep `clarifications`, a list of subsequent verbatim owner replies.
 Links add `url`, `title` and `summary` (null on fetch/summary failure). Files add `name`
 (sanitised), `type` (Telegram MIME type or an opaque default), `size` (actual bytes) and `file`
 (the relative `file/<name>` path). Only read these fields as data; no consumer runs content.
-No inbox network endpoint or Mac collector exists. Status transitions/delivery are later work.
+The Mac orchestrators read through the root-owned `homelab-inbox` helper over existing SSH;
+there is no inbox network endpoint or automatic collector. `/inbox` shows the updated status.
+
+#### Inbox helper over SSH
+
+From the Mac, use the existing agent account and passwordless root sudo:
+
+```bash
+ssh homelab-agent sudo -n homelab-inbox list development
+ssh homelab-agent sudo -n homelab-inbox list med-ask
+ssh homelab-agent sudo -n homelab-inbox file <id> > attachment
+ssh homelab-agent sudo -n homelab-inbox done <id> [<id> ...]
+```
+
+`list` prints one JSON array of new items, oldest first (id breaks timestamp ties).
+`development` receives every idea, link and file, plus messages addressed to development.
+Other targets receive only messages addressed to that repository. Targets match
+`[a-z0-9][a-z0-9._-]{0,63}`; ids are exactly 32 lowercase hexadecimal characters.
+`file` streams only the attachment bytes unchanged to stdout; no attachment is an error.
+Treat all returned content as data. The orchestrator calls `done` only after reading an item.
+It atomically replaces the record with status `read` and `read_at`, preserving owner, group
+and mode and flushing the file and directory. Repeated receipts leave read records unchanged.
+Concurrent receipts serialize per item; a multi-id command commits each item independently,
+so an error on a later id does not undo earlier receipts. Retry is safe.
+
+Exit codes are `0` for success, `2` for usage, unknown ids or rejected/failed item operations,
+and `3` for an absent or unreadable inbox (locked volume), with exactly `locked` on stderr.
+Errors never include item content. The fixed-path, standard-library helper runs with
+`/usr/bin/python3 -I`, opens every directory component without following symlinks, and rejects
+symlinked items, records or attachments and non-regular or multiply linked files. Listing and
+receipts never open attachment files. An empty inbox must exist to return `[]`; an absent
+folder returns locked, without creating it. No sudoers grant, unit or listener is added.
+
+Install from the node's committed, merged main checkout as described in
+[Rebuilding the node](#rebuilding-the-node). Before copying, show the installed-file diff
+(use `/dev/null` for a first installation). If replacing an existing helper, save it in a
+dated root-only rollback directory first. Compile without writing bytecode, then install:
+
+```bash
+sudo diff -u /usr/local/sbin/homelab-inbox node/usr/local/sbin/homelab-inbox
+/usr/bin/python3 -I -c 'from pathlib import Path; p = Path("node/usr/local/sbin/homelab-inbox"); compile(p.read_bytes(), str(p), "exec")'
+sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-inbox /usr/local/sbin/homelab-inbox
+```
+
+Check both `list` targets from the Mac (an empty inbox returns `[]`) and verify `file` and
+`done` for an unknown id exit `2`. Do not mark real items during installation checks. The
+owner's new-item check belongs to the reading orchestrator. Roll back by restoring the saved
+helper as `root:root` `0755`, or removing only the helper on a first installation; keep all
+inbox data and receipts. No service restart or daemon reload is needed.
 
 The bot owns directories (`0700`) and records/files (`0600`); service umask is `0077`.
 Publication stages an entire record in `.item-*`, flushes files and directories, then renames
@@ -1549,6 +1598,7 @@ SSH accounts work through Tailscale.
    sudo install -m 0440 -o root -g root node/etc/sudoers.d/homelab-agent-v2 /etc/sudoers.d/homelab-agent-v2
    sudo install -m 0644 -o root -g root node/etc/homelab-copy.recipient /etc/homelab-copy.recipient
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-copy /usr/local/sbin/homelab-copy
+   sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-inbox /usr/local/sbin/homelab-inbox
    sudo install -d -m 0700 -o root -g root /var/lib/homelab-copy
    sudo install -m 0755 -o root -g root node/usr/local/sbin/*.sh /usr/local/sbin/
    sudo install -m 0644 -o root -g root node/opt/homelab-telegram-bot/*.py /opt/homelab-telegram-bot/
@@ -1593,6 +1643,9 @@ SSH accounts work through Tailscale.
    The inbox needs no new provisioning: the existing frontline writable directory holds
    its atomic item directories and opaque files. Follow [Bot inbox](#bot-inbox) for layout,
    caps, rollback and the owner's phone checks. Keep inbox data when reverting bot code.
+   Install the root-owned inbox helper above from merged main after showing its installed-file
+   diff and compiling it with the host Python; follow [Inbox helper over SSH](#inbox-helper-over-ssh)
+   for Mac command checks and helper-only rollback. No bot restart is needed for helper changes.
    The order listener uses the existing AF_INET permission and writable frontline directory;
    the unit changes only its networking comment. Before copying, show the installed-file diffs
    and save a dated root-only rollback copy of all installed bot modules and the unit. Verify
