@@ -11,7 +11,7 @@ import shlex
 import subprocess
 import tempfile
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -30,6 +30,7 @@ class Config:
     state_path: str
     outbox_path: str
     poll_seconds: int = 60
+    context_files: list[str] = field(default_factory=list)
 
 
 def load_config(log, path=CONFIG):
@@ -40,7 +41,11 @@ def load_config(log, path=CONFIG):
             raise ValueError("SSH repository required")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]*", config.branch):
             raise ValueError("invalid branch")
-        for name in (config.state_path, config.outbox_path):
+        if not isinstance(config.context_files, list) or len(config.context_files) > 16:
+            raise ValueError("invalid context files")
+        for name in (config.state_path, config.outbox_path, *config.context_files):
+            if not isinstance(name, str):
+                raise ValueError("invalid path")
             path_value = Path(name)
             if path_value.is_absolute() or ".." in path_value.parts or not path_value.parts:
                 raise ValueError("relative path required")
@@ -96,6 +101,39 @@ def group_pending(slices):
         groups[group].append(item)
     groups["scheduled"].sort(key=lambda item: datetime.fromisoformat(item["slot"]))
     return groups
+
+
+def pending_summary(slices):
+    groups = group_pending(slices)
+    sections = []
+    for label, items in groups.items():
+        if label == "planned":
+            sections.append(f"Planned: {len(items)}")
+        else:
+            sections.append(
+                label.capitalize()
+                + f" ({len(items)})"
+                + "".join(
+                    f"\n{item['id']} — {item['title']}"
+                    + (f" — {item['slot']}" if label == "scheduled" else "")
+                    for item in items
+                )
+            )
+    return "\n\n".join(sections)
+
+
+def slice_text(item, prefix=""):
+    """Keep all fields, with prose paragraphs visible rather than JSON-escaped."""
+    sections = []
+    for key, value in item.items():
+        name = prefix + key
+        if isinstance(value, dict) and value:
+            sections.append(slice_text(value, name + "."))
+        elif isinstance(value, str):
+            sections.append(f"{name}: {value}")
+        else:
+            sections.append(f"{name}: {json.dumps(value, ensure_ascii=False)}")
+    return "\n\n".join(sections)
 
 
 def notice(event):
@@ -237,27 +275,8 @@ class Planning:
                 state = json.loads(self.read_file(self.config.state_path))
                 if name == "slice":
                     item = next((s for s in state["slices"] if s["id"] == args[0]), None)
-                    return (
-                        json.dumps(item, ensure_ascii=False, indent=2)
-                        if item
-                        else "Slice not found."
-                    )
-                groups = group_pending(state["slices"])
-                sections = []
-                for label, items in groups.items():
-                    if label == "planned":
-                        sections.append(f"Planned: {len(items)}")
-                    else:
-                        sections.append(
-                            label.capitalize()
-                            + f" ({len(items)})"
-                            + "".join(
-                                f"\n{item['id']} — {item['title']}"
-                                + (f" — {item['slot']}" if label == "scheduled" else "")
-                                for item in items
-                            )
-                        )
-                return "\n\n".join(sections)
+                    return slice_text(item) if item else "Slice not found."
+                return pending_summary(state["slices"])
             except (OSError, ValueError, KeyError, TypeError):
                 self.log("WARNING: planning data invalid or unavailable")
                 return "Planning data is unavailable; try again shortly."

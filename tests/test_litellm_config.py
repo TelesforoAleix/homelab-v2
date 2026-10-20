@@ -10,6 +10,7 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
     rows = {row["model_name"]: row["litellm_params"] for row in config["model_list"]}
     assert set(rows) == {
         "chat",
+        "frontline",
         "chat:high",
         "chat:xhigh",
         "embed",
@@ -38,6 +39,7 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
             "api_key": "os.environ/HOMELAB_GATEWAY_API_KEY",
             "reasoning_effort": effort,
         }
+    assert rows["frontline"] == rows["chat"]
     assert rows["embed"] == {
         "model": "openai/llama-nemotron-embed-1b-v2",
         "api_base": "http://llama-embed:8080/v1",
@@ -107,7 +109,7 @@ def test_proxy_is_the_only_network_member_and_gateway_secret_holder():
     assert proxy["security_opt"] == ["no-new-privileges:true"]
     assert proxy["restart"] == "unless-stopped"
     assert proxy["logging"] == {"driver": "journald"}
-    assert "ports" not in proxy
+    assert proxy["ports"] == ["127.0.0.1:4000:4000"]
     assert proxy["networks"] == ["default", "models"]
     assert compose["networks"]["models"] == {"name": "homelab-models"}
     assert proxy["secrets"] == ["gateway_api_key", "image_gateway_api_key"]

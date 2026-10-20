@@ -279,6 +279,7 @@ def run(unset=False):
                         "embed",
                         "embed-large",
                         "embed-large-bulk",
+                        "frontline",
                         "grade",
                         "image-gpt-2.5-flare",
                         "image-gpt-2.5-sunburst",
@@ -467,6 +468,7 @@ def run(unset=False):
                         calls += 2
                     for purpose, effort in [
                         ("chat", "low"),
+                        ("frontline", "low"),
                         ("chat:high", "medium"),
                         ("chat:xhigh", "high"),
                         ("grade", "low"),

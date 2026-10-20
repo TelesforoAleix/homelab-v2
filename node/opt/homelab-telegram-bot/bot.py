@@ -11,10 +11,12 @@ Handler failures must log only metadata, since exception text can contain prose.
 import asyncio
 import logging
 import os
+import re
 import sys
 from contextlib import suppress
 
 import executors
+from conversation import Conversation
 from planning import Planning, load_config
 from router import Router, load_ids
 from telegram import Bot, BotCommand, Update
@@ -160,13 +162,16 @@ class AuditedBot(ExtBot):
         return updates
 
 
-async def send_message(bot: Bot, chat_id: int, text: str) -> None:
+async def send_message(bot: Bot, chat_id: int, text: str) -> list[int]:
+    message_ids = []
     for part in split_message(text):
         try:
-            await bot.send_message(chat_id=chat_id, text=part, read_timeout=30)
+            sent = await bot.send_message(chat_id=chat_id, text=part, read_timeout=30)
+            message_ids.append(sent.message_id)
         except Exception as exc:  # noqa: BLE001 - reply failure must not stop polling
             log(f"WARNING: sendMessage failed: {type(exc).__name__}")
-            return
+            return message_ids
+    return message_ids
 
 
 def split_message(text: str) -> list[str]:
@@ -176,17 +181,29 @@ def split_message(text: str) -> list[str]:
     the limit in Unicode characters. No markup parsing or escape rules apply.
     """
     parts = []
-    chars = []
-    units = 0
-    for char in text:
-        size = 2 if ord(char) > 0xFFFF else 1
-        if units + size > 4096:
-            parts.append("".join(chars))
-            chars, units = [], 0
-        chars.append(char)
-        units += size
-    if chars:
-        parts.append("".join(chars))
+    while text:
+        units = 0
+        end = 0
+        for char in text:
+            size = 2 if ord(char) > 0xFFFF else 1
+            if units + size > 4096:
+                break
+            units += size
+            end += 1
+        if end < len(text):
+            paragraph = text.rfind("\n\n", 0, end)
+            if paragraph > 0:
+                end = paragraph + 2
+            else:
+                # A single oversize paragraph falls back to sentence, line, word,
+                # then character boundaries, in that order.
+                boundaries = list(re.finditer(r"[.!?]\s+|\n", text[:end]))
+                if boundaries:
+                    end = boundaries[-1].end()
+                elif (space := text.rfind(" ", 0, end)) > 0:
+                    end = space + 1
+        parts.append(text[:end])
+        text = text[end:]
     return parts
 
 
@@ -233,6 +250,7 @@ def build_application(
     token: str, allowlist: set[int], router: Router, planning: Planning | None = None
 ) -> Application:
     notice_task = None
+    conversation = Conversation(planning, log)
 
     async def startup(application: Application) -> None:
         nonlocal notice_task
@@ -263,7 +281,22 @@ def build_application(
         if user_id not in allowlist:
             log(f"refused: user {user_id} is not allowlisted")
             reply = "Not authorised."
+        elif message.text and not message.text.lstrip().startswith("/"):
+            owner = (chat_id, user_id)
+            reply_to = message.reply_to_message
+            reply, episode = await conversation.answer(
+                owner,
+                message.text,
+                reply_to.message_id
+                if reply_to and reply_to.from_user and reply_to.from_user.id == context.bot.id
+                else None,
+            )
+            message_ids = await send_message(context.bot, chat_id, reply)
+            if episode is not None:
+                conversation.remember(owner, episode, message_ids)
+            return
         else:
+            conversation.close((chat_id, user_id))
             # Executors remain synchronous; don't block Telegram's network loop.
             reply = await asyncio.to_thread(dispatch_reply, router, user_id, message.text or "")
         await send_message(context.bot, chat_id, reply)

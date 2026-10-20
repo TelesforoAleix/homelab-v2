@@ -610,3 +610,21 @@ persists line and recipient progress through an atomic replacement with fsync. T
 chose at-least-once delivery: uncertain sends retry, accepting a rare duplicate between
 Telegram delivery and durable local acknowledgement rather than losing a notice. No periodic
 summary is sent; read commands provide pending groups, a requested recap and full slice details.
+
+
+**2026-10-20 — The host bot reads planning through a loopback model purpose.**
+LiteLLM now publishes `127.0.0.1:4000` so the sandboxed host bot can use the same purpose-only
+model endpoint as container clients. Only API and LiteLLM publish, both on loopback; no other
+service changes. `frontline` uses chat's gateway model and low effort. A synthetic request
+asked for gateway zero data retention, but HTTP 403 confirmed that the current Hobby team
+cannot use it (Pro/Enterprise required). The option stays off; no account setting changes.
+
+Every free-text question from the main allowlist receives privately configured summary
+files and computed pending work. A bounded JSON second pass can read one more clone text
+file; this avoids another dependency and gives the model no actions or writes. Paths stay
+inside the clone, exclude Git internals and accept only size-capped regular UTF-8 text.
+Episodes stay in bounded memory, with only the active episode sent as history. Follow-up
+heuristics retain the topic; a new topic, command or 30-minute silence closes it. Explicit
+Telegram replies reopen retained episodes. Restarts clear history rather than persisting
+conversation content. Existing commands, allowlists, sandbox and content-free logs remain.
+Long replies prefer paragraph boundaries, with smaller boundaries for oversized paragraphs.

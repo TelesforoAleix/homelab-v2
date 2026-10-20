@@ -50,6 +50,11 @@ The Telegram bot runs as a sandboxed host service using python-telegram-bot in i
 hash-pinned virtual environment. It long-polls with no listening port and remains available
 before the data volumes are unlocked. After unlock, an optional read-only planning mirror
 supplies `/pending`, `/recap [hours]`, `/slice <id>` and notices for new outbox events.
+Allowlisted free-text questions use the `frontline` purpose through LiteLLM on
+`127.0.0.1:4000`, grounded in privately configured planning files and pending work.
+In-memory episodes keep follow-ups together; replying to an older answer reopens its episode.
+The model can read one extra bounded clone file and cannot act or write. Answers require
+unlock and the model gateway; host commands remain available while locked.
 Private configuration and a read-only deploy key stay on the node; see the
 [bot runbook](docs/operations.md#run-it).
 
