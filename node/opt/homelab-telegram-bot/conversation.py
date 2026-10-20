@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
+from inbox import LOCKED
+from keeping import Keeper, forced, just_save
 from orders import validate
 from planning import pending_summary
 
@@ -41,6 +43,12 @@ Never execute anything or claim it ran. A proposal only opens Yes/No confirmatio
 only an allowlisted owner's Yes queues it for a separate Mac runner.
 Do not combine read_file with an order. Never propose multiple orders.
 
+Classify each owner message as a question, order, or something to keep.
+For an idea, link to keep, or message left for an orchestrator, return
+"keep": true, "answer": "", "order": null, "read_file": null.
+Keeping only clarifies; never solve an idea or propose its design or plan.
+Questions and explicit requests to act use the existing answer/order fields.
+A message to retain for an orchestrator is keeping; asking it to act is an order.
 """
 
 
@@ -71,6 +79,7 @@ def read_text(clone, relative):
 class Episode:
     messages: list = field(default_factory=list)
     at: float = 0
+    draft: object = None
 
 
 class Conversation:
@@ -84,9 +93,15 @@ class Conversation:
         self.replies = OrderedDict()
         self.serial = 0
         self.proposals = {}
+        self.keeper = Keeper(self)
 
     def close(self, owner):
         self.active.pop(owner, None)
+
+    def discard(self, owner, key):
+        self.close(owner)
+        self.episodes.pop(key, None)
+        self.replies = OrderedDict((k, v) for k, v in self.replies.items() if v != key)
 
     def episode(self, owner, question, reply_to):
         now = self.clock()
@@ -94,7 +109,10 @@ class Conversation:
         if key not in self.episodes:
             key = self.active.get(owner)
             previous = self.episodes.get(key)
-            if previous and (now - previous.at >= 1800 or not self.follows(previous, question)):
+            if previous and (
+                now - previous.at >= 1800
+                or (previous.draft is None and not self.follows(previous, question))
+            ):
                 key = None
         if key not in self.episodes:
             self.serial += 1
@@ -209,8 +227,21 @@ class Conversation:
     async def answer(self, owner, question, reply_to=None):
         self.proposals.pop(owner, None)
         try:
-            data = await asyncio.to_thread(self.context)
+            if re.match(r"(?i)^new\b", question.lstrip()):
+                self.close(owner)
+                reply_to = None
             key, episode = self.episode(owner, question, reply_to)
+            if episode.draft is not None:
+                return await self.keeper.turn(owner, key, episode, question)
+            if forced(question) and not self.keeper.available():
+                return LOCKED, None
+            if just_save(question):
+                return await self.keeper.begin(owner, key, episode, question, {})
+            if self.planning is not None and not self.planning.ready():
+                return LOCKED + " " + UNAVAILABLE, None
+            data = await asyncio.to_thread(self.context)
+            if forced(question):
+                return await self.keeper.begin(owner, key, episode, question, data)
             messages = [
                 {"role": "system", "content": SYSTEM},
                 {"role": "user", "content": json.dumps(data, ensure_ascii=False)},
@@ -218,6 +249,10 @@ class Conversation:
                 {"role": "user", "content": question},
             ]
             result = await self.completion(messages)
+            if result.get("keep") is True:
+                if result.get("order") is not None or result.get("read_file") is not None:
+                    raise ValueError("keep and action combined")
+                return await self.keeper.begin(owner, key, episode, question, data)
             if result.get("read_file") is not None:
                 if result.get("order") is not None:
                     raise ValueError("read and proposal combined")
@@ -229,6 +264,10 @@ class Conversation:
                 messages.append({"role": "user", "content": json.dumps(extra)})
                 messages.append({"role": "system", "content": "No reads remain. Answer now."})
                 result = await self.completion(messages)
+            if result.get("keep") is True:
+                if result.get("order") is not None or result.get("read_file") is not None:
+                    raise ValueError("keep and action combined")
+                return await self.keeper.begin(owner, key, episode, question, data)
             answer = result["answer"]
             if (
                 result.get("read_file") is not None

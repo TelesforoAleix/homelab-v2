@@ -142,6 +142,30 @@ open orders, including attention already answered or approved. Changed expectati
 preconditions mark an order overtaken and remove its buttons. The model's output never enters
 the command router or an executor.
 
+The model classifies free text as a question, order or something to keep. Keeping uses a
+separate clarification-only call, with at most two short questions about intent, relationship
+or time constraints. “save” forces keeping; “just save it” persists known fields immediately.
+“new” starts a fresh episode. Persisting removes that episode and its reply mappings so stored
+items never become subsequent conversation context. Pending drafts remain memory-only.
+
+The inbox lives at `/srv/homelab/frontline/inbox/`, beside orders and outside the clone.
+Each opaque id directory atomically publishes `item.json` and, for a file, `file/<safe-name>`;
+files and directories are flushed before acknowledgement. Attachments are opaque bytes through
+python-telegram-bot, with 20 MiB per-file and 2 GiB aggregate admission caps, checked again at
+commit. Nothing opens, transcribes or interprets them. `/inbox [id]` lists the latest ten or
+shows one record. Reads and writes require the data target active, independently of the model.
+
+A standard-library link fetch admits HTTP(S) public destinations only. All resolved addresses
+must be public; the socket connects to a checked numeric address, preserving the hostname for
+TLS/SNI and Host. Each of at most three redirects repeats the checks. Loopback, private,
+link-local, CGNAT, multicast, reserved, unspecified and IPv6 transition/site-local destinations
+are refused. Fetches have a five-second deadline and 1 MiB cap, with HTML/plain text only.
+Raw page text reaches only an isolated summarizing call with no action path. Its bounded
+summary/title can inform the clarification-only call, never an order-capable call. Failure
+keeps the URL with null metadata and tells the owner. Orchestrator messages validate target
+against state `repo` names or `development`; delivery is future work. No route, dependency,
+sandbox, credential, allowlist or order contract changes. Inbox logs contain only metadata.
+
 `orders.json` lives beside the clone under `/srv/homelab/frontline/`, with atomic replacement
 and file/directory fsync before acknowledgements. Telegram message edits are durable pending
 work and retry after failures or restart. Closed orders are retained; no automatic deletion

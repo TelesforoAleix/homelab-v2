@@ -58,7 +58,7 @@ sort by slot. Configuration is read at startup from private
 [Rebuilding the node](#rebuilding-the-node). An absent file logs
 `planning not configured; feature disabled` once and leaves existing commands working.
 
-Allowlisted free text is a planning question. The bot calls the `frontline` purpose at
+Allowlisted free text is classified as a planning question, an order or something to keep. The bot calls the `frontline` purpose at
 `http://127.0.0.1:4000/v1`, sending the private `context_files` and computed pending summary.
 The optional `context_files` list defaults to empty; the orchestrator supplies the owner's
 summary-file paths in the private config, never in this repository. A question may request
@@ -111,6 +111,75 @@ to the current end. A bad marker or truncated outbox fails closed with a metadat
 Sync failures do not advance it; commands report failure rather than returning stale state.
 The journal contains fixed sync outcomes, line/recipient counts and failure metadata, never
 Git output, repository settings or event text.
+
+### Bot inbox
+
+Send an idea, a link, or a message to keep for an orchestrator; prefix with `save` to force
+keeping. The bot may ask at most two short questions, only about missing intent (explore,
+build, read later, discuss), project/backlog relationship, or time constraints. It suggests
+relationships for confirmation and never designs or solves kept ideas. `just save it` during
+clarification saves with what is known without another model call. `new` starts a fresh episode.
+A stored episode and its Telegram reply mappings are removed. Restarting loses unfinished
+drafts; committed items survive. Attachments are always kept immediately, with their caption.
+Before unlock, keeping and `/inbox` reply that the inbox needs the node unlocked. Commands
+continue to work. `/inbox` lists the latest ten records (id, kind, short title, status);
+`/inbox <32-character hex id>` shows every stored field without opening an attachment.
+
+The encrypted-volume layout, for a future Mac reader, is:
+
+```text
+/srv/homelab/frontline/
+  clone/                         # read-only planning mirror; never an inbox destination
+  orders.json                    # unchanged order contract
+  inbox/
+    <32-character lowercase hex id>/
+      item.json
+      file/<sanitised-name>       # only for kind=file; opaque original bytes
+```
+
+`item.json` is one UTF-8 JSON object: `id`, `created` (UTC ISO timestamp), `kind`
+(`idea`, `link`, `file`, `message`), `text` (initial owner text/caption verbatim), `intent`,
+`relates_to`, `due` (free text or null), `target` (message repository from state `repo` or
+`development`, otherwise null), and `status` (`new`). Missing intent, relationship and due
+are null. Text items also keep `clarifications`, a list of subsequent verbatim owner replies.
+Links add `url`, `title` and `summary` (null on fetch/summary failure). Files add `name`
+(sanitised), `type` (Telegram MIME type or an opaque default), `size` (actual bytes) and `file`
+(the relative `file/<name>` path). Only read these fields as data; no consumer runs content.
+No inbox network endpoint or Mac collector exists. Status transitions/delivery are later work.
+
+The bot owns directories (`0700`) and records/files (`0600`); service umask is `0077`.
+Publication stages an entire record in `.item-*`, flushes files and directories, then renames
+to its id and flushes the parent before acknowledgement. Readers ignore dot directories, which
+can remain after power loss. There is no automatic retention/deletion. Keep this directory
+when updating or rolling back; it is outside the current `*-data/originals/` weekly-copy scope.
+
+Photos, documents, voice notes, audio and video are downloaded by python-telegram-bot and
+stored unchanged. No file is parsed, transcribed, previewed or sent to a model. Admission
+checks the declared sizes and actual bytes against **20 MiB** (Telegram's 20 MB file limit).
+It refuses new files at **2 GiB** total, also refusing a file that would cross the cap.
+The final size/quota check runs under the store lock. Text/link items remain available at the
+file cap. The owner coordinates any future cleanup; do not delete files to retry a send.
+
+Links allow only HTTP(S), verified TLS, public DNS results and checked numeric connections.
+Every address returned by DNS must pass, including on each of at most three redirects.
+Loopback, private, link-local, CGNAT/tailnet, multicast, reserved and unspecified IPv4/IPv6,
+plus IPv6 site-local/transition destinations, are refused. About five seconds and **1 MiB**
+bound the fetch; only uncompressed HTML/plain text is accepted. Raw page text goes exclusively
+to an isolated summary call without orders; only its bounded metadata goes to clarification.
+A refused/failed fetch or summary stores the URL with null title/summary and reports that no
+summary was available. Journal lines contain only ids, kinds, sizes and outcomes, never owner
+text, URLs, titles, summaries or file names.
+
+For an update, back up installed bot Python files and the unit in a dated root-only directory,
+show installed diffs, install all committed modules together at `root:root 0644`, and restart
+only the bot. Check active state, restart count and unchanged `systemd-analyze security`
+exposure (1.3). No dependency, unit sandbox, listener or credential changes are needed.
+Rollback restores the pre-install Python files from that directory and restarts the bot;
+remove only the three newly installed modules (`inbox.py`, `keeping.py`, `links.py`) if absent
+from that backup. Preserve the encrypted inbox and orders; the prior bot simply ignores the
+inbox. The orchestrator coordinates the remaining owner checks: an idea with clarification,
+`just save it`, a public link, a photo, a message for a repository orchestrator, and `/inbox`
+listing/detail. These phone checks are not replaced by fixture tests.
 
 ### Bot order endpoint
 
@@ -1519,7 +1588,11 @@ SSH accounts work through Tailscale.
    and start the bot. Keep the encrypted planning directory, key and config for recovery;
    deleting them is a separate owner decision. Restarting the Docker stack
    does not update this environment. Install every committed `.py` module, including
-   `conversation.py`, `orders.py` and `order_listener.py`, together; the requirements remain unchanged.
+   `conversation.py`, `orders.py`, `order_listener.py`, `inbox.py`, `keeping.py` and
+   `links.py`, together; the requirements remain unchanged.
+   The inbox needs no new provisioning: the existing frontline writable directory holds
+   its atomic item directories and opaque files. Follow [Bot inbox](#bot-inbox) for layout,
+   caps, rollback and the owner's phone checks. Keep inbox data when reverting bot code.
    The order listener uses the existing AF_INET permission and writable frontline directory;
    the unit changes only its networking comment. Before copying, show the installed-file diffs
    and save a dated root-only rollback copy of all installed bot modules and the unit. Verify

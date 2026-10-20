@@ -261,6 +261,8 @@ def build_application(
 ) -> Application:
     notice_task = None
     conversation = Conversation(planning, log)
+    if conversation.keeper.store is not None and "/inbox" not in router.executors:
+        conversation.keeper.store.register(router)
     orders = planning.orders if planning is not None else None
     listener = Listener(orders, log) if orders is not None else None
     listener_task = None
@@ -390,6 +392,8 @@ def build_application(
         if user_id not in allowlist:
             log(f"refused: user {user_id} is not allowlisted")
             reply = "Not authorised."
+        elif any((message.photo, message.document, message.voice, message.audio, message.video)):
+            reply = await conversation.keeper.attachment((chat_id, user_id), message)
         elif message.text and not message.text.lstrip().startswith("/"):
             owner = (chat_id, user_id)
             reply_to = message.reply_to_message
