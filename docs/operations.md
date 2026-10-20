@@ -59,7 +59,7 @@ sort by slot. Configuration is read at startup from private
 `planning not configured; feature disabled` once and leaves existing commands working.
 
 Allowlisted free text is classified as a planning question, an order or something to keep. The bot calls the `frontline` purpose at
-`http://127.0.0.1:4000/v1`, sending the private `context_files` and computed pending summary.
+`http://127.0.0.1:4000/v1`, sending the private `context_files`, computed pending summary and slice fields except `log`; attention bodies are capped at 2,000 characters.
 The optional `context_files` list defaults to empty; the orchestrator supplies the owner's
 summary-file paths in the private config, never in this repository. A question may request
 one additional named clone file through a JSON second pass. Reads accept regular UTF-8 text

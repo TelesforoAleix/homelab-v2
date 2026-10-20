@@ -1117,6 +1117,35 @@ def fake_frontline(bot_modules, fixture, replies, requests):
     return bot_modules.conversation.Conversation(fixture.mirror, fixture.logs.append, client=client)
 
 
+async def test_context_omits_logs_and_bounds_attention_body(conversation_repo, bot_modules):
+    fixture = conversation_repo
+    items = [planning_slice(id=f"fixture/item-{index}", log=["L" * 10_000]) for index in range(33)]
+    items[0]["attention"] = attention(body="A" * 2500)
+    (fixture.source / "state.json").write_text(json.dumps({"slices": items}))
+    fixture.commit()
+    requests = []
+    conversation = fake_frontline(
+        bot_modules,
+        fixture,
+        [{"answer": "Private answer", "read_file": None, "order": None}],
+        requests,
+    )
+
+    answer, _ = await conversation.answer((10, 0), "What is pending?")
+
+    assert answer == "Private answer"
+    sent = json.dumps(requests[0]["messages"], ensure_ascii=False)
+    assert '"log"' not in sent
+    assert "L" * 100 not in sent
+    payload = json.loads(requests[0]["messages"][1]["content"])
+    assert len(payload["slices"]) == 33
+    assert (
+        payload["slices"][0]["attention"]["body"]
+        == "A" * (2000 - len(bot_modules.conversation.ATTENTION_BODY_MARKER))
+        + bot_modules.conversation.ATTENTION_BODY_MARKER
+    )
+
+
 async def test_frontline_grounding_second_pass_and_content_free_logs(
     conversation_repo, bot_modules
 ):
