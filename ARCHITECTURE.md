@@ -348,9 +348,10 @@ pauses and intermediate successes are silent. After persisting the completion, t
 launches a separate sender outside the lock with a ten-second SSH timeout; failed sends log
 only a fixed failure line and are dropped, never replayed. The root-owned
 `homelab-queue-notice` SSH command uses a transient systemd service as `homelab-bot`, with the
-existing `LoadCredential` and `homelab-notify.sh` send path. Stdin text has controls stripped,
-is prefixed "Mac queue: " and capped at 1,000 characters including the prefix. Notice text
-is never stored on the node or in unit arguments. No token, privilege or listener is added.
+existing TPM-sealed `LoadCredentialEncrypted` and `homelab-notify.sh` send path. Stdin text
+has controls stripped, is prefixed "Mac queue: " and capped at 1,000 characters including
+the prefix. Notice text is never stored on the node or in unit arguments. No token, privilege
+or listener is added.
 Commands receive `HOMELAB_QUEUE_PROGRESS`, naming an optional one-line progress file. The queue JSON
 in status includes play, battery pause, running metadata/progress/log path, summed process-group
 physical footprint (`physical_footprint_mb`, including charged Metal allocations but excluding
