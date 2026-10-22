@@ -1604,6 +1604,7 @@ SSH accounts work through Tailscale.
    sudo install -m 0644 -o root -g root node/etc/homelab-copy.recipient /etc/homelab-copy.recipient
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-copy /usr/local/sbin/homelab-copy
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-inbox /usr/local/sbin/homelab-inbox
+   sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-queue-notice /usr/local/sbin/homelab-queue-notice
    sudo install -d -m 0700 -o root -g root /var/lib/homelab-copy
    sudo install -m 0755 -o root -g root node/usr/local/sbin/*.sh /usr/local/sbin/
    sudo install -m 0644 -o root -g root node/opt/homelab-telegram-bot/*.py /opt/homelab-telegram-bot/
@@ -1651,6 +1652,20 @@ SSH accounts work through Tailscale.
    Install the root-owned inbox helper above from merged main after showing its installed-file
    diff and compiling it with the host Python; follow [Inbox helper over SSH](#inbox-helper-over-ssh)
    for Mac command checks and helper-only rollback. No bot restart is needed for helper changes.
+   Install `homelab-queue-notice` from merged main after showing its installed-file diff
+   (`sudo diff -u /usr/local/sbin/homelab-queue-notice node/usr/local/sbin/homelab-queue-notice`,
+   using `/dev/null` if absent). Compile it with `/usr/bin/python3 -I` before installation.
+   It is `root:root` `0755` in `/usr/local/sbin` (`root:root` `0755`); no static unit,
+   daemon reload or bot restart is needed. The command starts a collected transient service
+   with the existing bot account and credential, an eight-second runtime limit and no retry.
+   Stdin is bounded to 16,384 characters; line breaks become spaces, controls are stripped,
+   and the prefixed notice is capped at 1,000 characters. The shared sender's output is
+   discarded so notice text cannot enter the journal. Validate the transient service properties
+   with `systemd-analyze verify` before installing and test from the Mac:
+   `printf '%s' 'Test notice; Mac queue notifications installed' | ssh homelab-agent sudo -n homelab-queue-notice`.
+   Confirm arrival in the owner's private chat. To roll back, restore the prior helper
+   (or remove it if newly installed); Mac sends fail closed and are dropped. Keep the bot,
+   token and allowlist unchanged. The orchestrator installs the Mac tools and tests a failing job.
    The order listener uses the existing AF_INET permission and writable frontline directory;
    the unit changes only its networking comment. Before copying, show the installed-file diffs
    and save a dated root-only rollback copy of all installed bot modules and the unit. Verify

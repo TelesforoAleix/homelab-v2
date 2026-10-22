@@ -9,6 +9,8 @@ from tests.test_mac_profile import p, world  # noqa: F401
 def queue(world, monkeypatch):  # noqa: F811
     q = p.queue
     q.children.clear()
+    q.notices.clear()
+    q.senders.clear()
     clock = {"now": 1000, "ac": True}
     monkeypatch.setattr(p, "on_ac_power", lambda: clock["ac"])
     monkeypatch.setattr(p, "idle_seconds", lambda: 10000)
@@ -326,6 +328,8 @@ def test_worker_restart_returns_orphan_to_front(queue):
     q.step()
     q.command("top", "two")
     q.children.clear()
+    q.notices.clear()
+    q.senders.clear()
     q.step()
     assert not q.running()
     assert names(q.report()) == ["one", "two"]
@@ -478,3 +482,214 @@ def test_acceptance_dummy_journals_and_resumes(tmp_path):
     journal = [json.loads(line) for line in (tmp_path / "events").read_text().splitlines()]
     assert [row[2] for row in journal if row[1] == "step"] == [1, 2]
     assert (tmp_path / "test.count").read_text() == "2"
+
+
+@pytest.fixture
+def notices(queue, monkeypatch):
+    q, clock = queue
+    q.notices.clear()
+    q.senders.clear()
+    sent = []
+    monkeypatch.setattr(q, "send_notice", sent.append)
+    return q, clock, sent
+
+
+def test_notices_second_failure_once_and_first_failure_silent(notices):
+    q, _, sent = notices
+    add(q, "one")
+    add(q, "two")
+    q.command("play")
+    q.tick()
+    q.paths("one")[0].write_text("old\nline1\nline2\nline3\nline4\nline5\n")
+    q.children[42].code = 7
+    q.tick()
+    assert sent == []
+    q.children[42].code = 9
+    q.tick()
+    assert sent == ["Job one failed; exit code 9.\nline1\nline2\nline3\nline4\nline5"]
+    q.tick()
+    assert len(sent) == 1
+    assert q.running()["name"] == "two"
+
+
+def test_empty_notice_once_after_work_only(notices):
+    q, _, sent = notices
+    q.command("play")
+    q.tick()
+    assert sent == []
+    add(q, "one")
+    add(q, "two")
+    q.tick()
+    q.children[42].code = 0
+    q.tick()
+    assert sent == []
+    q.children[42].code = 0
+    q.tick()
+    q.tick()
+    assert sent == ["Mac queue empty; the Mac is free"]
+
+
+def test_final_failure_emits_failure_and_empty(notices):
+    q, _, sent = notices
+    add(q, "one")
+    q.command("play")
+    q.tick()
+    for _ in range(2):
+        q.children[42].code = 1
+        q.tick()
+    assert len(sent) == 2
+    assert sent[0].startswith("Job one failed; exit code 1.")
+    assert sent[1] == "Mac queue empty; the Mac is free"
+
+
+@pytest.mark.parametrize("stop", [True, False])
+def test_stop_and_battery_pause_silent(notices, stop):
+    q, clock, sent = notices
+    add(q, "one")
+    q.command("play")
+    q.tick()
+    if stop:
+        q.command("stop")
+    else:
+        clock["ac"] = False
+        q.tick()
+        clock["now"] += 600
+    q.tick()
+    assert sent == []
+    assert not q.running()
+
+
+def test_failed_sender_outside_lock_does_not_stall_or_retry(notices, monkeypatch, capsys):
+    from contextlib import contextmanager
+
+    q, _, sent = notices
+    locked = False
+
+    @contextmanager
+    def lock():
+        nonlocal locked
+        locked = True
+        try:
+            yield
+        finally:
+            locked = False
+
+    monkeypatch.setattr(p, "lock", lock)
+
+    def fail(message):
+        assert not locked
+        assert q.running()["name"] == "two"
+        sent.append(message)
+        raise OSError("private text must not be logged")
+
+    monkeypatch.setattr(q, "send_notice", fail)
+    add(q, "one")
+    add(q, "two")
+    q.command("play")
+    q.tick()
+    for _ in range(2):
+        q.children[42].code = 3
+        q.tick()
+    q.tick()
+    assert len(sent) == 1
+    assert capsys.readouterr().err == "Mac queue: notice send failed; dropped\n"
+
+
+def test_notice_process_is_started_without_waiting(queue, monkeypatch):
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    q, _ = queue
+    launched = []
+    child = SimpleNamespace(stdin=BytesIO())
+
+    def spawn(argv, **kwargs):
+        launched.append((argv, kwargs))
+        return child  # Deliberately has no wait/communicate method.
+
+    monkeypatch.setattr(p.subprocess, "Popen", spawn)
+    q.send_notice("test")
+    assert launched[0][0][-1] == "--notice"
+    assert launched[0][1]["start_new_session"]
+    assert child.stdin.closed
+
+
+@pytest.mark.parametrize("failure", ["timeout", "exit", "spawn"])
+def test_notice_transport_timeout_and_failure_dropped(queue, monkeypatch, capsys, failure):
+    q, _ = queue
+    transport = q.send_notice.__globals__["deliver_notice"]
+    calls = []
+
+    def fail(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if failure == "timeout":
+            raise p.subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        if failure == "exit":
+            raise p.subprocess.CalledProcessError(1, argv)
+        raise OSError("private")
+
+    monkeypatch.setattr(p.subprocess, "run", fail)
+    transport("test")
+    assert len(calls) == 1
+    argv, kwargs = calls[0]
+    assert argv[-3:] == ["sudo", "-n", "homelab-queue-notice"]
+    assert "BatchMode=yes" in argv and "ConnectTimeout=3" in argv
+    assert kwargs["timeout"] == 10 and kwargs["input"] == "test"
+    assert kwargs["stderr"] == p.subprocess.DEVNULL
+    assert capsys.readouterr().err == "Mac queue: notice send failed; dropped\n"
+
+
+def test_spawn_failure_notices_after_second_attempt(notices, monkeypatch):
+    q, _, sent = notices
+    add(q, "one")
+
+    def fail(*args, **kwargs):
+        raise OSError("exec unavailable")
+
+    monkeypatch.setattr(p.subprocess, "Popen", fail)
+    monkeypatch.setattr(q, "start", lambda job, state: type(q).start(q, job, state))
+    q.command("play")
+    q.tick()
+    assert sent == []
+    q.tick()
+    assert len(sent) == 2
+    assert sent[0].startswith("Job one failed; exit code 127.")
+    assert q.report()["failed"][0]["attempt"] == 2
+
+
+def test_notice_missing_or_large_log_does_not_block(notices):
+    q, _, sent = notices
+    add(q, "one")
+    q.command("play")
+    q.tick()
+    q.paths("one")[0].write_bytes(b"old\n" + b"x" * 100_000 + b"\xff\nlast")
+    for _ in range(2):
+        q.children[42].code = 1
+        q.tick()
+    assert len(sent[0]) < 1000 and sent[0].endswith("\ufffd\nlast")
+    q.command("requeue", "one")
+    q.tick()
+    q.paths("one")[0].unlink()
+    for _ in range(2):
+        q.children[42].code = 1
+        q.tick()
+    assert sent[2].endswith("(log unavailable)")
+
+
+def test_completion_persisted_before_notice_and_not_replayed(notices, monkeypatch):
+    q, _, sent = notices
+    add(q, "one")
+    q.command("play")
+    q.tick()
+    q.children[42].code = 0
+    q.tick()
+    assert q.read()["jobs"][0]["state"] == "finished"
+    assert sent == ["Mac queue empty; the Mac is free"]
+    restarted = type(q)(q.h)
+    monkeypatch.setattr(restarted, "send_notice", sent.append)
+    restarted.tick()
+    assert len(sent) == 1
+    add(q, "two")
+    q.command("remove", "two")
+    q.tick()
+    assert len(sent) == 1

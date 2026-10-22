@@ -18,6 +18,8 @@ class Queue:
         self.h = host
         self.children = {}
         self.awake = []
+        self.notices = []
+        self.senders = []
 
     def call(self, name, *args):
         return self.h[name](*args)
@@ -230,8 +232,7 @@ class Queue:
             os.write(writer, b"1")  # Run only after the PID and its identity are durable.
         except OSError:
             if not job.get("pid"):
-                self.finish(job, 127)
-                self.write(state)
+                self.finish(job, 127, state)
             else:
                 raise
         finally:
@@ -239,13 +240,58 @@ class Queue:
             os.close(writer)
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
-    def finish(self, job, code):
+    def finish(self, job, code, state):
         job.update(
             exit_code=code,
             state="finished" if code == 0 else "waiting" if job["attempt"] < 2 else "failed",
         )
         for key in ("pid", "identity", "stopping"):
             job.pop(key, None)
+
+        self.write(state)
+        # Ephemeral only: persist the transition before attempting a notice. A crash
+        # may drop a notice, but recovery never replays one into a duplicate.
+        if job["state"] == "failed":
+            self.notices.append((job["name"], code, job["log_path"]))
+        if not any(j["state"] in ("waiting", "running") for j in state["jobs"]):
+            self.notices.append(None)
+
+    def send_notices(self):
+        """Called after releasing the lock; each send has its own bounded process."""
+        notices, self.notices = self.notices, []
+        self.senders[:] = [child for child in self.senders if child.poll() is None]
+        for notice in notices:
+            message = "Mac queue empty; the Mac is free"
+            if notice is not None:
+                name, code, log_path = notice
+                tail = "(log unavailable)"
+                with contextlib.suppress(OSError):
+                    with open(log_path, "rb") as log:
+                        log.seek(0, os.SEEK_END)
+                        log.seek(max(0, log.tell() - 4096))
+                        tail = "\n".join(log.read().decode("utf-8", "replace").splitlines()[-5:])
+                message = f"Job {name} failed; exit code {code}.\n{tail[-800:]}"
+            try:
+                self.send_notice(message)
+            except OSError:
+                print("Mac queue: notice send failed; dropped", file=sys.stderr)
+
+    def send_notice(self, message):
+        child = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "--notice"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            # Only a fixed failure line is emitted by the sender, never SSH output.
+            start_new_session=True,
+        )
+        self.senders.append(child)
+        with child.stdin:
+            child.stdin.write(message.encode("utf-8"))
+
+    def tick(self):
+        with self.call("lock"):
+            self.step()
+        self.send_notices()
 
     def step(self):
         """One locked worker iteration. Child handles exist only in the launchd worker."""
@@ -272,7 +318,7 @@ class Queue:
                 return
             # A command may leave descendants; release the entire group before the next job.
             self.terminate(job)
-            self.finish(job, code)
+            self.finish(job, code, state)
             if job["state"] == "waiting":
                 state["jobs"].remove(job)
                 state["jobs"].insert(0, job)
@@ -364,15 +410,43 @@ class Queue:
         signal.signal(signal.SIGTERM, interrupted)
         try:
             while True:
-                with self.call("lock"):
-                    self.step()
+                self.tick()
                 time.sleep(1)
         finally:
             with self.call("lock"):
                 self.stop(self.read())
 
 
+def deliver_notice(message):
+    try:
+        subprocess.run(
+            [
+                "/usr/bin/ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=3",
+                "homelab-agent",
+                "sudo",
+                "-n",
+                "homelab-queue-notice",
+            ],
+            input=message,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        print("Mac queue: notice send failed; dropped", file=sys.stderr)
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--notice"]:
+        deliver_notice(sys.stdin.read(4096))
+        raise SystemExit(0)
+
     # A parent crash before acknowledgement closes the pipe: no unrecorded command runs.
     gate = int(sys.argv[1])
     acknowledged = os.read(gate, 1) == b"1"

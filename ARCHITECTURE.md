@@ -340,8 +340,18 @@ priority), then retain a failed record and exit code. Finished records remain un
 
 This small Mac-only list deliberately uses no node Postgres or queue dependency. Its private
 state directory holds 0600 per-command logs until removal; this owner-requested command output
-is an explicit exception to default content-free logging. Logs never leave the Mac. Commands
-receive `HOMELAB_QUEUE_PROGRESS`, naming an optional one-line progress file. The queue JSON
+is an explicit exception to default content-free logging. Only the last five log lines of a
+twice-failed job leave the Mac, in an owner-requested private Telegram notice with its name
+and exit code. The other notice is "Mac queue empty;
+the Mac is free", emitted when a completion leaves no waiting or running jobs. Stops, battery
+pauses and intermediate successes are silent. After persisting the completion, the worker
+launches a separate sender outside the lock with a ten-second SSH timeout; failed sends log
+only a fixed failure line and are dropped, never replayed. The root-owned
+`homelab-queue-notice` SSH command uses a transient systemd service as `homelab-bot`, with the
+existing `LoadCredential` and `homelab-notify.sh` send path. Stdin text has controls stripped,
+is prefixed "Mac queue: " and capped at 1,000 characters including the prefix. Notice text
+is never stored on the node or in unit arguments. No token, privilege or listener is added.
+Commands receive `HOMELAB_QUEUE_PROGRESS`, naming an optional one-line progress file. The queue JSON
 in status includes play, battery pause, running metadata/progress/log path, summed process-group
 physical footprint (`physical_footprint_mb`, including charged Metal allocations but excluding
 clean mapped model-file pages) and available memory (`free_memory_mb`) in MiB, plus ordered

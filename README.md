@@ -123,6 +123,11 @@ command saved. A nonzero exit retries once, then stays failed while the queue mo
 `requeue` resets a failed or stopped job's attempts and appends it. Remove waiting, failed or finished
 jobs to delete their local logs and progress files.
 
+The platform bot tells the owner's private chat when a job fails after its retry (name,
+exit code and last five log lines), and when the last waiting job ends: "Mac queue empty;
+the Mac is free". Other completions, stops and battery pauses are silent. Sends run outside
+the queue lock with a short timeout; failures are logged on the Mac and dropped without retry.
+
 Nothing starts on battery. Ten continuous minutes on battery stop the running job while
 keeping play on (`paused_on_battery`); ten continuous minutes back on AC resume it. The menu
 reports when power is holding the queue and the remaining debounce time. A running
