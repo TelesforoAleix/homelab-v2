@@ -138,6 +138,46 @@ def test_power_debounce_both_directions(queue):
     assert q.running() and not q.report()["paused_on_battery"]
 
 
+def test_report_power_wait_messages(queue):
+    q, clock = queue
+    add(q, "one")
+    q.command("play")
+    clock["ac"] = False
+    q.step()
+    report = q.report()
+    assert report["power_source"] == "battery"
+    assert report["power_wait_seconds"] == 600
+    assert report["running"] is None and not report["paused_on_battery"]
+
+    clock["ac"] = True
+    q.step()
+    q.step()
+    assert q.running()
+    clock["ac"] = False
+    q.step()
+    clock["now"] += 90
+    report = q.report()
+    assert report["power_source"] == "battery"
+    assert report["power_wait_seconds"] == 510
+    assert report["running"] is not None and not report["paused_on_battery"]
+
+    clock["now"] += 510
+    q.step()
+    clock["ac"] = True
+    q.step()
+    clock["now"] += 60
+    report = q.report()
+    assert report["power_source"] == "ac"
+    assert report["power_wait_seconds"] == 540
+    assert report["running"] is None and report["paused_on_battery"]
+
+    clock["now"] += 540
+    q.step()
+    report = q.report()
+    assert report["power_wait_seconds"] is None
+    assert not report["paused_on_battery"]
+
+
 def test_scheduled_takes_front(queue, world, monkeypatch):  # noqa: F811
     q, _ = queue
     add(q, "one")

@@ -44,6 +44,17 @@ private func decode(_ queue: String?) throws -> ProfileStatus {
     #expect(status.queue?.waiting.isEmpty == true)
 }
 
+@Test func queuePowerMessages() throws {
+    let waiting = try decode(#"{"play":true,"paused_on_battery":false,"power_source":"battery","power_wait_seconds":600,"running":null,"waiting":[],"failed":[],"finished":[]}"#)
+    #expect(waiting.queue?.powerMessage == "Waiting for power")
+
+    let running = try decode(#"{"play":true,"paused_on_battery":false,"power_source":"battery","power_wait_seconds":90,"running":{"name":"active","state":"running","attempt":1},"waiting":[],"failed":[],"finished":[]}"#)
+    #expect(running.queue?.powerMessage == "On battery: pauses in 2 min")
+
+    let resuming = try decode(#"{"play":true,"paused_on_battery":true,"power_source":"ac","power_wait_seconds":60,"running":null,"waiting":[],"failed":[],"finished":[]}"#)
+    #expect(resuming.queue?.powerMessage == "Resumes in 1 min")
+}
+
 @Test func olderStatusWithoutQueueStillDecodes() throws {
     #expect(try decode(nil).queue == nil)
 }

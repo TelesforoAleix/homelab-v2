@@ -124,7 +124,8 @@ command saved. A nonzero exit retries once, then stays failed while the queue mo
 jobs to delete their local logs and progress files.
 
 Nothing starts on battery. Ten continuous minutes on battery stop the running job while
-keeping play on (`paused_on_battery`); ten continuous minutes back on AC resume it. A running
+keeping play on (`paused_on_battery`); ten continuous minutes back on AC resume it. The menu
+reports when power is holding the queue and the remaining debounce time. A running
 job keeps the Mac awake, but closing the lid still sleeps it. Scheduled jobs retain their
 profile/AC/idle requirements and take the next slot before queued work. Queue jobs count as
 activity for the automatic return to Working, without changing profiles themselves.
