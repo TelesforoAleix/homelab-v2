@@ -45,7 +45,7 @@ def main(args):
                     "--service-type=exec",
                     "--property=User=homelab-bot",
                     "--property=Group=homelab-bot",
-                    "--property=LoadCredential=bot-token:/etc/homelab-telegram-bot/token",
+                    "--property=LoadCredentialEncrypted=bot-token:/etc/homelab-telegram-bot/token.cred",
                     "--property=RuntimeMaxSec=8",
                     "--property=TimeoutStopSec=1",
                     "--property=NoNewPrivileges=yes",

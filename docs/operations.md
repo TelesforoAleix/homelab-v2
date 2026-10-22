@@ -1657,7 +1657,8 @@ SSH accounts work through Tailscale.
    using `/dev/null` if absent). Compile it with `/usr/bin/python3 -I` before installation.
    It is `root:root` `0755` in `/usr/local/sbin` (`root:root` `0755`); no static unit,
    daemon reload or bot restart is needed. The command starts a collected transient service
-   with the existing bot account and credential, an eight-second runtime limit and no retry.
+   with the existing bot account and TPM-sealed `LoadCredentialEncrypted` credential
+   (`bot-token:/etc/homelab-telegram-bot/token.cred`), an eight-second runtime limit and no retry.
    Stdin is bounded to 16,384 characters; line breaks become spaces, controls are stripped,
    and the prefixed notice is capped at 1,000 characters. The shared sender's output is
    discarded so notice text cannot enter the journal. Validate the transient service properties

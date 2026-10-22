@@ -47,7 +47,9 @@ def test_transient_unit_fixed_credential_no_content_in_arguments(sender):
     assert argv[0] == "/usr/bin/systemd-run"
     assert "--pipe" in argv and "--wait" in argv and "--collect" in argv
     assert "--property=User=homelab-bot" in argv
-    assert "--property=LoadCredential=bot-token:/etc/homelab-telegram-bot/token" in argv
+    assert (
+        "--property=LoadCredentialEncrypted=bot-token:/etc/homelab-telegram-bot/token.cred" in argv
+    )
     assert "--property=RuntimeMaxSec=8" in argv
     assert argv[-2:] == [helper.HELPER, "--send"]
     assert "test" not in " ".join(argv)
@@ -89,3 +91,16 @@ def test_failed_send_not_retried(sender, monkeypatch, failure):
     monkeypatch.setattr(helper.subprocess, "run", fail)
     assert helper.main([]) == 1
     assert len(calls) == 1
+
+
+def test_credential_matches_existing_notifier_override(sender):
+    assert helper.main([]) == 0
+    properties = [arg.removeprefix("--property=") for arg in sender[0][0]]
+    override = ROOT / "node/etc/systemd/system/homelab-notify@.service.d/credential.conf"
+    directive = next(
+        line
+        for line in override.read_text().splitlines()
+        if line.startswith("LoadCredentialEncrypted=")
+    )
+    assert directive in properties
+    assert not any(p.startswith("LoadCredential=") for p in properties)
