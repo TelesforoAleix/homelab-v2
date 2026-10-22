@@ -318,7 +318,33 @@ Light Mac jobs use individual launchd calendar agents and run only in an exact p
 profile, on AC power with idle input. Missed runs coalesce into a pending bit, retried through
 launchd at the next eligible idle check. Jobs never enter Inference and never run under a
 VS Code terminal. These owner-trusted local commands are independent of the node's durable
-Procrastinate jobs; no Mac work queue is introduced.
+Procrastinate jobs. When a queue command is running, a due scheduled job stays pending;
+when that command releases its slot, pending scheduled work takes priority and the queue
+waits until it completes. Calendar jobs otherwise retain their existing eligibility and
+coalescing behaviour.
+
+The Mac also has an explicit owner-operated FIFO of resumable absolute argv commands with
+optional working directories (`homelab-profile queue add/list/play/stop/remove/top/requeue`).
+The persistent `org.homelab.profile.queue` launchd agent uses the installed copy, refuses a
+VS Code ancestor or a non-launchd parent, and starts one process group at a time. Queue state
+is atomically replaced under the existing profile lock, before acknowledging commands.
+A pipe gate permits exec only after the child identity is persisted; a crash before that
+acknowledgement closes the gate without executing the command. It ignores profile jobs flags and idleness, never switches profiles, and counts a running
+command as activity for idle return. Stop sends group SIGTERM, then SIGKILL after ten seconds,
+puts the command first as waiting and turns play off. Battery pause uses the same stop but
+keeps play on; continuous battery and AC observations each debounce for ten minutes. No
+command starts on battery. `caffeinate -is -w` holds wake assertions only for a running command;
+lid sleep remains available. Nonzero exits retry once immediately (scheduled work still has
+priority), then retain a failed record and exit code. Finished records remain until removal.
+`top` reorders waiting work; `requeue` resets failed or stopped attempts and appends the command.
+
+This small Mac-only list deliberately uses no node Postgres or queue dependency. Its private
+state directory holds 0600 per-command logs until removal; this owner-requested command output
+is an explicit exception to default content-free logging. Logs never leave the Mac. Commands
+receive `HOMELAB_QUEUE_PROGRESS`, naming an optional one-line progress file. The queue JSON
+in status includes play, battery pause, running metadata/progress/log path, summed process-group
+RSS and free physical pages in MiB, plus ordered waiting, failed and finished records. On worker
+restart an interrupted attempt is stopped and returned to waiting before any new work starts.
 The deployment hook keeps each purpose's 3-second connect and 300-second request limits,
 without router retries, fallback or stopped-Mac alerts. The pinned upstream SDK can still
 repeat 5xx attempts before the failure hook; this transport behaviour is unchanged.

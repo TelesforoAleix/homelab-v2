@@ -26,6 +26,7 @@ FILES = (
     "router-models.ini.in",
     "installed_tools.py",
     "profile_models.py",
+    "profile_queue.py",
     "model_registration.py",
     "install-menu-bar.sh",
 )
@@ -40,6 +41,7 @@ DEPENDENCIES = {
     "router": {"homelab-router", "router-models.ini.in", "installed_tools.py", "profile_models.py"},
     "profile": {
         "homelab-profile",
+        "profile_queue.py",
         "homelab-router",
         "installed_tools.py",
         "profile_models.py",
@@ -158,6 +160,7 @@ def refresh_agents(changed):
                 for k in DEPENDENCIES
                 if label == f"org.homelab.{k}"
                 or (k == "profile" and label.startswith("org.homelab.profile.job."))
+                or (k == "profile" and label == "org.homelab.profile.queue")
             ),
             None,
         )
@@ -250,6 +253,9 @@ def install():
             or info.get("HomeLabProfileCommand") != str(ROOT / "homelab-profile")
         ):
             subprocess.run([str(ROOT / "install-menu-bar.sh")], check=True)
+        queue_agent = AGENTS / "org.homelab.profile.queue.plist"
+        if not queue_agent.exists():
+            subprocess.run([*installed_command("homelab-profile"), "queue-install"], check=True)
         manifest_update(pending_changes=[], pending_agents=[])
         print(f"Mac tools installed: {commit}; interpreter: {python}")
 
