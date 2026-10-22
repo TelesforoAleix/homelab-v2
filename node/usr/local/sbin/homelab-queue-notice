@@ -1,0 +1,75 @@
+#!/usr/bin/python3 -I
+"""Bounded stdin notice over the existing platform bot send path; no retries."""
+
+import os
+import subprocess
+import sys
+import unicodedata
+
+HELPER = "/usr/local/sbin/homelab-queue-notice"
+
+
+def message(text):
+    # Replace line breaks with spaces; strip C0/C1 and Unicode format controls.
+    text = text.replace("\n", " ").replace("\r", " ")
+    clean = "".join(c for c in text if not unicodedata.category(c).startswith("C"))
+    return ("Mac queue: " + clean)[:1000]
+
+
+def main(args):
+    if args not in ([], ["--send"]):
+        return 2
+    try:
+        if args == ["--send"]:
+            if not os.environ.get("CREDENTIALS_DIRECTORY"):
+                return 2
+            result = subprocess.run(
+                ["/usr/local/sbin/homelab-notify.sh", message(sys.stdin.read(16384))],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=7,
+                check=False,
+            )
+        else:
+            if os.geteuid() != 0:
+                return 2
+            # stdin is an anonymous pipe, never a unit argument or an on-disk notice.
+            # PID 1 supplies the same credential to the existing unprivileged account.
+            result = subprocess.run(
+                [
+                    "/usr/bin/systemd-run",
+                    "--quiet",
+                    "--pipe",
+                    "--wait",
+                    "--collect",
+                    "--service-type=exec",
+                    "--property=User=homelab-bot",
+                    "--property=Group=homelab-bot",
+                    "--property=LoadCredential=bot-token:/etc/homelab-telegram-bot/token",
+                    "--property=RuntimeMaxSec=8",
+                    "--property=TimeoutStopSec=1",
+                    "--property=NoNewPrivileges=yes",
+                    "--property=CapabilityBoundingSet=",
+                    "--property=ProtectSystem=strict",
+                    "--property=ProtectHome=yes",
+                    "--property=PrivateTmp=yes",
+                    "--property=PrivateDevices=yes",
+                    "--property=RestrictAddressFamilies=AF_INET AF_INET6",
+                    "--property=UMask=0077",
+                    HELPER,
+                    "--send",
+                ],
+                input=sys.stdin.read(16384),
+                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+        return int(result.returncode != 0)
+    except (OSError, subprocess.SubprocessError):
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
