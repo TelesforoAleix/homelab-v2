@@ -5,5 +5,8 @@ let package = Package(
     name: "HomeLabMenuBar",
     platforms: [.macOS(.v14)],
     products: [.executable(name: "HomeLabMenuBar", targets: ["HomeLabMenuBar"])],
-    targets: [.executableTarget(name: "HomeLabMenuBar")]
+    targets: [
+        .executableTarget(name: "HomeLabMenuBar"),
+        .testTarget(name: "HomeLabMenuBarTests", dependencies: ["HomeLabMenuBar"]),
+    ]
 )

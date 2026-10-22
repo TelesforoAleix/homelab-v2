@@ -9,6 +9,7 @@ struct ProfileStatus: Decodable, Sendable {
     let pauseReason: String?
     let returnPending: Bool
     let runningJobs: [String]
+    let queue: QueueReport?
 }
 
 struct ServiceState: Decodable, Sendable {
@@ -83,4 +84,26 @@ struct UsageSource: Decodable, Sendable {
 struct UsageWindow: Decodable, Sendable {
     let usedPercentage: Double
     let resetsAt: String?
+}
+
+struct QueueReport: Decodable, Sendable {
+    let play: Bool
+    let pausedOnBattery: Bool
+    let running: QueueJob?
+    let freeMemoryMb: Double?
+    let waiting: [QueueJob]
+    let failed: [QueueJob]
+    let finished: [QueueJob]
+}
+
+struct QueueJob: Decodable, Sendable, Identifiable {
+    let name: String
+    let state: String
+    let attempt: Int
+    let elapsedSeconds: Double?
+    let progress: String?
+    let physicalFootprintMb: Double?
+    let exitCode: Int?
+
+    var id: String { name }
 }

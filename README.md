@@ -131,6 +131,16 @@ activity for the automatic return to Working, without changing profiles themselv
 
 Logs (0600) stay under `~/.local/state/homelab-profile/` until removal. A command may overwrite
 the file named by `HOMELAB_QUEUE_PROGRESS` with one short progress line. Status reports that
-line, elapsed seconds, attempt, log path, process-group resident memory and free memory in MiB.
+line, elapsed seconds, attempt, log path, process-group physical footprint (`physical_footprint_mb`)
+and available memory (`free_memory_mb`) in MiB. Footprint includes charged Metal allocations
+but excludes clean mapped model-file pages; available memory uses macOS `memory_pressure`'s
+free percentage (including immediately reclaimable memory), rounded by macOS to whole percent.
 Install updates from merged main using `mac/install-mac-tools`; the queue worker is the
-`org.homelab.profile.queue` login agent. The menu bar queue controls are separate work.
+`org.homelab.profile.queue` login agent.
+
+The menu’s **Job queue** section sits below services: Play/Stop, battery pause, running job,
+elapsed time, attempt, progress and footprint beside available memory. Waiting jobs stay in
+order with **To front** and **Remove**; failed jobs offer **Requeue** and **Remove**, finished
+jobs **Remove**. Moving to front leaves the running job alone; Stop immediately stops the
+attempt, so unsaved items are redone on resume. Status refreshes every five seconds while the
+menu is open. Add jobs through the command above.

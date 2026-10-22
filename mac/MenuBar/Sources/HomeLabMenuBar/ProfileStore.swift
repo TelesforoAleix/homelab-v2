@@ -78,6 +78,16 @@ final class ProfileStore: ObservableObject {
 
     // MARK: Actions. Each runs the command once and shows its answer.
 
+    func queueAction(_ action: String, name: String? = nil) async {
+        guard busy == nil else { return }
+        busy = "Updating queue…"
+        defer { busy = nil }
+        let arguments = ["queue", action] + (name.map { [$0] } ?? [])
+        let result = await ProfileCommand.run(arguments)
+        if !result.succeeded { Dialogs.tell("Queue command refused", result.message) }
+        await reloadStatus()
+    }
+
     func switchToWorking() async {
         await perform("Switching to Working…", ["switch", "working"])
     }

@@ -343,7 +343,13 @@ state directory holds 0600 per-command logs until removal; this owner-requested 
 is an explicit exception to default content-free logging. Logs never leave the Mac. Commands
 receive `HOMELAB_QUEUE_PROGRESS`, naming an optional one-line progress file. The queue JSON
 in status includes play, battery pause, running metadata/progress/log path, summed process-group
-RSS and free physical pages in MiB, plus ordered waiting, failed and finished records. On worker
+physical footprint (`physical_footprint_mb`, including charged Metal allocations but excluding
+clean mapped model-file pages) and available memory (`free_memory_mb`) in MiB, plus ordered
+waiting, failed and finished records. Available memory is total RAM times the whole-percent
+free figure from `memory_pressure -Q`, including immediately reclaimable memory. Failed
+measurements are null. The menu shows this queue between services and refused requests,
+refreshes status every five seconds while open, and sends play/stop/remove/top/requeue through
+the same command, reloading status after each action. On worker
 restart an interrupted attempt is stopped and returned to waiting before any new work starts.
 The deployment hook keeps each purpose's 3-second connect and 300-second request limits,
 without router retries, fallback or stopped-Mac alerts. The pinned upstream SDK can still

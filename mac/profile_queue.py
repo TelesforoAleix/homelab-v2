@@ -285,27 +285,41 @@ class Queue:
             self.start(job, state)
 
     def memory(self, pid=None):
-        resident = 0
-        free = None
-        with contextlib.suppress(OSError, ValueError, TypeError, subprocess.SubprocessError):
-            rows = subprocess.check_output(["/bin/ps", "-axo", "pgid=,rss="], text=True)
-            resident = (
-                sum(
-                    int(parts[1])
-                    for line in rows.splitlines()
-                    if len(parts := line.split()) == 2 and int(parts[0]) == pid
+        """Process-group physical footprint and immediately available system memory, in MiB.
+
+        Footprint includes charged Metal allocations, but not clean mapped model files.
+        Queue commands have no declared model files to charge separately.
+        """
+        footprint = None
+        available = None
+        if pid is not None:
+            with contextlib.suppress(OSError, ValueError, TypeError, subprocess.SubprocessError):
+                rows = subprocess.check_output(
+                    ["/bin/ps", "-axo", "pid=,pgid="], text=True, timeout=5
                 )
-                / 1024
+                members = {
+                    int(parts[0])
+                    for line in rows.splitlines()
+                    if len(parts := line.split()) == 2 and int(parts[1]) == pid
+                }
+                if members:
+                    measure = self.call("router")["footprint"]
+                    footprint = sum(measure(member) for member in members) / 1024**2
+        # Keep these reads independent: an exited process must not hide available RAM.
+        with contextlib.suppress(OSError, ValueError, TypeError, subprocess.SubprocessError):
+            pressure = subprocess.check_output(
+                ["/usr/bin/memory_pressure", "-Q"], text=True, timeout=5
             )
-            vm = subprocess.check_output(["/usr/bin/vm_stat"], text=True)
-            page = int(re.search(r"page size of (\d+) bytes", vm)[1])
-            free = int(re.search(r"Pages free:\s+(\d+)", vm)[1]) * page / (1024 * 1024)
-        return resident, free
+            total = re.search(r"The system has (\d+) ", pressure)
+            percent = re.search(r"System-wide memory free percentage:\s*(\d+)%", pressure)
+            if total and percent and 0 <= int(percent[1]) <= 100:
+                available = int(total[1]) * int(percent[1]) / 100 / 1024**2
+        return footprint, available
 
     def report(self, state=None):
         state = state or self.read()
         job = self.running(state)
-        resident, free = self.memory(job.get("pid") if job else None)
+        footprint, available = self.memory(job.get("pid") if job else None)
         running = None
         if job:
             progress = ""
@@ -316,13 +330,13 @@ class Queue:
                 **job,
                 "elapsed_seconds": max(0, time.time() - job["started"]),
                 "progress": progress,
-                "resident_memory_mb": resident,
+                "physical_footprint_mb": footprint,
             }
         return {
             "play": state["play"],
             "paused_on_battery": state["paused_on_battery"],
             "running": running,
-            "free_memory_mb": free,
+            "free_memory_mb": available,
             **{
                 kind: [j for j in state["jobs"] if j["state"] == kind]
                 for kind in ("waiting", "failed", "finished")
