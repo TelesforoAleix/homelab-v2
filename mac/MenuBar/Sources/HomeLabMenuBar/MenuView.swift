@@ -13,6 +13,8 @@ struct MenuView: View {
             switching
             serviceList
             Divider()
+            queueSection
+            Divider()
             waitingList
             Divider()
             usageList
@@ -34,7 +36,13 @@ struct MenuView: View {
         .padding(14)
         .frame(width: 340)
         .disabled(store.busy != nil)
-        .onAppear { Task { await store.reload() } }
+        .task {
+            await store.reload()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                if store.busy == nil { await store.reloadStatus() }
+            }
+        }
     }
 
     private var header: some View {
@@ -83,6 +91,73 @@ struct MenuView: View {
             }
             Text("Starting or stopping one service makes the state custom.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var queueSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Job queue").font(.subheadline.weight(.semibold))
+                Spacer()
+                Button(store.status?.queue?.play == true ? "Stop" : "Play") {
+                    Task { await store.queueAction(store.status?.queue?.play == true ? "stop" : "play") }
+                }
+                .buttonStyle(.borderless)
+                .disabled(store.status?.queue == nil)
+            }
+            if let queue = store.status?.queue {
+                if queue.pausedOnBattery {
+                    Text("Paused on battery · waiting for sustained AC power")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let job = queue.running {
+                    Text("Running: " + job.name).lineLimit(1).help(job.name)
+                    Text("\(Self.elapsed(job.elapsedSeconds)) · attempt \(job.attempt)")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let progress = job.progress, !progress.isEmpty {
+                        Text(progress).font(.caption).lineLimit(2).help(progress)
+                    }
+                    Text("Footprint \(Self.memory(job.physicalFootprintMb)) · available \(Self.memory(queue.freeMemoryMb))")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .help("Process-group physical footprint includes charged Metal allocations; excludes clean mapped model files. Available memory includes immediately reclaimable memory (macOS memory_pressure).")
+                } else {
+                    Text("No job running · available \(Self.memory(queue.freeMemoryMb))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                let jobs = queue.waiting + queue.failed + queue.finished
+                if jobs.isEmpty {
+                    Text("No waiting, failed or finished jobs").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(jobs) { job in queueRow(job) }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: min(220, CGFloat(jobs.count) * 54))
+                }
+            } else {
+                Text("Queue unavailable").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func queueRow(_ job: QueueJob) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(job.name).lineLimit(1).help(job.name)
+                Spacer()
+                Text(job.state == "failed" ? "failed (exit \(job.exitCode.map(String.init) ?? "unknown"))" : job.state)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                if job.state == "waiting" {
+                    Button("To front") { Task { await store.queueAction("top", name: job.name) } }
+                }
+                if job.state == "failed" {
+                    Button("Requeue") { Task { await store.queueAction("requeue", name: job.name) } }
+                }
+                Button("Remove") { Task { await store.queueAction("remove", name: job.name) } }
+            }.buttonStyle(.borderless)
         }
     }
 
@@ -223,6 +298,16 @@ struct MenuView: View {
         case "inference": return "Inference"
         default: return "Custom"
         }
+    }
+
+    static func memory(_ mib: Double?) -> String {
+        guard let mib else { return "unknown" }
+        return String(format: "%.1f GiB", mib / 1024)
+    }
+
+    static func elapsed(_ seconds: Double?) -> String {
+        let total = Int(max(0, seconds ?? 0))
+        return String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
     }
 
     static func estimate(_ seconds: Double?) -> String {

@@ -186,7 +186,7 @@ def test_report_progress(queue):
     report = q.report()
     assert report["running"]["progress"] == "1240/5000"
     assert report["running"]["elapsed_seconds"] == 12
-    assert report["running"]["resident_memory_mb"] == 20
+    assert report["running"]["physical_footprint_mb"] == 20
     assert report["free_memory_mb"] == 100
 
 
@@ -302,14 +302,60 @@ def test_reused_pid_never_signalled(queue, monkeypatch):
 
 def test_memory_sums_only_job_group(queue, monkeypatch):
     q, _ = queue
+    measured = []
+
+    def footprint(pid):
+        measured.append(pid)
+        return {42: 20 * 1024**3, 43: 1024**3}[pid]
+
+    def output(argv, **kwargs):
+        assert kwargs["timeout"] == 5
+        if argv[0] == "/bin/ps":
+            assert argv[-1] == "pid=,pgid="
+            return "42 42\n43 42\n99 99\n"
+        assert argv == ["/usr/bin/memory_pressure", "-Q"]
+        return (
+            "The system has 51539607552 (3145728 pages with a page size of 16384).\n"
+            "System-wide memory free percentage: 36%\n"
+        )
+
+    monkeypatch.setattr(p, "router", lambda: {"footprint": footprint})
+    monkeypatch.setattr(type(q).memory.__globals__["subprocess"], "check_output", output)
+    footprint_mb, available_mb = type(q).memory(q, 42)
+    assert footprint_mb == 21 * 1024  # Charged Metal allocation, not RSS.
+    assert available_mb == pytest.approx(48 * 1024 * 0.36)
+    assert set(measured) == {42, 43}
+    measured.clear()
+    assert type(q).memory(q) == (None, available_mb)
+    assert measured == []
+
+
+@pytest.mark.parametrize("failure", ["ps", "footprint", "pressure", "malformed", "range", "empty"])
+def test_memory_failures_are_unknown_and_independent(queue, monkeypatch, failure):
+    q, _ = queue
+
+    def footprint(pid):
+        if failure == "footprint":
+            raise ValueError("process exited")
+        return 1024**2
 
     def output(argv, **kwargs):
         if argv[0] == "/bin/ps":
-            return "42 2048\n42 1024\n99 999999\n"
-        return "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 128.\n"
+            if failure == "ps":
+                raise OSError("unavailable")
+            return "99 99\n" if failure == "empty" else "42 42\n"
+        if failure == "pressure":
+            raise OSError("unavailable")
+        if failure == "malformed":
+            return "unexpected output"
+        percent = 101 if failure == "range" else 50
+        return f"The system has 1073741824 (pages).\nSystem-wide memory free percentage: {percent}%"
 
+    monkeypatch.setattr(p, "router", lambda: {"footprint": footprint})
     monkeypatch.setattr(type(q).memory.__globals__["subprocess"], "check_output", output)
-    assert type(q).memory(q, 42) == (3, 2)
+    footprint_mb, available_mb = type(q).memory(q, 42)
+    assert footprint_mb == (None if failure in ("ps", "footprint", "empty") else 1)
+    assert available_mb == (None if failure in ("pressure", "malformed", "range") else 512)
 
 
 def test_queue_cli_and_status_share_report(queue, monkeypatch, capsys):
