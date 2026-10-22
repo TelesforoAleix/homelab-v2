@@ -100,3 +100,37 @@ First version: [homelab-v1](https://github.com/TelesforoAleix/homelab-v1)
 Used by: [med-ask](https://github.com/TelesforoAleix/med-ask)
 
 [Operator runbook](docs/operations.md): running the stack, Mac services, node rebuilds and originals copies.
+
+## Mac job queue
+
+The installed `homelab-profile` runs resumable commands one at a time through launchd, in
+any profile. Commands use an absolute executable and argv, without a shell:
+
+```bash
+homelab-profile queue add corpus --cwd /absolute/project -- /absolute/python /absolute/label.py
+homelab-profile queue list
+homelab-profile queue play
+homelab-profile queue stop
+homelab-profile queue top corpus
+homelab-profile queue remove corpus
+homelab-profile queue requeue corpus
+```
+
+Every command prints JSON; `status` includes the same queue data. `top` moves a waiting job
+forward without interrupting a run. `stop` terminates the whole process group (SIGKILL after
+10 seconds), turns play off and puts that job first, waiting. `play` resumes from whatever the
+command saved. A nonzero exit retries once, then stays failed while the queue moves on;
+`requeue` resets a failed or stopped job's attempts and appends it. Remove waiting, failed or finished
+jobs to delete their local logs and progress files.
+
+Nothing starts on battery. Ten continuous minutes on battery stop the running job while
+keeping play on (`paused_on_battery`); ten continuous minutes back on AC resume it. A running
+job keeps the Mac awake, but closing the lid still sleeps it. Scheduled jobs retain their
+profile/AC/idle requirements and take the next slot before queued work. Queue jobs count as
+activity for the automatic return to Working, without changing profiles themselves.
+
+Logs (0600) stay under `~/.local/state/homelab-profile/` until removal. A command may overwrite
+the file named by `HOMELAB_QUEUE_PROGRESS` with one short progress line. Status reports that
+line, elapsed seconds, attempt, log path, process-group resident memory and free memory in MiB.
+Install updates from merged main using `mac/install-mac-tools`; the queue worker is the
+`org.homelab.profile.queue` login agent. The menu bar queue controls are separate work.

@@ -204,6 +204,19 @@ def test_install_snapshot_noop_update_and_branch_independence(installer, monkeyp
 
     def run(args, **kwargs):
         calls.append(args)
+        if args[-1] == "queue-install":
+            (installer.AGENTS / "org.homelab.profile.queue.plist").write_bytes(
+                plistlib.dumps(
+                    {
+                        "Label": "org.homelab.profile.queue",
+                        "ProgramArguments": [
+                            *installer.installed_command("homelab-profile"),
+                            "queue-worker",
+                        ],
+                        "KeepAlive": True,
+                    }
+                )
+            )
         if len(args) > 1 and args[1] == "bootout":
             unloaded.add(args[2])
         if len(args) > 1 and args[1] == "bootstrap":
@@ -253,7 +266,8 @@ def test_install_snapshot_noop_update_and_branch_independence(installer, monkeyp
     files["homelab-profile"] += b"\n# changed\n"
     installer.install()
     assert [args[-1] for args in calls if len(args) > 1 and args[1] == "bootout"] == [
-        f"gui/{installer.os.getuid()}/org.homelab.profile"
+        f"gui/{installer.os.getuid()}/org.homelab.profile",
+        f"gui/{installer.os.getuid()}/org.homelab.profile.queue",
     ]
 
 
@@ -476,6 +490,19 @@ def test_install_converges_after_manual_listener_recovery(
     def run(args, **kwargs):
         nonlocal listener_bootstraps
         calls.append(args)
+        if args[-1] == "queue-install":
+            (installer.AGENTS / "org.homelab.profile.queue.plist").write_bytes(
+                plistlib.dumps(
+                    {
+                        "Label": "org.homelab.profile.queue",
+                        "ProgramArguments": [
+                            *installer.installed_command("homelab-profile"),
+                            "queue-worker",
+                        ],
+                        "KeepAlive": True,
+                    }
+                )
+            )
         if args == [str(installer.ROOT / "install-menu-bar.sh")]:
             info.write_bytes(
                 plistlib.dumps(

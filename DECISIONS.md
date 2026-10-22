@@ -687,3 +687,21 @@ Files and directory entries are flushed before success. Multi-id receipts commit
 and retry idempotently. Descriptor-relative opens reject symlinks throughout the path and
 non-regular/multiply linked files; attachments are read only for explicit file streaming.
 The bot already renders arbitrary status values, so it needs no change to display read items.
+
+**2026-10-22 — An owner-operated Mac queue runs resumable commands under launchd.**
+The owner's corpus labelling and coding eval scripts already checkpoint their own work and
+start their own loopback model servers. Keep the queue ignorant of their implementation:
+absolute argv, optional cwd, FIFO, explicit play/stop, one process group at a time in any
+profile. Scheduled calendar work keeps its eligibility rules and gets the next slot ahead
+of queued work. Group termination and a ten-second kill bound release model memory before
+another command starts. Battery pause and AC resume each require ten continuous minutes;
+a wake assertion covers running work, without overriding lid sleep. One immediate retry
+handles a transient command failure; a second retains the failed record and exit code.
+
+A small atomic JSON list under the profile command's existing lock is a deliberate exception
+to libraries owning queue machinery: the node's Procrastinate requires Postgres, absent on
+the Mac, and Task Spooler only supplies ordering. No new dependency or node service is added.
+launchd owns the persistent worker in the private installed copy, so chat, terminal and
+profile-switch lifetimes do not own jobs. Per-command local 0600 output logs are explicitly
+requested here and retained until removal, an exception to content-free default logging.
+An optional progress-file environment variable keeps reporting independent of job internals.
