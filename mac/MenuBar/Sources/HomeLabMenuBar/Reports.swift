@@ -89,11 +89,27 @@ struct UsageWindow: Decodable, Sendable {
 struct QueueReport: Decodable, Sendable {
     let play: Bool
     let pausedOnBattery: Bool
+    let powerSource: String?
+    let powerWaitSeconds: Double?
     let running: QueueJob?
     let freeMemoryMb: Double?
     let waiting: [QueueJob]
     let failed: [QueueJob]
     let finished: [QueueJob]
+
+    var powerMessage: String? {
+        guard play, let powerSource else { return nil }
+        let minutes = powerWaitSeconds.map { max(0, Int(ceil($0 / 60))) }
+        if running != nil, powerSource == "battery", !pausedOnBattery, let minutes {
+            return "On battery: pauses in \(minutes) min"
+        }
+        guard running == nil else { return nil }
+        if powerSource == "battery", !pausedOnBattery { return "Waiting for power" }
+        if powerSource == "ac", pausedOnBattery, let minutes {
+            return "Resumes in \(minutes) min"
+        }
+        return nil
+    }
 }
 
 struct QueueJob: Decodable, Sendable, Identifiable {

@@ -320,6 +320,15 @@ class Queue:
         state = state or self.read()
         job = self.running(state)
         footprint, available = self.memory(job.get("pid") if job else None)
+        power_source = state.get("power_source")
+        power_wait_seconds = None
+        if power_source in ("ac", "battery"):
+            waiting_for_transition = (
+                power_source == "battery" and not state["paused_on_battery"]
+            ) or (power_source == "ac" and state["paused_on_battery"])
+            if waiting_for_transition:
+                elapsed = time.time() - state.get("power_since", time.time())
+                power_wait_seconds = max(0, self.h["BATTERY_GRACE_SECONDS"] - elapsed)
         running = None
         if job:
             progress = ""
@@ -335,6 +344,8 @@ class Queue:
         return {
             "play": state["play"],
             "paused_on_battery": state["paused_on_battery"],
+            "power_source": power_source,
+            "power_wait_seconds": power_wait_seconds,
             "running": running,
             "free_memory_mb": available,
             **{

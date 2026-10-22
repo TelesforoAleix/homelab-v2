@@ -106,6 +106,9 @@ struct MenuView: View {
                 .disabled(store.status?.queue == nil)
             }
             if let queue = store.status?.queue {
+                if let powerMessage = queue.powerMessage {
+                    Text(powerMessage).font(.caption).foregroundStyle(.secondary)
+                }
                 if queue.pausedOnBattery {
                     Text("Paused on battery · waiting for sustained AC power")
                         .font(.caption).foregroundStyle(.secondary)
