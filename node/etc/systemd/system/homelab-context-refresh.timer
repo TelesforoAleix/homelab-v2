@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh Home Lab code context copies every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=homelab-context-refresh.service
+
+[Install]
+WantedBy=timers.target

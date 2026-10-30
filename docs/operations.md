@@ -1409,6 +1409,50 @@ nothing the benchmark reads or writes is committed. Keep private sample argument
 PDF rendering and scoring dependencies live only in the `benchmark` group, outside app images.
 Cold load means a fresh process, without evicting the operating system's file cache.
 
+## Code context server
+
+Mac coding clients start an MCP stdio session through the existing agent account:
+
+```bash
+ssh -T homelab-agent sudo -n /usr/local/sbin/homelab-context studio
+```
+
+Replace `studio` with a configured name. The node's private root-owned list is
+`/etc/homelab-context/repositories`, mode `0600`, one name per line; blank lines and `#`
+comments are allowed. Names use lowercase letters, digits, underscore or hyphen and start
+with a letter or digit. Each names a root-owned application clone at `/srv/homelab/<name>`.
+The list is not part of Git. Add or remove names in that private file, then run
+`sudo systemctl start homelab-context-refresh.service`. Removing a name stops serving it;
+the previously created derived copy is retained. A missing list, unavailable copy, unknown
+name or locked volume fails on stderr. The timer runs every five minutes and after unlock;
+when a client is connected a refresh can change the copy while the client is reading it.
+
+Copies and Serena's reusable symbol cache live under `/srv/homelab/.context/<name>/`,
+with the parent private to root. The container has one bind mount for the selected copy and
+its cache; root ownership keeps source and configuration read-only for its unprivileged user.
+It has no network, capabilities or access to other host paths. The container filesystem is
+read-only, with a temporary executable tmpfs for language-server binaries and logs. The six
+MCP tools find symbols, file overviews, references, declarations, implementations and patterns;
+there are no editing, shell, onboarding or memory tools. Source content is not logged by
+default. The image build requires Internet access, but sessions and local refreshes do not.
+
+After a merged update, install the files from the node checkout, showing diffs first as in
+[Rebuilding the node](#rebuilding-the-node), then build and start only these new units:
+
+```bash
+sudo docker build -t homelab-context:cx1 /opt/homelab-context
+sudo systemctl daemon-reload
+sudo systemd-analyze verify /etc/systemd/system/homelab-context-refresh.service /etc/systemd/system/homelab-context-refresh.timer
+sudo systemctl enable --now homelab-context-refresh.timer
+sudo systemctl enable homelab-context-refresh.service
+sudo systemctl start homelab-context-refresh.service
+sudo systemctl status homelab-context-refresh.timer
+```
+
+Build again after updating the image files. Refresh and serving need both the data volume and
+Docker; unknown names and locked volumes do not start a container. A new client starts its own
+container; quitting the MCP session stops it.
+
 ## Rebuilding the node
 
 Recovery is a rebuild from sources. No node backup exists or will be made. Host files come
@@ -1588,8 +1632,12 @@ SSH accounts work through Tailscale.
    below are `root:root` `0755`. The firewall files are `0640`, SSH hardening is `0600`,
    sudoers is `0440`, operational scripts are `0755`, and the remaining files are `0644`.
 
+| Repository directory | Directory mode | File mode |
+|---|---|---|
+| `node/opt/homelab-context/` | `0755` | `0644` |
+
    ```bash
-   sudo install -d -m 0755 -o root -g root /etc/ssh /etc/ssh/sshd_config.d /etc/ufw /etc/docker /etc/sysctl.d /etc/profile.d /etc/sudoers.d /usr/local/sbin /opt/homelab-telegram-bot /etc/systemd/system
+   sudo install -d -m 0755 -o root -g root /etc/ssh /etc/ssh/sshd_config.d /etc/ufw /etc/docker /etc/sysctl.d /etc/profile.d /etc/sudoers.d /usr/local/sbin /opt/homelab-telegram-bot /opt/homelab-context /etc/systemd/system
    sudo install -d -m 0755 -o root -g root /etc/systemd/system/homelab-notify@.service.d /etc/systemd/system/homelab-watchdog.service.d /etc/systemd/system/homelab-telegram-bot.service.d
    sudo install -d -m 0750 -o root -g polkitd /etc/polkit-1/rules.d
    sudo install -m 0600 -o root -g root node/etc/ssh/sshd_config.d/10-homelab-hardening.conf /etc/ssh/sshd_config.d/10-homelab-hardening.conf
@@ -1604,6 +1652,8 @@ SSH accounts work through Tailscale.
    sudo install -m 0644 -o root -g root node/etc/homelab-copy.recipient /etc/homelab-copy.recipient
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-copy /usr/local/sbin/homelab-copy
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-inbox /usr/local/sbin/homelab-inbox
+   sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-context /usr/local/sbin/homelab-context
+   sudo install -m 0644 -o root -g root node/opt/homelab-context/* /opt/homelab-context/
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-queue-notice /usr/local/sbin/homelab-queue-notice
    sudo install -d -m 0700 -o root -g root /var/lib/homelab-copy
    sudo install -m 0755 -o root -g root node/usr/local/sbin/*.sh /usr/local/sbin/
@@ -1630,8 +1680,12 @@ SSH accounts work through Tailscale.
    sudo containerd --config /etc/containerd/config.toml config dump >/dev/null
    sudo visudo -c
    sudo sshd -t
-   sudo systemd-analyze --generators=yes verify /etc/systemd/system/homelab.service /etc/systemd/system/homelab-data.target /etc/systemd/system/homelab-notify@.service /etc/systemd/system/homelab-watchdog.service /etc/systemd/system/homelab-watchdog.timer /etc/systemd/system/homelab-telegram-bot.service /etc/systemd/system/homelab-bot-data-ready.service /etc/systemd/system/homelab-bot-data-released.service /etc/systemd/system/wifi-powersave-off.service /etc/systemd/system/homelab-copy-reminder.service /etc/systemd/system/homelab-copy-reminder.timer
+   sudo systemd-analyze --generators=yes verify /etc/systemd/system/homelab.service /etc/systemd/system/homelab-data.target /etc/systemd/system/homelab-notify@.service /etc/systemd/system/homelab-watchdog.service /etc/systemd/system/homelab-watchdog.timer /etc/systemd/system/homelab-telegram-bot.service /etc/systemd/system/homelab-bot-data-ready.service /etc/systemd/system/homelab-bot-data-released.service /etc/systemd/system/wifi-powersave-off.service /etc/systemd/system/homelab-copy-reminder.service /etc/systemd/system/homelab-copy-reminder.timer /etc/systemd/system/homelab-context-refresh.service /etc/systemd/system/homelab-context-refresh.timer
    ```
+
+   The context image and its private repository list are set up after Docker and the data
+   volume are available, following [Code context server](#code-context-server). Create
+   `/etc/homelab-context/repositories` as `root:root` mode `0600` with the desired names.
 
    The bot environment stays on the root filesystem so it works before unlock. Venv
    directories are `0755`, data/Python files `0644`, and executable entry points `0755`,
@@ -1693,7 +1747,7 @@ SSH accounts work through Tailscale.
    sudo systemctl reload ssh.service
    sudo systemctl disable docker.service docker.socket containerd.service
    sudo systemctl enable --now tailscaled.service chrony.service wifi-powersave-off.service
-   sudo systemctl enable homelab-telegram-bot.service homelab-bot-data-ready.service homelab-watchdog.timer homelab-copy-reminder.timer
+   sudo systemctl enable homelab-telegram-bot.service homelab-bot-data-ready.service homelab-watchdog.timer homelab-copy-reminder.timer homelab-context-refresh.service homelab-context-refresh.timer
    sudo ufw default deny incoming
    sudo ufw default allow outgoing
    sudo ufw default deny routed

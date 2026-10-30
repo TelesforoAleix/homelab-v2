@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+mkdir -p "$SERENA_HOME"
+cp -a /opt/context-deps/. "$SERENA_HOME/"
+cp /opt/context/serena_config.yml "$SERENA_HOME/serena_config.yml"
+exec serena start-mcp-server --project /workspace/source --context ide --mode no-onboarding --log-level CRITICAL

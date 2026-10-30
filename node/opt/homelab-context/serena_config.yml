@@ -1,0 +1,16 @@
+web_dashboard: false
+gui_log_window: false
+log_level: 50
+fixed_tools:
+  - find_symbol
+  - get_symbols_overview
+  - find_referencing_symbols
+  - find_declaration
+  - find_implementations
+  - search_for_pattern
+project_serena_folder_location: /workspace/state
+trusted_project_path_patterns: []
+ls_specific_settings:
+  python:
+    ls_path: /usr/local/bin/pyright-langserver
+projects: []

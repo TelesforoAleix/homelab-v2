@@ -705,3 +705,13 @@ launchd owns the persistent worker in the private installed copy, so chat, termi
 profile-switch lifetimes do not own jobs. Per-command local 0600 output logs are explicitly
 requested here and retained until removal, an exception to content-free default logging.
 An optional progress-file environment variable keeps reporting independent of job internals.
+
+**2026-10-30 — Code navigation uses offline Serena over SSH.** Serena runs on demand in
+a networkless unprivileged container with a fixed reading-tool set. The single bind mount
+contains a root-owned source copy and project configuration plus a writable index directory;
+filesystem ownership prevents writes to source even if tool configuration is wrong.
+The timer fetches the application clone’s local `main` into the separate copy; it does not
+need credentials and may update a copy while a client is connected. Serena’s project
+configuration and TypeScript server are controlled by the image, and projects are untrusted,
+so a repository cannot select executable language-server settings. Temporary runtime files
+live in a container tmpfs and the reusable index stays on the encrypted data volume.

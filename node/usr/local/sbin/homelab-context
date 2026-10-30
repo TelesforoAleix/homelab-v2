@@ -1,0 +1,126 @@
+#!/usr/bin/python3 -I
+"""Serve an isolated, read-only copy of a configured repository over MCP stdio."""
+import fcntl
+import os
+import re
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+VOLUME = Path('/srv/homelab')
+ROOT = VOLUME / '.context'
+LIST = Path('/etc/homelab-context/repositories')
+IMAGE = 'homelab-context:cx1'
+NAME = re.compile(r'[a-z0-9][a-z0-9_-]{0,63}\Z')
+UID = 10001
+
+
+def repositories():
+    fd = os.open(LIST, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, encoding='utf-8') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+            raise ValueError('invalid repository list permissions')
+        names = [line.strip() for line in stream if line.strip() and not line.lstrip().startswith('#')]
+    if any(not NAME.fullmatch(name) for name in names) or len(set(names)) != len(names):
+        raise ValueError('invalid repository list')
+    return names
+
+
+def ready():
+    return os.path.ismount(VOLUME)
+
+
+def git(*args):
+    env = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null',
+               GIT_TERMINAL_PROMPT='0', GIT_LFS_SKIP_SMUDGE='1')
+    return subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', *map(str, args)],
+                          check=True, env=env, stdout=subprocess.DEVNULL)
+
+
+def refresh_one(name):
+    app = VOLUME / name
+    if app.is_symlink() or not (app / '.git').is_dir():
+        raise ValueError('application clone is missing')
+    base = ROOT / name
+    base.mkdir(mode=0o755, exist_ok=True)
+    state = base / 'state'
+    state.mkdir(mode=0o755, exist_ok=True)
+    (state / 'memories').mkdir(mode=0o555, exist_ok=True)
+    ignore = state / '.gitignore'
+    if not ignore.exists():
+        ignore.write_text('*\n')
+    cache = state / 'cache'
+    cache.mkdir(mode=0o700, exist_ok=True)
+    os.chown(cache, UID, UID)
+    project = subprocess.run(['docker', 'run', '--rm', '--network=none', '--entrypoint=cat',
+                              IMAGE, '/opt/context/project.yml'], check=True, stdout=subprocess.PIPE).stdout
+    config = state / 'project.yml'
+    temp = state / '.project.yml.tmp'
+    temp.write_bytes(project)
+    temp.chmod(0o644)
+    os.replace(temp, config)
+    source = base / 'source'
+    if not source.exists():
+        source.mkdir(mode=0o755)
+        git('init', '--quiet', source)
+    if source.is_symlink() or not (source / '.git').is_dir():
+        raise ValueError('invalid context copy')
+    git('-C', source, 'fetch', '--quiet', '--no-tags', '--', app, 'refs/heads/main')
+    git('-C', source, 'reset', '--quiet', '--hard', 'FETCH_HEAD')
+    # The application is private to root on the host; the container user needs to read its copy.
+    # The parent outside the bind mount stays private to root.
+    for directory, dirs, files in os.walk(source, followlinks=False):
+        os.chmod(directory, (os.stat(directory, follow_symlinks=False).st_mode & ~0o022) | 0o555)
+        for file in files:
+            path = Path(directory) / file
+            if not path.is_symlink():
+                path.chmod((path.stat().st_mode & ~0o022) | 0o444)
+
+
+def refresh():
+    if not ready():
+        raise ValueError('data volume is locked')
+    names = repositories()
+    ROOT.mkdir(mode=0o700, exist_ok=True)
+    with open(ROOT / '.refresh.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for name in names:
+            refresh_one(name)
+
+
+def serve(name):
+    if not ready():
+        raise ValueError('data volume is locked')
+    if not NAME.fullmatch(name) or name not in repositories():
+        raise ValueError('unknown repository')
+    base = ROOT / name
+    if not (base / 'source' / '.git').is_dir() or not (base / 'state' / 'project.yml').is_file():
+        raise ValueError('repository copy is not ready')
+    command = ['docker', 'run', '--rm', '-i', '--network=none', '--user=10001:10001',
+               '--cap-drop=ALL', '--security-opt=no-new-privileges', '--read-only',
+               '--pids-limit=256', '--memory=2g', '--tmpfs=/tmp:rw,exec,nosuid,nodev,size=512m',
+               '--mount', f'type=bind,src={base},dst=/workspace', IMAGE]
+    os.execvp(command[0], command)
+
+
+def main():
+    try:
+        os.umask(0o022)
+        if os.geteuid() != 0:
+            raise ValueError('run through sudo')
+        if len(sys.argv) == 2 and sys.argv[1] == '--refresh':
+            refresh()
+        elif len(sys.argv) == 2:
+            serve(sys.argv[1])
+        else:
+            raise ValueError('usage: homelab-context REPOSITORY')
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(f'homelab-context: {error}', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
