@@ -83,6 +83,16 @@ last-good time and bytes outside the encrypted volume. A daily persistent timer 
 record and the existing notifier to remind the owner after seven days, or before any copy.
 No archive is staged, and the private identity remains in the owner's password manager.
 
+The code context server is an on-demand Serena MCP container reached through the existing
+agent SSH account and stdio. It has no network or published port. A root-owned private list
+selects application clones; a timer fetches their local `main` into separate copies under
+`/srv/homelab/.context/`. Each container sees only its copy and its adjacent index. The source
+and Serena project configuration are root-owned and unwritable to the unprivileged container
+user; only the index directory is writable. A fixed six-tool allowlist permits symbol and
+pattern reading, while editing, shell, onboarding and memory tools are absent. No application
+clone is mounted. The image contains pinned Serena, Python and TypeScript language servers,
+and needs no runtime network. Runtime logs and the copied language-server files are ephemeral.
+
 The Telegram client is a host service using python-telegram-bot, running as `homelab-bot`
 with its existing sandbox and TPM-sealed token. Its own `/opt/homelab-telegram-bot/.venv`
 is built with host Python from hash-pinned requirements; the library owns Telegram transport,

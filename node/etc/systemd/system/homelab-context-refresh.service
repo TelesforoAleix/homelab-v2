@@ -1,0 +1,17 @@
+[Unit]
+Description=Refresh Home Lab code context copies
+After=docker.service homelab-data.target
+PartOf=homelab-data.target
+ConditionPathIsMountPoint=/srv/homelab
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/homelab-context --refresh
+UMask=0022
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=homelab-data.target

@@ -46,6 +46,10 @@ Solid parts are built; dashed parts are planned.
 - [ARCHITECTURE.md](ARCHITECTURE.md) explains the boundaries and rules;
   [DECISIONS.md](DECISIONS.md) records the choices behind them.
 
+A [read-only code context server](docs/operations.md#code-context-server) gives Mac coding agents
+symbol navigation over SSH. It runs Serena without network access against separate,
+periodically refreshed copies of configured repositories on the encrypted volume.
+
 The Telegram bot runs as a sandboxed host service using python-telegram-bot in its own
 hash-pinned virtual environment. It long-polls Telegram and remains available
 before the data volumes are unlocked. After unlock, an optional read-only planning mirror
