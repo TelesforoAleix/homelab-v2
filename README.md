@@ -43,6 +43,9 @@ Solid parts are built; dashed parts are planned.
 - Knowledge endpoints: `POST /v1/knowledge/query` and `/v1/knowledge/answer`; jobs persist in Postgres.
 - Hosted images use three `image-*` purposes through LiteLLM, with capability profiles at
   `GET /v1/model/info`, reference edits and a separate $20 monthly gateway-key budget.
+  Image responses report decimal USD in `x-homelab-cost-usd` when known, including charged
+  failures. `GET /v1/images/cost` returns the bearer key's UTC month, `total_usd` string and
+  `charged_calls` count. The owner receives monthly 80% and 100% budget alerts through Telegram.
 - [ARCHITECTURE.md](ARCHITECTURE.md) explains the boundaries and rules;
   [DECISIONS.md](DECISIONS.md) records the choices behind them.
 

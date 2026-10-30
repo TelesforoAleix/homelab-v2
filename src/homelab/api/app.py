@@ -5,13 +5,16 @@ from __future__ import annotations
 import json
 import logging
 import re
+from asyncio import to_thread
 from contextlib import asynccontextmanager
 from time import monotonic
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StrictBool, StrictInt, ValidationError, field_validator
 
 from homelab import __version__
+from homelab.api import image_costs
 from homelab.jobs.app import app as jobs_app
 from homelab.jobs.tasks import ingest_brain
 from homelab.knowledge.index import build_stores
@@ -128,11 +131,22 @@ def answer_from_chunks(question: str, chunks: list[Chunk]) -> KnowledgeAnswerRes
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     configure_logging()
+    await to_thread(image_costs.migrate)
     async with jobs_app.open_async():
         yield
 
 
 app = FastAPI(title="Home Lab", version=__version__, lifespan=lifespan)
+
+
+@app.get("/v1/images/cost")
+def image_cost_total(request: Request):
+    if request.query_params:
+        return JSONResponse({"error": "Query parameters are not offered"}, status_code=400)
+    scheme, _, key = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not key.strip():
+        return JSONResponse({"error": "Bearer client key required"}, status_code=401)
+    return image_costs.current_total(key)
 
 
 @app.get("/health")

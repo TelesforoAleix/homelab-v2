@@ -1,0 +1,13 @@
+[Unit]
+Description=Check Home Lab image budget every three minutes
+ConditionPathIsMountPoint=/srv/homelab
+After=homelab-data.target
+PartOf=homelab-data.target
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=3min
+Unit=homelab-image-cost-notice.service
+
+[Install]
+WantedBy=homelab-data.target

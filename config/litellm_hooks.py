@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import re
 import sys
 from contextvars import ContextVar
+from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from time import monotonic
 
@@ -15,13 +19,15 @@ import yaml
 from fastapi import HTTPException
 from litellm.constants import RETURN_RAW_MODEL_NAME_METADATA_KEY
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 from litellm.proxy.route_llm_request import ProxyModelNotFoundError
+from openai import AsyncOpenAI
 from openai.types.chat.completion_create_params import CompletionCreateParamsBase
 from openai.types.embedding_create_params import EmbeddingCreateParams
 from openai.types.image_edit_params import ImageEditParamsBase
 from openai.types.image_generate_params import ImageGenerateParamsBase
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 # Read the single config, rather than duplicating its aliases or real model names in code.
 config = yaml.safe_load(Path(os.environ["CONFIG_FILE_PATH"]).read_text())
@@ -34,6 +40,170 @@ audit: ContextVar[dict | None] = getattr(sys.modules.get(__name__), "audit", Non
 )
 logger = logging.getLogger("homelab.models")
 MAC_LOAD_FAILURE = "The Mac could not load this model now (often for lack of memory); try later"
+
+
+def usd_amount(value):
+    if isinstance(value, (bool, dict, list)) or value is None:
+        return None
+    try:
+        amount = Decimal(str(value))
+        if amount.is_finite() and amount >= 0 and (amount == 0 or -18 <= amount.adjusted() <= 18):
+            return amount
+    except (InvalidOperation, ValueError):
+        pass
+    return None
+
+
+def image_event(event):
+    return (
+        event is not None and model_info.get(event["purpose"], {}).get("mode") == "image_generation"
+    )
+
+
+def capture_metadata(body, event):
+    if not isinstance(body, dict):
+        return
+    metadata = body.get("providerMetadata", body.get("provider_metadata", {}))
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("gateway"), dict):
+        return
+    gateway = metadata["gateway"]
+    # gatewayCost is the actual balance debit, including surcharges. The direct
+    # image proof also returned the identical amount in cost; inferenceCost is not billed cost.
+    amount = usd_amount(gateway.get("gatewayCost"))
+    if amount is None:
+        amount = usd_amount(gateway.get("cost"))
+    if amount is not None:
+        event["vercel_metadata_cost"] = amount
+
+
+def strip_provider_metadata(value):
+    if isinstance(value, dict):
+        return {
+            key: strip_provider_metadata(item)
+            for key, item in value.items()
+            if key not in {"providerMetadata", "provider_metadata"}
+        }
+    if isinstance(value, list):
+        return [strip_provider_metadata(item) for item in value]
+    return value
+
+
+def clean_image_body(raw, content_type, event):
+    if "text/event-stream" not in content_type:
+        body = json.loads(raw)
+        capture_metadata(body, event)
+        return json.dumps(strip_provider_metadata(body), separators=(",", ":")).encode()
+    blocks = []
+    for block in raw.decode().replace("\r\n", "\n").split("\n\n"):
+        lines = block.splitlines()
+        data = "\n".join(line[5:].lstrip(" ") for line in lines if line.startswith("data:"))
+        if data and data != "[DONE]":
+            body = json.loads(data)
+            capture_metadata(body, event)
+            lines = [line for line in lines if not line.startswith("data:")]
+            lines.append(
+                "data: " + json.dumps(strip_provider_metadata(body), separators=(",", ":"))
+            )
+        if lines:
+            blocks.append("\n".join(lines))
+    return ("\n\n".join(blocks) + "\n\n").encode()
+
+
+async def capture_image_response(response):
+    event = audit.get()
+    if not image_event(event):
+        return
+    # No billed-cost header was present in the live proof. Recognize the explicit
+    # gateway cost header if supplied; never treat LiteLLM's estimate as a provider debit.
+    amount = usd_amount(response.headers.get("x-vercel-ai-gateway-cost"))
+    if amount is not None:
+        event["vercel_header_cost"] = amount
+    event["cost_month"] = datetime.now(UTC).date().replace(day=1)
+    raw = await response.aread()
+    try:
+        # Observe before the SDK's schema validation: an HTTP 200 with an unusable
+        # image (or a rejected ImageResponse schema) may already have been charged.
+        clean_image_body(raw, response.headers.get("content-type", ""), event)
+    except (ValueError, UnicodeError):
+        pass
+
+
+async def persist_image_cost(key, cost, month):
+    import psycopg
+
+    async with await psycopg.AsyncConnection.connect(
+        os.environ["HOMELAB_DATABASE_URL"], connect_timeout=5
+    ) as connection:
+        await connection.execute(
+            """INSERT INTO homelab_image_costs (client_key_hash, month, total_usd, charged_calls)
+            VALUES (%s, %s, %s, 1)
+            ON CONFLICT (client_key_hash, month) DO UPDATE
+            SET total_usd = homelab_image_costs.total_usd + EXCLUDED.total_usd,
+                charged_calls = homelab_image_costs.charged_calls + 1""",
+            (hashlib.sha256(key.encode()).hexdigest(), month, cost),
+        )
+
+
+async def ensure_image_accounting():
+    import psycopg
+
+    async with await psycopg.AsyncConnection.connect(
+        os.environ["HOMELAB_DATABASE_URL"], connect_timeout=5
+    ) as connection:
+        await connection.execute("SELECT 1 FROM homelab_image_costs LIMIT 0")
+
+
+async def finish_image_response(response, event, request):
+    computed = usd_amount(response.headers.get("x-litellm-response-cost"))
+    status = response.status_code
+    try:
+        raw = (
+            b"".join([part async for part in response.body_iterator])
+            if hasattr(response, "body_iterator")
+            else response.body
+        )
+    except Exception:
+        raw, status = b"", 502
+    headers = {
+        name: value
+        for name, value in response.headers.items()
+        if name.lower() in {"content-type", "cache-control", "retry-after"}
+    }
+    if status < 400:
+        try:
+            raw = clean_image_body(raw, headers.get("content-type", ""), event)
+            response = Response(raw, status_code=status, headers=headers)
+        except (ValueError, UnicodeError):
+            status = 502
+    if status >= 400:
+        response = (
+            error_response(
+                402,
+                "Monthly image budget exhausted; resets on the 1st at 00:00 UTC",
+                "quota_for_entity_exceeded",
+            )
+            if status == 402
+            else error_response(status, "Image request failed")
+        )
+        for name in ("retry-after", "cache-control"):
+            if name in headers:
+                response.headers[name] = headers[name]
+    cost = event.get("vercel_header_cost", event.get("vercel_metadata_cost"))
+    if cost is None and status < 400 and computed is not None and computed > 0:
+        cost = computed
+    if cost is not None and (status < 400 or cost > 0):
+        _, _, key = request.headers.get("authorization", "").partition(" ")
+        try:
+            await persist_image_cost(
+                key, cost, event.get("cost_month", datetime.now(UTC).date().replace(day=1))
+            )
+        except Exception:
+            # Return the confirmed charge even if persistence fails; never encourage a
+            # silent retry of an already billed call or emit database diagnostics.
+            logger.error("image_cost_record_failed cost_usd=%s", format(cost, "f"))
+            response = error_response(503, "Image cost could not be recorded")
+        response.headers["x-homelab-cost-usd"] = format(cost, "f")
+    return response
 
 
 def mac_load_failed(purpose, exception):
@@ -125,7 +295,12 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         started = monotonic()
-        event = {"purpose": "unknown", "real_model": "none", "upstream": False}
+        event = {
+            "purpose": "unknown",
+            "real_model": "none",
+            "upstream": False,
+            "image_edit": path == "/v1/images/edits",
+        }
         token = audit.set(event)
         status = 500
 
@@ -146,6 +321,8 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
             fields = None
             if path == "/v1/models" and request.method == "GET":
                 event["purpose"] = "models"
+            elif path == "/v1/images/cost" and request.method == "GET":
+                event["purpose"] = "image-cost"
             elif path == "/v1/model/info" and request.method == "GET":
                 event["purpose"] = "model-info"
             elif path == "/v1/images/edits" and request.method == "POST":
@@ -218,6 +395,12 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                     elif path == "/v1/embeddings" and (error := input_type_error(body)):
                         # The proxy decodes some token arrays before its pre-call hook.
                         response = error_response(400, error)
+                    elif image_entry and (
+                        request.headers.get("authorization", "").split(" ", 1)[0].lower()
+                        != "bearer"
+                        or not request.headers.get("authorization", "").partition(" ")[2].strip()
+                    ):
+                        response = error_response(401, "Bearer client key required")
                     else:
                         # Client keys are accepted but never forwarded upstream. Drop custom
                         # headers, including LiteLLM routing and debug controls.
@@ -228,7 +411,18 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                         ]
                         response = await call_next(request)
             else:
-                if path == "/v1/model/info":
+                if path == "/v1/images/cost":
+                    async with httpx.AsyncClient(trust_env=False, timeout=10) as client:
+                        result = await client.get(
+                            os.environ["HOMELAB_IMAGE_COST_API_URL"],
+                            headers={"authorization": request.headers.get("authorization", "")},
+                        )
+                    response = (
+                        JSONResponse(result.json())
+                        if result.status_code == 200
+                        else error_response(result.status_code, "Image cost total unavailable")
+                    )
+                elif path == "/v1/model/info":
                     # Build the allow-list projection from the route table. Never serialize
                     # LiteLLM's expanded deployment entries (URLs, key references, metadata).
                     response = JSONResponse(
@@ -264,25 +458,9 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                         pass
                 response = error_response(503, MAC_LOAD_FAILURE, "service_unavailable_error")
                 status = 503
-            if (
-                event["purpose"] in model_info
-                and model_info[event["purpose"]].get("mode") == "image_generation"
-                and status >= 400
-            ):
-                # Image handlers do not all use the failure hook's returned exception.
-                # Discard their response body too, so provider diagnostics cannot escape.
-                if hasattr(response, "body_iterator"):
-                    async for _ in response.body_iterator:
-                        pass
-                response = (
-                    error_response(
-                        402,
-                        "Monthly image budget exhausted; resets on the 1st at 00:00 UTC",
-                        "quota_for_entity_exceeded",
-                    )
-                    if status == 402
-                    else error_response(status, "Image request failed")
-                )
+            if image_event(event):
+                response = await finish_image_response(response, event, request)
+                status = response.status_code
             # Provider URLs and deployment diagnostics are not part of the client contract.
             for name in list(response.headers):
                 if name.lower() not in {
@@ -290,6 +468,7 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                     "content-length",
                     "cache-control",
                     "retry-after",
+                    *(["x-homelab-cost-usd"] if image_event(event) else []),
                 }:
                     del response.headers[name]
 
@@ -312,9 +491,18 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                 record()
             return response
         except Exception:
+            if image_event(event):
+                response = await finish_image_response(
+                    error_response(500, "Image request failed"), event, request
+                )
+                status = response.status_code
+                record()
+                return response
             record()
             return error_response(500, "Model endpoint failed")
         finally:
+            if event.get("image_client") is not None:
+                await event["image_client"].close()
             audit.reset(token)
 
 
@@ -393,6 +581,34 @@ class PurposeHooks(CustomLogger):
                 event["profile_blocked"] = True
                 raise HTTPException(503, "Model call failed")
             kwargs["timeout"] = httpx.Timeout(spec["timeout"], connect=info["connect_timeout"])
+        if image_event(event):
+            # Use each native handler's supported client type. The libraries still
+            # own authentication, multipart encoding and response parsing.
+            if event.get("image_client") is None:
+                try:
+                    await ensure_image_accounting()
+                except Exception:
+                    raise HTTPException(503, "Image accounting unavailable") from None
+                _, spec, info = route(event["purpose"])
+                api_key = spec["api_key"]
+                if api_key.startswith("os.environ/"):
+                    api_key = os.environ[api_key.removeprefix("os.environ/")]
+                if not event["image_edit"]:
+                    event["image_client"] = AsyncOpenAI(
+                        api_key=api_key,
+                        base_url=spec["api_base"],
+                        timeout=spec["timeout"],
+                        max_retries=0,
+                        http_client=httpx.AsyncClient(
+                            trust_env=False, event_hooks={"response": [capture_image_response]}
+                        ),
+                    )
+                else:
+                    event["image_client"] = AsyncHTTPHandler(
+                        timeout=spec["timeout"],
+                        event_hooks={"response": [capture_image_response]},
+                    )
+            kwargs["client"] = event["image_client"]
         if event is not None:
             event["upstream"] = True
         return kwargs

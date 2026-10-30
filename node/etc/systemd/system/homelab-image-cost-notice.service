@@ -1,0 +1,22 @@
+[Unit]
+Description=Home Lab monthly image budget alerts
+ConditionPathIsMountPoint=/srv/homelab
+After=homelab.service network-online.target
+PartOf=homelab-data.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/homelab-image-cost-notice
+LoadCredentialEncrypted=bot-token:/etc/homelab-telegram-bot/token.cred
+TimeoutStartSec=180
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

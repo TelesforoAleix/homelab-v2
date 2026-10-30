@@ -715,3 +715,19 @@ need credentials and may update a copy while a client is connected. Serena’s p
 configuration and TypeScript server are controlled by the image, and projects are untrusted,
 so a repository cannot select executable language-server settings. Temporary runtime files
 live in a container tmpfs and the reusable index stays on the encrypted data volume.
+
+**2026-10-30 — Image cost is captured before parsing, and alerts remain on the host.**
+The live low-quality Flare proof billed USD 0.00597 in Vercel's
+`providerMetadata.gateway.gatewayCost` and `cost`, with no billed-cost header. The owner
+approved body metadata after a billed header, then a positive LiteLLM estimate, as sources
+for the single `x-homelab-cost-usd` client header. Observe the library's raw HTTP response
+before schema validation so charged parser failures remain visible; remove provider metadata
+before delivery. Image SSE must finish before headers can carry confirmed final cost.
+One numeric monthly aggregate table stores SHA-256 client-key identifiers and an empty-key
+monthly sentinel for two alert flags. A host timer uses the existing encrypted Telegram
+credential through Docker exec and the notifier, rather than exposing credentials or host
+control to containers. Send acknowledgement is committed per threshold under a row lock;
+an ambiguous crash after Telegram delivery can duplicate a notice because that API has no
+idempotent send operation. Historical/out-of-proxy usage is not reconstructed, and Vercel's
+budget remains authoritative. Arbitrary bearer keys identify trusted clients by possession;
+they are not newly registered LiteLLM virtual keys.
