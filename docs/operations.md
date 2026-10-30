@@ -449,7 +449,7 @@ Send images as `data:` URLs. When the Mac is stopped, `vision` returns a generic
 or fallback happens automatically. Chat responses report the purpose; embedding responses
 report the real embedding model, which clients must record at ingest. An embedding model
 change requires a new index. Unknown names, provider model ids and unavailable tiers receive
-a 4xx without an upstream call. The accepted client key provides no access control today:
+a 4xx without an upstream call. The accepted client key does not restrict model access:
 attach only trusted clients to this network. Provider/routing overrides and remote image URLs
 are refused; configuration and management endpoints are not exposed. New purposes and optional
 request fields can be added to `/v1`; breaking changes require `/v2`.
@@ -552,6 +552,48 @@ resets on the 1st at 00:00 UTC, and is a soft cap: the request crossing the budg
 Later calls return HTTP 402 with `error.type: quota_for_entity_exceeded` and the fixed
 message `Monthly image budget exhausted; resets on the 1st at 00:00 UTC`.
 Do not retry until the reset or an owner budget change. Chat uses its existing key.
+
+Image responses add only `x-homelab-cost-usd`, a decimal USD amount, when billing is known.
+Read it even on errors or an HTTP 200 with no usable image; a charged failure still counts.
+Vercel's billed header takes priority when present, followed by
+`providerMetadata.gateway.gatewayCost` (or `cost`) from its body, followed by LiteLLM's positive
+computed cost. Provider metadata and all other provider headers are removed. Missing cost is
+unknown, not zero. The direct low-quality 1024×1024 Flare inspection returned HTTP 200, one
+image, no billed-cost header and USD 0.00597 in both Vercel metadata fields. The gateway
+observer runs before schema parsing, so a parser failure does not erase a charge. Image SSE
+responses are buffered until completion to set the header and strip metadata.
+
+With the same client bearer key, call `GET /v1/images/cost` at the model endpoint (also offered
+by the loopback API on port 8000). It accepts no query parameters and returns:
+
+```json
+{"month":"2026-10","total_usd":"0.00597","charged_calls":1}
+```
+
+`month` is the current UTC calendar month. A new key or month returns `"0"` and zero calls.
+No key selector is accepted; only possession of the bearer key selects a total. These remain
+trusted-client keys without registration or central authentication. Image calls now require
+a nonempty bearer key so every reported charge has an owner. Costs use exact Postgres numeric
+addition and key hashes; the API applies `image_costs.sql` at startup. Unknown-cost calls,
+earlier usage and calls outside the proxy are absent from these totals. Compare matching
+periods with Vercel; the local counter does not replace its dashboard or enforce its budget.
+If recording a confirmed charge fails, the response is a fixed 503 with the charge header;
+do not automatically repeat that paid call. The journal records only the numeric cost and a
+fixed accounting-failure marker.
+
+The hook checks that the accounting table is reachable before sending an image upstream;
+startup migrations or a database outage therefore refuse new paid work with 503.
+
+`homelab-image-cost-notice.timer` runs every three minutes while the volume is unlocked.
+Its host service reads the same table through `docker compose exec -T api`, sends plain text
+through the existing encrypted credential and notifier, and records successful 80% and 100%
+deliveries in monthly sentinel rows. `HOMELAB_IMAGE_MONTHLY_BUDGET_USD` in Compose defaults to
+20 and controls only these alerts; changing it does not change Vercel's budget. Failed sends
+remain pending for the next tick. Concurrent senders are serialized. A crash after Telegram
+accepts a message but before its database acknowledgement can repeat it; Telegram supplies
+no idempotency key for that boundary. No production thresholds are fabricated for tests.
+Check with `systemctl status homelab-image-cost-notice.timer` and
+`journalctl -u homelab-image-cost-notice.service`. The rebuild steps install and enable it.
 
 Profile sources, checked 2026-10-14: the [gateway catalogue](https://ai-gateway.vercel.sh/v1/models),
 [gateway image API](https://vercel.com/docs/ai-gateway/modalities/image-generation/openai),
@@ -1655,6 +1697,7 @@ SSH accounts work through Tailscale.
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-context /usr/local/sbin/homelab-context
    sudo install -m 0644 -o root -g root node/opt/homelab-context/* /opt/homelab-context/
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-queue-notice /usr/local/sbin/homelab-queue-notice
+   sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-image-cost-notice /usr/local/sbin/homelab-image-cost-notice
    sudo install -d -m 0700 -o root -g root /var/lib/homelab-copy
    sudo install -m 0755 -o root -g root node/usr/local/sbin/*.sh /usr/local/sbin/
    sudo install -m 0644 -o root -g root node/opt/homelab-telegram-bot/*.py /opt/homelab-telegram-bot/
@@ -1681,6 +1724,7 @@ SSH accounts work through Tailscale.
    sudo visudo -c
    sudo sshd -t
    sudo systemd-analyze --generators=yes verify /etc/systemd/system/homelab.service /etc/systemd/system/homelab-data.target /etc/systemd/system/homelab-notify@.service /etc/systemd/system/homelab-watchdog.service /etc/systemd/system/homelab-watchdog.timer /etc/systemd/system/homelab-telegram-bot.service /etc/systemd/system/homelab-bot-data-ready.service /etc/systemd/system/homelab-bot-data-released.service /etc/systemd/system/wifi-powersave-off.service /etc/systemd/system/homelab-copy-reminder.service /etc/systemd/system/homelab-copy-reminder.timer /etc/systemd/system/homelab-context-refresh.service /etc/systemd/system/homelab-context-refresh.timer
+   sudo systemd-analyze verify /etc/systemd/system/homelab-image-cost-notice.service /etc/systemd/system/homelab-image-cost-notice.timer
    ```
 
    The context image and its private repository list are set up after Docker and the data
@@ -1747,7 +1791,7 @@ SSH accounts work through Tailscale.
    sudo systemctl reload ssh.service
    sudo systemctl disable docker.service docker.socket containerd.service
    sudo systemctl enable --now tailscaled.service chrony.service wifi-powersave-off.service
-   sudo systemctl enable homelab-telegram-bot.service homelab-bot-data-ready.service homelab-watchdog.timer homelab-copy-reminder.timer homelab-context-refresh.service homelab-context-refresh.timer
+   sudo systemctl enable homelab-telegram-bot.service homelab-bot-data-ready.service homelab-watchdog.timer homelab-copy-reminder.timer homelab-context-refresh.service homelab-context-refresh.timer homelab-image-cost-notice.timer
    sudo ufw default deny incoming
    sudo ufw default allow outgoing
    sudo ufw default deny routed

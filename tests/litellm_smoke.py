@@ -136,9 +136,20 @@ class Upstream(BaseHTTPRequestHandler):
         if body.get("messages", [{}])[0].get("content") == CONTENT + ":fail":
             self.wfile.write(json.dumps({"error": {"message": CONTENT + KEY + REAL_CHAT}}).encode())
         elif self.path.startswith("/v1/images/"):
-            self.wfile.write(
-                json.dumps({"created": 1, "data": [{"b64_json": IMAGE.split(",", 1)[1]}]}).encode()
-            )
+            payload = {"created": 1, "data": [{"b64_json": IMAGE.split(",", 1)[1]}]}
+            if body.get("prompt") != CONTENT + ":cost-none":
+                payload["providerMetadata"] = {
+                    "gateway": {
+                        "gatewayCost": "0.00597",
+                        "cost": "0.008",
+                        "routing": {"provider": CONTENT + KEY},
+                    }
+                }
+            if body.get("prompt") == CONTENT + ":charged-empty":
+                payload["data"] = []
+            if body.get("prompt") == CONTENT + ":charged-schema":
+                payload["usage"] = {"input_tokens_details": None}
+            self.wfile.write(json.dumps(payload).encode())
         elif self.path == "/v1/embeddings":
             self.wfile.write(
                 json.dumps(
@@ -173,6 +184,9 @@ class Upstream(BaseHTTPRequestHandler):
                 },
             }
             if body.get("modalities") == ["text", "image"]:
+                response["providerMetadata"] = {
+                    "gateway": {"gatewayCost": "0.00597", "routing": {"provider": CONTENT}}
+                }
                 response["choices"][0]["message"]["images"] = [
                     {"type": "image_url", "image_url": {"url": IMAGE}}
                 ]
@@ -266,6 +280,19 @@ def run(unset=False):
                 image_secret.write_text(IMAGE_KEY)
                 image_secret.chmod(0o440)
                 app = create_app(str(path), str(secret), str(image_secret))
+                import litellm_hooks
+
+                charged_calls = []
+
+                async def persist_cost(key, cost, month):
+                    charged_calls.append((key, cost, month))
+
+                litellm_hooks.persist_image_cost = persist_cost
+
+                async def accounting_ready():
+                    pass
+
+                litellm_hooks.ensure_image_accounting = accounting_ready
                 logger = logging.getLogger("homelab.models")
                 logger.handlers = [logging.StreamHandler(output)]
                 with TestClient(app) as client:
@@ -383,6 +410,9 @@ def run(unset=False):
                                 assert "response_format" not in requests[-1][1]
                         assert requests[-1][1]["model"] == row["litellm_params"]["model"][7:]
                         assert requests[-1][2] == "Bearer " + IMAGE_KEY
+                        assert response.headers["x-homelab-cost-usd"] == "0.00597"
+                        assert "providerMetadata" not in response.text
+                        assert "routing" not in response.text
                     response = client.post(
                         "/v1/images/generations",
                         headers=headers,
@@ -398,6 +428,36 @@ def run(unset=False):
                     assert response.status_code == 200, response.text
                     assert requests[-1][2] == "Bearer " + IMAGE_KEY
                     assert requests[-1][1]["output_format"] == "png"
+                    assert response.headers["x-homelab-cost-usd"] == "0.00597"
+                    for suffix, expected_status, expected_cost in [
+                        (":charged-empty", 200, "0.00597"),
+                        (":charged-schema", 500, "0.00597"),
+                        (":cost-none", 200, None),
+                    ]:
+                        before = len(charged_calls)
+                        before_upstream = len(requests)
+                        response = (
+                            client.post(
+                                "/v1/images/edits",
+                                headers=headers,
+                                data={"model": "image-gpt-2.5-flare", "prompt": CONTENT + suffix},
+                                files={"image": ("a.png", b"synthetic", "image/png")},
+                            )
+                            if suffix == ":charged-schema"
+                            else client.post(
+                                "/v1/images/generations",
+                                headers=headers,
+                                json={"model": "image-gpt-2.5-flare", "prompt": CONTENT + suffix},
+                            )
+                        )
+                        calls += 1
+                        assert response.status_code == expected_status, response.text
+                        assert response.headers.get("x-homelab-cost-usd") == expected_cost
+                        assert "providerMetadata" not in response.text
+                        assert "x-provider-model" not in response.headers
+                        assert len(charged_calls) == before + int(expected_cost is not None)
+                        assert len(requests) == before_upstream + 1
+                    assert all(key == "arbitrary-client-key" for key, _, _ in charged_calls)
                     response = client.post(
                         "/v1/images/generations",
                         headers=headers,

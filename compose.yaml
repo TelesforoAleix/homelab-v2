@@ -10,6 +10,7 @@ x-app: &app
     HOMELAB_DATABASE_URL: postgresql://homelab:${HOMELAB_DB_PASSWORD}@postgres:5432/homelab
     HOMELAB_MODELS_BASE_URL: ${HOMELAB_MODELS_BASE_URL:-http://litellm:4000/v1}
     HOMELAB_MODELS_API_KEY: ${HOMELAB_MODELS_API_KEY:-homelab}
+    HOMELAB_IMAGE_MONTHLY_BUDGET_USD: ${HOMELAB_IMAGE_MONTHLY_BUDGET_USD:-20}
     HOMELAB_BRAIN_DIR: /data/brain
     HOMELAB_ACTIVE_COLLECTION: ${HOMELAB_ACTIVE_COLLECTION:-about_aleix}
     HOMELAB_CORPUS_FILE: ${HOMELAB_CORPUS_FILE:-/data/corpus/about-aleix/corpus.json}
@@ -37,6 +38,8 @@ services:
     user: "10001:10001"
     entrypoint: ["python", "/etc/litellm/litellm_entrypoint.py"]
     environment:
+      HOMELAB_DATABASE_URL: postgresql://homelab:${HOMELAB_DB_PASSWORD}@postgres:5432/homelab
+      HOMELAB_IMAGE_COST_API_URL: http://api:8000/v1/images/cost
       HOMELAB_MAC_VISION_URL: ${HOMELAB_MAC_VISION_URL:-http://127.0.0.1:9/v1}
       HOMELAB_MAC_EMBED_URL: ${HOMELAB_MAC_EMBED_URL:-http://127.0.0.1:9/v1}
       LITELLM_LOCAL_MODEL_COST_MAP: "True"

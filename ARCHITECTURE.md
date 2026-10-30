@@ -421,6 +421,34 @@ fields; a profile never carries both forms.
 Published nested settings are allowed only at their specified paths, preventing routing
 overrides inside provider options. Provider image errors are sanitized at the HTTP boundary.
 
+Image responses alone may add `x-homelab-cost-usd`, a decimal USD string. Cost precedence is
+Vercel's billed-cost header when supplied, then its body `providerMetadata.gateway.gatewayCost`
+(or `cost`), then a positive LiteLLM `x-litellm-response-cost`; otherwise the header is absent.
+The live GPT Image Flare proof returned no cost header and billed USD 0.00597 in both metadata
+fields. An HTTP response observer captures billing before LiteLLM's parser, so a charged
+parse failure retains the cost after error sanitization. Provider metadata is removed from
+all image response bodies. Image streams are buffered to finish billing and remove metadata
+before sending headers; their SSE format remains unchanged. Chat and embeddings are unchanged.
+
+The hook atomically adds each reported cost and one charged call to Postgres
+`homelab_image_costs`, keyed by SHA-256 of the bearer key and UTC calendar month. No prompts,
+images, raw keys or per-call ledger are stored. The API applies the idempotent one-table SQL
+migration at startup. `GET /v1/images/cost` returns only the supplied bearer key's current month
+as `{month: "YYYY-MM", total_usd: "decimal", charged_calls: integer}`; missing rows return zero.
+LiteLLM forwards this read to the private API, keeping other clients off the API network.
+Image calls and the read require a nonempty bearer key. Keys remain arbitrary trusted-client
+identities, without central registration: possession of a key grants access to its total.
+
+An empty-key sentinel row per month holds the two notification flags in that same table.
+Every three minutes, a host service reads total spend across client rows, compares it with
+`HOMELAB_IMAGE_MONTHLY_BUDGET_USD` (Compose default 20), and uses the existing TPM-sealed
+credential and `homelab-notify.sh` to send 80% and 100% notices. Row locks serialize senders;
+each successful notice commits its flag before proceeding. Failed sends remain pending.
+The host invokes the API's accounting command through Docker exec; no new secret, listener,
+channel or container privilege is added. These totals cover reported calls since deployment,
+not earlier gateway usage or calls made outside the proxy. They observe spend; rule 6's
+Vercel budget remains the enforcement boundary.
+
 Names are `purpose:tier`; image purposes and embeddings have no tiers. Clients
 choose tiers themselves. Two bounded native LiteLLM patterns also admit `vision-<id>` and
 `embed-large-bulk-<id>` to the Mac router. The hook validates id syntax and native preset/alias
@@ -443,8 +471,9 @@ Other Compose projects attach trusted clients to `homelab-models`. Only LiteLLM 
 named network, alongside the private default network it uses to reach both embedding servers.
 Postgres, API and both embedding servers do not join the client network. LiteLLM publishes
 only `127.0.0.1:4000`, for the host Telegram bot.
-The key sent by a client is accepted and ignored; there is no master key, database, UI or
-virtual key configuration. HTTP middleware exposes `GET /v1/models`, `GET /v1/model/info`,
+The key sent by a client is never forwarded upstream; only image accounting uses its hash.
+There is no master key, LiteLLM-managed database, UI or virtual key configuration.
+HTTP middleware exposes `GET /v1/models`, `GET /v1/model/info`, `GET /v1/images/cost`,
 `POST /v1/chat/completions`, `POST /v1/embeddings`, `POST /v1/images/edits`,
 `POST /v1/images/generations` and
 liveness; management endpoints and LiteLLM-specific request fields are refused. Provider
