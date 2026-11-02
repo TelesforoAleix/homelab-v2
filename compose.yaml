@@ -40,6 +40,7 @@ services:
     environment:
       HOMELAB_DATABASE_URL: postgresql://homelab:${HOMELAB_DB_PASSWORD}@postgres:5432/homelab
       HOMELAB_IMAGE_COST_API_URL: http://api:8000/v1/images/cost
+      PYTHONPATH: /opt/homelab-api
       HOMELAB_MAC_VISION_URL: ${HOMELAB_MAC_VISION_URL:-http://127.0.0.1:9/v1}
       HOMELAB_MAC_EMBED_URL: ${HOMELAB_MAC_EMBED_URL:-http://127.0.0.1:9/v1}
       LITELLM_LOCAL_MODEL_COST_MAP: "True"
@@ -54,7 +55,7 @@ services:
       - image_gateway_api_key
     volumes:
       - ./config:/etc/litellm:ro
-      - ./src/homelab/api/video_jobs.py:/etc/litellm/video_jobs.py:ro
+      - ./src/homelab/api/video_jobs.py:/opt/homelab-api/video_jobs.py:ro
     networks:
       - default
       - models

@@ -250,3 +250,20 @@ def test_large_embeddings_are_private_cpu_only_and_hardened():
     assert services["litellm"]["depends_on"]["llama-embed-large"] == {
         "condition": "service_started"
     }
+
+
+def test_proxy_module_mount_does_not_need_a_mountpoint_inside_readonly_config():
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
+    proxy = compose["services"]["litellm"]
+    mounts = [volume.split(":") for volume in proxy["volumes"]]
+    for index, (_, target, mode) in enumerate(mounts):
+        if mode != "ro":
+            continue
+        # runc cannot create a missing child mountpoint beneath a read-only bind.
+        assert not any(
+            other.startswith(target + "/")
+            for offset, (_, other, _) in enumerate(mounts)
+            if offset != index
+        )
+    module = next(target for source, target, _ in mounts if source.endswith("/video_jobs.py"))
+    assert str(Path(module).parent) in proxy["environment"]["PYTHONPATH"].split(":")
