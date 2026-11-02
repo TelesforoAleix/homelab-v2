@@ -324,10 +324,35 @@ def run(unset=False):
                         "data": [
                             {
                                 "model_name": row["model_name"],
-                                "model_info": row.get("model_info", {}),
+                                "model_info": {
+                                    key: value
+                                    for key, value in row.get("model_info", {}).items()
+                                    if key
+                                    not in {
+                                        "provider_options_key",
+                                        "provider_defaults",
+                                        "source_required",
+                                        "resolution_options",
+                                    }
+                                },
                             }
-                            for row in config["model_list"]
-                        ]
+                            for row in config["model_list"] + config["media_model_list"]
+                        ],
+                        "operations": {
+                            operation: [
+                                row["model_name"]
+                                for row in config["model_list"] + config["media_model_list"]
+                                if operation in row.get("model_info", {}).get("operations", [])
+                            ]
+                            for operation in (
+                                "generate_image",
+                                "edit_image",
+                                "upscale_image",
+                                "image_to_video",
+                                "upscale_video",
+                                "edit_video",
+                            )
+                        },
                     }
                     assert "litellm_params" not in response.text and "api_base" not in response.text
                     assert "127.0.0.1" not in response.text

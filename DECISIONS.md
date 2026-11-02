@@ -731,3 +731,49 @@ an ambiguous crash after Telegram delivery can duplicate a notice because that A
 idempotent send operation. Historical/out-of-proxy usage is not reconstructed, and Vercel's
 budget remains authoritative. Arbitrary bearer keys identify trusted clients by possession;
 they are not newly registered LiteLLM virtual keys.
+
+**2026-11-02 — Native gateway video jobs share image accounting and expose operation discovery.**
+Keep video out of LiteLLM's direct-provider `/videos` implementation: its route does not reach
+Vercel. Follow the [gateway SDK HTTP implementation](https://github.com/vercel/ai/blob/main/packages/gateway/src/gateway-video-model.ts),
+with v4 native `/video-model/start`, `/video-model/status` and SSE `/video-model`. Persist only
+the Home Lab job metadata and opaque upstream operation. Reserve 8 KiB under the documented
+300 KiB async-body limit; larger inline requests stay in a non-retryable asyncio task in the
+existing gateway process. Passing their bodies into Procrastinate would persist prompts/media,
+contrary to this contract. A restart resumes saved async references but fails interrupted
+single requests without replay. Their final content is memory-only, bounded to 16 results
+and one hour. Lost/ambiguous charges are reconciled in Vercel rather than guessed or retried.
+An optional client idempotency token derives the job UUID from the client-key hash and token;
+the primary key deduplicates starts without storing request bodies or another index. The same
+job UUID is the stable upstream idempotency key. A locked job row and the existing monthly
+aggregate update commit together, recording a
+success or charged failure once. The existing budget, alert thresholds and image behavior stay.
+
+Choose models from the [live catalogue](https://ai-gateway.vercel.sh/v1/models) and Vercel's
+[video modality docs](https://vercel.com/docs/ai-gateway/modalities/video-generation), checked
+2026-11-02. `video-grok-lite` is the cheap image-to-video default at $0.02/s for 480p with a
+one-second minimum and inline inputs; `video-kling-turbo` adds documented first/last-frame
+control at $0.042/s in std mode; map 720p to std and 1080p to pro ($0.07/s),
+because the SDK warns that its generic resolution field is ignored; `video-grok` adds video editing at $0.05/s for 480p and
+$0.07/s for 720p. Grok's native API accepts a base64 data URL for source video, carried by the
+SDK's `videoUrl` option. Do not pass a client-supplied URL. Seedance's cheaper catalogue prices
+do not qualify because Vercel documents hosted-image inputs. HeyGen's $0.01/s route always
+produces audio, so it is excluded from this no-audio default and acceptance selection.
+First-frame and reference-image controls cannot be combined on the selected models; refuse
+that request rather than emit a warning and silently ignore the start image. Grok's general
+reference-image capability is published with this combination restriction. Editing accepts
+neither reference images nor output duration/resolution controls.
+
+Topaz is the documented native upscale option. Use the single verified `image-upscale-wonder`
+and `video-upscale-proteus` as their operations' defaults. The owner explicitly allowed one to
+four verified models per operation, and null pricing where no published price can be found.
+Vercel's [Wonder page](https://vercel.com/ai-gateway/models/wonder-3.5) publishes a starting
+$0.08/image and [Proteus page](https://vercel.com/ai-gateway/models/proteus) a minimum
+$0.08/video, although `/v1/models` has empty Topaz pricing. Publish those as marked minima,
+not invented per-resolution quotes. Proteus accepts inline file bytes through inputReferences;
+Home Lab never uploads to public storage. Its fixed output controls discard audio and use MP4
+with H.264. Starlight is omitted because its required accurate source metadata complicates the
+client without adding an operation. Wonder uses the same native v4 image transport, exposed
+as a new multipart image-edit purpose; the existing image purposes remain on LiteLLM.
+GPT and Nano profiles gain operations, capability and price projections from their existing
+profiles, retaining their output estimates and reference charges. No general image model is
+misrepresented as an upscaler. One default per supported operation is advertised.

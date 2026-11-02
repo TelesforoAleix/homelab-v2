@@ -2465,3 +2465,43 @@ med-ask's originals directory is `root:10001` `2770`; preserve its file modes an
 replace an active application's originals. The owner should compare the first restore with
 the source before relying on the weekly copies. Rebuild code and derived stores separately.
 
+
+## Video jobs and image upscale
+
+The [media client contract](../README.md#image-studio-operations-and-video-jobs) lists paths,
+fields, models and prices. Video uses the existing image key; the Vercel $20 budget, monthly
+reset, and host 80%/100% alerts apply to combined image/video spending. The historical
+`GET /v1/images/cost` path and `homelab-image-cost-notice` unit names are unchanged.
+No provider key is added to the API or worker. The gateway mounts the transport module from
+`src/homelab/api/video_jobs.py` read-only, alongside the config; the API startup applies
+`video_jobs.sql` beside the existing image accounting migration.
+
+Job status and content require the creating client's bearer key. Fetch content promptly through
+the loopback gateway; never expose its URL or use a public upload to bypass inline size limits.
+Inputs are limited to a 48 MiB JSON body. Four background calls may be active, each up to one
+hour. Downloaded outputs are streamed, and completed results are kept only in memory, at most
+16 for up to one hour. A provider may expire its output sooner. Single-request results vanish
+on restart; saved async operations can be polled again while Vercel retains them.
+
+A gateway restart marks interrupted jobs without an upstream reference failed on the next
+video request. Do not retry them automatically: Vercel may already have billed them. A missing
+cost is unknown, not zero. Reconcile such calls with Vercel's dashboard. If final accounting
+fails temporarily, the next video request retries the pending transaction; restarting first
+can lose that in-memory confirmation. Known costs and terminal states commit atomically.
+No status read or content download charges a job again. Audit logs contain only UUID, configured
+purpose, state, duration and numeric cost; default HTTP/library diagnostics remain disabled.
+
+Read-only accounting checks from the node (no client keys or content):
+
+```bash
+sudo docker exec -i homelab-api-1 python - <<'PY'
+from homelab.api.image_costs import connect
+with connect() as c:
+    print(c.execute("SELECT status, count(*), sum(cost_usd) FROM homelab_video_jobs GROUP BY status").fetchall())
+PY
+```
+
+For a fake-charge concurrency proof against an isolated schema, run
+`python tests/video_store_proof.py --source-root <checkout>` in an environment with the API's
+Postgres connection. It creates a uniquely named test schema, proves exactly-once accounting
+and ownership, and removes only that schema; it does not call a provider or touch application rows.

@@ -12,7 +12,7 @@ Host Telegram bot ── loopback HTTP ───────────┤
                                             │ default network
                               ┌─────────────┴──────────────┐
                        Vercel AI Gateway       llama-embed / llama-embed-large
-                      (hosted chat/images)        (local embeddings)
+                      (hosted chat/images/video)        (local embeddings)
 
 api / worker ── Postgres + pgvector (private default network)
 ```
@@ -403,7 +403,7 @@ State stays private in the owner’s home. Image inputs must be `data:` URLs.
 
 Three hosted image purposes use the gateway through OpenAI-path entries:
 `image-nano-banana-2.1`, `image-gpt-2.5-flare`,
-and `image-gpt-2.5-sunburst`. Only these entries use
+and `image-gpt-2.5-sunburst`. These and the native media routes use
 `/run/secrets/image_gateway_api_key`, read into `HOMELAB_IMAGE_GATEWAY_API_KEY` by the
 entrypoint. It has the existing key's `root:10001` `0440` protection and a separate $20
 monthly budget set in Vercel. The cap is soft: the crossing request completes, then image
@@ -471,12 +471,12 @@ Other Compose projects attach trusted clients to `homelab-models`. Only LiteLLM 
 named network, alongside the private default network it uses to reach both embedding servers.
 Postgres, API and both embedding servers do not join the client network. LiteLLM publishes
 only `127.0.0.1:4000`, for the host Telegram bot.
-The key sent by a client is never forwarded upstream; only image accounting uses its hash.
+The key sent by a client is never forwarded upstream; only media accounting uses its hash.
 There is no master key, LiteLLM-managed database, UI or virtual key configuration.
 HTTP middleware exposes `GET /v1/models`, `GET /v1/model/info`, `GET /v1/images/cost`,
 `POST /v1/chat/completions`, `POST /v1/embeddings`, `POST /v1/images/edits`,
-`POST /v1/images/generations` and
-liveness; management endpoints and LiteLLM-specific request fields are refused. Provider
+`POST /v1/images/generations`, Home Lab's `POST /v1/videos`, `GET /v1/videos/{id}`,
+`GET /v1/videos/{id}/content` and liveness; management endpoints and LiteLLM-specific request fields are refused. Provider
 headers are removed and upstream errors are reduced to status and a generic message. `/v1`
 only grows through new purposes and optional fields; incompatible changes go under `/v2`.
 
@@ -563,3 +563,82 @@ including quotes). Only counts are exposed, without text or match details.
 8. Indexing is local (node, or the owner’s Mac for explicit bulk embedding calls); knowledge
    answering sends only the question and retrieved chunks off-node.
    Explicit vision calls send page images to the owner’s Mac or the selected hosted vision rung.
+
+## Media client contract
+
+The image studio uses the existing loopback model gateway with its own bearer client key.
+The [README contract](README.md#image-studio-operations-and-video-jobs) records the exact
+fields and model/price table. Discovery adds an `operations` mapping to `/v1/model/info`:
+`generate_image`, `edit_image`, `upscale_image`, `image_to_video`, `upscale_video`, `edit_video`.
+Each listed model's `model_info` supplies `operations`, `default_for`, USD `price` and
+`capabilities`: durations, resolutions, aspect ratios, audio, end frame, reference images,
+reference videos and mask. Operation-specific restrictions override general capabilities;
+Grok editing has no duration/resolution/aspect-ratio or audio controls. Kling resolution
+selects std (720p) or pro (1080p), since its SDK ignores the generic resolution field.
+Kling inherits aspect ratio from the start image and refuses the aspectRatio control. Unknown or unoffered operations
+have empty lists. One to four verified models may serve each operation, with one default.
+Existing image routes and estimates remain compatible. Topaz Wonder adds a native image
+upscale purpose on the same multipart `/v1/images/edits` path, returning base64 in `data`.
+
+Home Lab middleware owns `POST /v1/videos`, `GET /v1/videos/{id}` and
+`GET /v1/videos/{id}/content`; LiteLLM's own video routes are bypassed. The start body is
+JSON `{model, operation, prompt?, image?, endImage?, referenceImages?, video?, duration?,
+aspectRatio?, resolution?, generateAudio?, source?}`. Inputs are inline base64 data URIs;
+URLs, provider/routing options and query parameters are rejected. Generation requires a
+start image; upscale/edit require MP4 video. Only Kling accepts an end image in the current
+selection. Start-plus-reference combinations are refused because the selected models do
+not document preserving both controls. Source metadata for upscale is
+`{width,height,duration,frameRate,frameCount?}`. Bodies are limited to 48 MiB before upstream
+access; invalid fields and unsupported capabilities return 400, oversized bodies 413.
+
+An optional client `Idempotency-Key` (1–128 letters, digits or `_.:-`) derives a stable
+UUIDv5 from the key hash and request token. The jobs primary key deduplicates starts;
+repeating the token returns the original job, independent of body changes. Without the header,
+each POST is new. Raw tokens are not stored. A start stores metadata before returning 202 `{id,operation,model,status:"queued",cost_usd:null}`.
+Status reads use the same shape with `queued|running|completed|failed` and a decimal-string
+cost once known. SHA-256 of the bearer key selects owned jobs; other keys receive 404 for
+both status and content. Content streams bytes, returns 409 until completion and 410 after
+expiry. The video response-header allowlist is exactly `content-type`, `content-length`,
+`x-homelab-cost-usd`. Provider diagnostics, references and URLs never reach the client.
+
+Only the gateway holds the existing image-key secret. Config holds the media purposes and
+native model identifiers separately from LiteLLM's model list. The native transport follows
+Vercel's AI SDK v4 wire contract: POST `/v4/ai/video-model/start` with `ai-model-id`,
+`ai-video-model-specification-version: 4`, a server-generated UUID `idempotency-key`, and
+protocol header `ai-gateway-protocol-version: 0.0.1`, auth method `api-key`, and
+JSON `{prompt,n,image?,frameImages?,inputReferences?,duration?,resolution?,aspectRatio?,
+generateAudio?,providerOptions?}`. File values use `{type:"file",mediaType,data:<base64>}`.
+The start response's opaque `operation` is persisted; POST `/v4/ai/video-model/status` sends
+`{operation}` and receives `pending|completed|error`, with `videos` and provider metadata.
+For a wire body above 292 KiB (300 KiB minus Vercel's 8 KiB attribution allowance), the same
+inline body goes to `/v4/ai/video-model`, accepting SSE `result` or `error`. No input is hosted
+or uploaded by Home Lab. Grok edit uses a data URI in server-owned `spacexai.videoUrl`;
+Topaz upscale uses inline `inputReferences`. Native image upscale POSTs `/v4/ai/image-model`
+with the v4 image header and `{prompt:"",n:1,files:[file],size?}`.
+
+A bounded asyncio background task is the simple non-retryable executor for these gateway
+HTTP calls, with four active jobs and a one-hour deadline. It is not another persistent queue;
+Procrastinate continues to own the repository's durable job machinery. No prompt or media
+is placed in its task arguments or database. The API's startup accounting migration also
+creates `homelab_video_jobs`: UUID, key hash, operation, model purpose, opaque Vercel reference,
+status, numeric cost, created/updated times. No second media store or container is added.
+First video access after restart resumes jobs with a saved async reference; jobs without one
+become failed rather than repeating an ambiguous paid request. A crash before reference
+persistence, or during the single-request flow, can leave an unknown charge requiring Vercel
+reconciliation. It must not trigger an automatic client retry.
+
+Completed media is kept only in memory for up to one hour, at most 16 results, then discarded;
+no output file is written. Async content can be fetched again through its saved operation
+while Vercel retains it. Hosted outputs stream without a provider authorization header,
+redirects, cookies or provider headers; inline results stream in chunks. Results can expire
+upstream sooner. A single-request result is unavailable after a restart.
+
+Billed `providerMetadata.gateway.gatewayCost` (falling back to `cost`) is the only video debit.
+One row lock commits the job's first known cost and the monthly `homelab_image_costs` increment
+in the same Postgres transaction. Status and content reads cannot double-charge; charged
+failures count too. Video estimates are never money. Unknown remains null. The old
+`/v1/images/cost` name now totals images and video, with its existing response shape and bearer
+ownership. The $20 Vercel budget and host 80%/100% notifications are unchanged. Existing image
+cost-source precedence remains unchanged. A transient final-accounting failure retains the
+confirmed charge in memory and retries its transaction on the next video request; logs contain
+only job ID, configured purpose, state, timing and numeric cost, never input or diagnostics.
