@@ -300,6 +300,8 @@ class VideoGateway:
         ]:
             if field in body:
                 value = body[field]
+                if field == "aspectRatio" and not caps.get("aspect_ratio_control", True):
+                    raise ValueError
                 if isinstance(value, bool) or value not in caps[cap]:
                     raise ValueError
                 wire[field] = value
@@ -309,6 +311,8 @@ class VideoGateway:
         if operation == "upscale_video" and "resolution" not in wire:
             raise ValueError
         if "generateAudio" in body:
+            if operation == "edit_video":
+                raise ValueError
             value = body["generateAudio"]
             if not isinstance(value, bool) or (value and not caps["audio"]):
                 raise ValueError
@@ -334,6 +338,11 @@ class VideoGateway:
             wire.setdefault("providerOptions", {}).setdefault(
                 info["provider_options_key"], {}
             ).update(info["provider_defaults"])
+        if info.get("resolution_options"):
+            settings = info["resolution_options"][wire.pop("resolution")]
+            wire.setdefault("providerOptions", {}).setdefault(
+                info["provider_options_key"], {}
+            ).update(settings)
         return model, operation, wire
 
     async def handle(self, request):

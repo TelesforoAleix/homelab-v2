@@ -752,7 +752,8 @@ Choose models from the [live catalogue](https://ai-gateway.vercel.sh/v1/models) 
 [video modality docs](https://vercel.com/docs/ai-gateway/modalities/video-generation), checked
 2026-11-02. `video-grok-lite` is the cheap image-to-video default at $0.02/s for 480p with a
 one-second minimum and inline inputs; `video-kling-turbo` adds documented first/last-frame
-control at $0.042/s in std mode; `video-grok` adds video editing at $0.05/s for 480p and
+control at $0.042/s in std mode; map 720p to std and 1080p to pro ($0.07/s),
+because the SDK warns that its generic resolution field is ignored; `video-grok` adds video editing at $0.05/s for 480p and
 $0.07/s for 720p. Grok's native API accepts a base64 data URL for source video, carried by the
 SDK's `videoUrl` option. Do not pass a client-supplied URL. Seedance's cheaper catalogue prices
 do not qualify because Vercel documents hosted-image inputs. HeyGen's $0.01/s route always

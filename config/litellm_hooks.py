@@ -559,6 +559,7 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                                             "provider_options_key",
                                             "provider_defaults",
                                             "source_required",
+                                            "resolution_options",
                                         }
                                     },
                                 }

@@ -174,7 +174,7 @@ verified models may serve an operation; each supported operation has one default
 |---|---|---|
 | `generate_image`, `edit_image` | `image-gpt-2.5-flare`, `image-gpt-2.5-sunburst`, `image-nano-banana-2.1` | GPT output estimate: low .00588, medium .0132, high .05268, xhigh .09366, max .21072 per image; reference estimate .0122. Nano: 1K .0336, 2K .0504, 4K .1134 |
 | `upscale_image` | `image-upscale-wonder` | Starting at .08/image; full size tariff unavailable |
-| `image_to_video` | `video-grok-lite`, `video-kling-turbo`, `video-grok` | Lite: .02/.03/.14 per second at 480p/720p/1080p. Kling: .042 std, .07 pro per second (route uses std). Grok: .05/.07 per second at 480p/720p |
+| `image_to_video` | `video-grok-lite`, `video-kling-turbo`, `video-grok` | Lite: .02/.03/.14 per second at 480p/720p/1080p. Kling: .042 std, .07 pro per second (720p selects std, 1080p pro). Grok: .05/.07 per second at 480p/720p |
 | `upscale_video` | `video-upscale-proteus` | Starting at .08/video; full duration/resolution tariff unavailable |
 | `edit_video` | `video-grok` | .05/.07 per second at 480p/720p |
 
@@ -193,7 +193,8 @@ if the retry body differs. Without it, each accepted POST creates a new paid job
  "image":"data:image/png;base64,...","duration":1,"resolution":"854x480","generateAudio":false}
 ```
 
-`image_to_video` requires `image`; `endImage` is accepted for Kling. `referenceImages` is
+`image_to_video` requires `image`; `endImage` is accepted for Kling. Kling inherits the
+start image's aspect ratio and refuses `aspectRatio`; its resolution selects quality mode. `referenceImages` is
 reserved for profiles explicitly supporting references together with a start image; the
 current selection refuses that combination rather than silently ignoring the start frame.
 `upscale_video` requires `video: "data:video/mp4;base64,..."` and `resolution`; omit `prompt`

@@ -338,6 +338,9 @@ media_model_list:
       default_for: []
       provider_options_key: klingai
       provider_defaults: {mode: std, pollTimeoutMs: 3600000}
+      resolution_options:
+        1280x720: {mode: std}
+        1920x1080: {mode: pro}
       max_prompt_chars: 2500
       price:
         unit: second
@@ -346,6 +349,7 @@ media_model_list:
         source: https://ai-gateway.vercel.sh/v1/models
       capabilities:
         durations: [5, 10]
+        aspect_ratio_control: false
         resolutions: [1280x720, 1920x1080]
         aspect_ratios: ['16:9', '9:16', '1:1']
         audio: false

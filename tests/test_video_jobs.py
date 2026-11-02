@@ -554,3 +554,24 @@ async def test_client_idempotency_reuses_job_without_rebilling(gateway):
         assert first.json()["id"] == again.json()["id"]
     assert len(store.rows) == 1 and store.calls == 1
     assert len([r for r in seen if r.url.path.endswith("/start")]) == 1
+
+
+def test_kling_resolution_selects_provider_mode_and_edit_rejects_audio_control(gateway):
+    instance, *_ = gateway
+    _, _, wire = instance.validate(payload(model="video-kling-turbo", resolution="1920x1080"))
+    assert wire["providerOptions"]["klingai"]["mode"] == "pro"
+    assert "resolution" not in wire  # The provider ignores the generic field.
+    with pytest.raises(ValueError):
+        instance.validate(
+            payload(model="video-kling-turbo", resolution="1280x720", aspectRatio="16:9")
+        )
+    with pytest.raises(ValueError):
+        instance.validate(
+            {
+                "model": "video-grok",
+                "operation": "edit_video",
+                "prompt": "synthetic change",
+                "video": "data:video/mp4;base64,dmlkZW8=",
+                "generateAudio": False,
+            }
+        )

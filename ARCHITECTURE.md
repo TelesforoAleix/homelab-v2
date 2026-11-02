@@ -573,7 +573,9 @@ fields and model/price table. Discovery adds an `operations` mapping to `/v1/mod
 Each listed model's `model_info` supplies `operations`, `default_for`, USD `price` and
 `capabilities`: durations, resolutions, aspect ratios, audio, end frame, reference images,
 reference videos and mask. Operation-specific restrictions override general capabilities;
-Grok editing has no duration/resolution/aspect-ratio controls. Unknown or unoffered operations
+Grok editing has no duration/resolution/aspect-ratio or audio controls. Kling resolution
+selects std (720p) or pro (1080p), since its SDK ignores the generic resolution field.
+Kling inherits aspect ratio from the start image and refuses the aspectRatio control. Unknown or unoffered operations
 have empty lists. One to four verified models may serve each operation, with one default.
 Existing image routes and estimates remain compatible. Topaz Wonder adds a native image
 upscale purpose on the same multipart `/v1/images/edits` path, returning base64 in `data`.
