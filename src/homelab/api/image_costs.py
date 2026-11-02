@@ -28,6 +28,7 @@ def key_id(key):
 def migrate():
     with connect() as connection:
         connection.execute(Path(__file__).with_name("image_costs.sql").read_text())
+        connection.execute(Path(__file__).with_name("video_jobs.sql").read_text())
 
 
 def total_for(key, now=None):

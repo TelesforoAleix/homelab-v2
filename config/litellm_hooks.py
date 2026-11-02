@@ -33,6 +33,23 @@ from starlette.responses import JSONResponse, Response
 config = yaml.safe_load(Path(os.environ["CONFIG_FILE_PATH"]).read_text())
 model_info = {row["model_name"]: row.get("model_info", {}) for row in config["model_list"]}
 model_specs = {row["model_name"]: row["litellm_params"] for row in config["model_list"]}
+media_models = {row["model_name"]: row for row in config.get("media_model_list", [])}
+model_info.update({name: row["model_info"] for name, row in media_models.items()})
+video_gateway = None
+
+
+def get_video_gateway():
+    global video_gateway
+    if video_gateway is None:
+        # Mounted read-only beside this module; only the gateway holds the provider key.
+        from video_jobs import PostgresStore, VideoGateway
+
+        video_gateway = VideoGateway(
+            config, PostgresStore(), os.environ["HOMELAB_IMAGE_GATEWAY_API_KEY"]
+        )
+    return video_gateway
+
+
 # LiteLLM executes this file again when loading callbacks. Reuse the context
 # installed by the middleware instead of creating an isolated copy.
 audit: ContextVar[dict | None] = getattr(sys.modules.get(__name__), "audit", None) or ContextVar(
@@ -55,9 +72,10 @@ def usd_amount(value):
 
 
 def image_event(event):
-    return (
-        event is not None and model_info.get(event["purpose"], {}).get("mode") == "image_generation"
-    )
+    return event is not None and model_info.get(event["purpose"], {}).get("mode") in {
+        "image_generation",
+        "image_upscale",
+    }
 
 
 def capture_metadata(body, event):
@@ -206,6 +224,75 @@ async def finish_image_response(response, event, request):
     return response
 
 
+async def upscale_image(request, body, event):
+    import base64
+
+    scheme, _, key = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not key.strip():
+        return error_response(401, "Bearer client key required")
+    if set(body) - {
+        "model",
+        "image",
+        "image[]",
+        "size",
+        "response_format",
+        "_image_bytes",
+        "_image_type",
+    }:
+        return error_response(400, "Only published upscale settings are offered")
+    raw = body.get("_image_bytes")
+    if (
+        not isinstance(raw, bytes)
+        or not raw
+        or len(raw) > 16 * 1024 * 1024
+        or body.get("_image_type") not in {"image/png", "image/jpeg", "image/tiff"}
+    ):
+        return error_response(400, "One PNG, JPEG or TIFF image up to 16 MiB is required")
+    size = body.get("size")
+    if size is not None and (
+        not isinstance(size, str) or not re.fullmatch(r"[1-9][0-9]{1,3}x[1-9][0-9]{1,3}", size)
+    ):
+        return error_response(400, "Invalid upscale dimensions")
+    if body.get("response_format", "b64_json") != "b64_json":
+        return error_response(400, "This image purpose returns b64_json")
+    await ensure_image_accounting()
+    gateway = get_video_gateway()
+    event["upstream"] = True
+    async with gateway.client() as client:
+        result = await client.post(
+            gateway.base_url + "/image-model",
+            headers={
+                "authorization": "Bearer " + gateway.api_key,
+                "ai-gateway-protocol-version": "0.0.1",
+                "ai-gateway-auth-method": "api-key",
+                "ai-model-id": media_models[body["model"]]["gateway_model"],
+                "ai-image-model-specification-version": "4",
+            },
+            json={
+                "prompt": "",
+                "n": 1,
+                **({"size": size} if size else {}),
+                "files": [
+                    {
+                        "type": "file",
+                        "mediaType": body["_image_type"],
+                        "data": base64.b64encode(raw).decode(),
+                    }
+                ],
+            },
+        )
+    try:
+        payload = result.json()
+        capture_metadata(payload, event)
+        if result.status_code < 400:
+            return JSONResponse({"data": [{"b64_json": image} for image in payload["images"]]})
+    except (ValueError, KeyError, TypeError):
+        pass
+    return error_response(
+        result.status_code if result.status_code >= 400 else 502, "Image request failed"
+    )
+
+
 def mac_load_failed(purpose, exception):
     # Only the native router's failed-load signal on configured Mac routes. Never infer
     # memory pressure, inspect model memory, or repeat an upstream diagnostic to a client.
@@ -294,6 +381,9 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
         if path == "/health/liveliness" and request.method == "GET":
             return await call_next(request)
 
+        if path == "/v1/videos" or path.startswith("/v1/videos/"):
+            return await get_video_gateway().handle(request)
+
         started = monotonic()
         event = {
             "purpose": "unknown",
@@ -349,6 +439,20 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                         await request.body()
                         async with request.form() as form:
                             body = dict(form)
+                            if (
+                                isinstance(body.get("model"), str)
+                                and model_info.get(body["model"], {}).get("mode") == "image_upscale"
+                            ):
+                                if any(str(field).startswith("_") for field in body):
+                                    return error_response(
+                                        400, "Only published upscale settings are offered"
+                                    )
+                                uploads = form.getlist("image") + form.getlist("image[]")
+                                if len(uploads) == 1 and hasattr(uploads[0], "read"):
+                                    body["_image_type"] = uploads[0].content_type
+                                    body["_image_bytes"] = await uploads[0].read(
+                                        16 * 1024 * 1024 + 1
+                                    )
                     else:
                         body = await request.json()
                 except (ValueError, UnicodeError):
@@ -357,6 +461,23 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                     response = error_response(400, "Expected a JSON object")
                 else:
                     purpose = body.get("model")
+                    if isinstance(purpose, str) and purpose in media_models:
+                        if (
+                            model_info[purpose]["mode"] == "image_upscale"
+                            and path == "/v1/images/edits"
+                        ):
+                            event["purpose"] = purpose
+                            response = await upscale_image(request, body, event)
+                            response = await finish_image_response(response, event, request)
+                            status = response.status_code
+                            record()
+                            return response
+                        response = error_response(
+                            400, "This purpose requires its published endpoint"
+                        )
+                        status = response.status_code
+                        record()
+                        return response
                     key, spec, info = route(purpose)
                     if key is not None:
                         # Audit purpose stays bounded even for refused arbitrary model ids.
@@ -428,9 +549,36 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                     response = JSONResponse(
                         {
                             "data": [
-                                {"model_name": name, "model_info": info}
+                                {
+                                    "model_name": name,
+                                    "model_info": {
+                                        key: value
+                                        for key, value in info.items()
+                                        if key
+                                        not in {
+                                            "provider_options_key",
+                                            "provider_defaults",
+                                            "source_required",
+                                        }
+                                    },
+                                }
                                 for name, info in model_info.items()
-                            ]
+                            ],
+                            "operations": {
+                                operation: [
+                                    name
+                                    for name, info in model_info.items()
+                                    if operation in info.get("operations", [])
+                                ]
+                                for operation in (
+                                    "generate_image",
+                                    "edit_image",
+                                    "upscale_image",
+                                    "image_to_video",
+                                    "upscale_video",
+                                    "edit_video",
+                                )
+                            },
                         }
                     )
                 else:

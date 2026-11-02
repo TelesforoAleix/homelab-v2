@@ -54,6 +54,7 @@ services:
       - image_gateway_api_key
     volumes:
       - ./config:/etc/litellm:ro
+      - ./src/homelab/api/video_jobs.py:/etc/litellm/video_jobs.py:ro
     networks:
       - default
       - models

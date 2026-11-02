@@ -41,11 +41,12 @@ Solid parts are built; dashed parts are planned.
   allowed/default models and warning-only memory budgets, requests waiting for Inference,
   Claude/Codex usage, and an owner-set night window into Inference that is off by default.
 - Knowledge endpoints: `POST /v1/knowledge/query` and `/v1/knowledge/answer`; jobs persist in Postgres.
-- Hosted images use three `image-*` purposes through LiteLLM, with capability profiles at
-  `GET /v1/model/info`, reference edits and a separate $20 monthly gateway-key budget.
+- Hosted images use three `image-*` purposes through LiteLLM. Native image upscale and
+  background video jobs share their $20 monthly gateway-key budget. `GET /v1/model/info`
+  lists models by operation with prices and capabilities.
   Image responses report decimal USD in `x-homelab-cost-usd` when known, including charged
   failures. `GET /v1/images/cost` returns the bearer key's UTC month, `total_usd` string and
-  `charged_calls` count. The owner receives monthly 80% and 100% budget alerts through Telegram.
+  `charged_calls` count for images and video together. The owner receives monthly 80% and 100% budget alerts through Telegram.
 - [ARCHITECTURE.md](ARCHITECTURE.md) explains the boundaries and rules;
   [DECISIONS.md](DECISIONS.md) records the choices behind them.
 
@@ -157,3 +158,75 @@ order with **To front** and **Remove**; failed jobs offer **Requeue** and **Remo
 jobs **Remove**. Moving to front leaves the running job alone; Stop immediately stops the
 attempt, so unsaved items are redone on resume. Status refreshes every five seconds while the
 menu is open. Add jobs through the command above.
+
+## Image studio: operations and video jobs
+
+Use the model gateway at `http://127.0.0.1:4000` with `Authorization: Bearer <client-key>`.
+`GET /v1/model/info` returns `data: [{model_name, model_info}]` plus an `operations` object
+mapping these stable names to model-purpose lists: `generate_image`, `edit_image`,
+`upscale_image`, `image_to_video`, `upscale_video`, `edit_video`. Each media profile lists
+`operations`, `default_for`, `price` (USD, with tiers or an explicitly marked starting price)
+and `capabilities` (durations, resolutions, aspect ratios, audio, end frame, reference-image
+and reference-video counts, mask). An empty operation list means unsupported. One to four
+verified models may serve an operation; each supported operation has one default.
+
+| Operation | Purposes (default first) | Published price in USD |
+|---|---|---|
+| `generate_image`, `edit_image` | `image-gpt-2.5-flare`, `image-gpt-2.5-sunburst`, `image-nano-banana-2.1` | GPT output estimate: low .00588, medium .0132, high .05268, xhigh .09366, max .21072 per image; reference estimate .0122. Nano: 1K .0336, 2K .0504, 4K .1134 |
+| `upscale_image` | `image-upscale-wonder` | Starting at .08/image; full size tariff unavailable |
+| `image_to_video` | `video-grok-lite`, `video-kling-turbo`, `video-grok` | Lite: .02/.03/.14 per second at 480p/720p/1080p. Kling: .042 std, .07 pro per second (route uses std). Grok: .05/.07 per second at 480p/720p |
+| `upscale_video` | `video-upscale-proteus` | Starting at .08/video; full duration/resolution tariff unavailable |
+| `edit_video` | `video-grok` | .05/.07 per second at 480p/720p |
+
+Existing image generation/edit requests retain their shapes. Image upscale uses
+`POST /v1/images/edits`, multipart fields `model=image-upscale-wonder`, exactly one `image`
+(or `image[]`) PNG/JPEG/TIFF file up to 16 MiB, optional `size=WIDTHxHEIGHT` and
+`response_format=b64_json`. It returns `{"data":[{"b64_json":"..."}]}`.
+
+Start video work with `POST /v1/videos`, a JSON object with `model`, `operation`, `prompt`
+and inline media. Send a stable `Idempotency-Key` header (1–128 letters, digits or `_.:-`)
+when retrying a start: the same client key and idempotency value return the same job, even
+if the retry body differs. Without it, each accepted POST creates a new paid job. For example:
+
+```json
+{"model":"video-grok-lite","operation":"image_to_video","prompt":"A slow camera move",
+ "image":"data:image/png;base64,...","duration":1,"resolution":"854x480","generateAudio":false}
+```
+
+`image_to_video` requires `image`; `endImage` is accepted for Kling. `referenceImages` is
+reserved for profiles explicitly supporting references together with a start image; the
+current selection refuses that combination rather than silently ignoring the start frame.
+`upscale_video` requires `video: "data:video/mp4;base64,..."` and `resolution`; omit `prompt`
+or send an empty string. Optional `source` supplies actual input `{width,height,duration,frameRate}`
+and optional `frameCount`. `edit_video` requires `video` and a nonempty `prompt`; duration,
+resolution, aspect ratio, reference images and audio generation controls are unavailable
+for this model's editing mode. Generation also accepts `aspectRatio` and `generateAudio`;
+omitted generation duration/resolution select the profile's smallest values. Other settings
+are limited to the published profile. Media must be base64 data URIs; remote input URLs,
+provider overrides and query parameters are refused. The JSON body limit is 48 MiB.
+
+Start returns HTTP 202 immediately after storing the job metadata:
+
+```json
+{"id":"<uuid>","operation":"image_to_video","model":"video-grok-lite","status":"queued","cost_usd":null}
+```
+
+`GET /v1/videos/<uuid>` returns that same shape, with status `queued`, `running`, `completed`
+or `failed` and decimal-string `cost_usd` once known. A different bearer key gets 404.
+`GET /v1/videos/<uuid>/content` streams the completed video's bytes with its media type;
+409 means unfinished/failed, 410 means expired. Only content type, content length and
+`x-homelab-cost-usd` can appear on video responses. No provider URL or diagnostic is returned.
+Fetch content promptly: results expire upstream; Home Lab's memory cache lasts at most one
+hour and holds at most 16 results. Single-request content is lost on a gateway restart.
+
+Small requests use Vercel's async API; larger inline inputs use a background single request.
+At most four jobs run concurrently (429 when busy); jobs stop waiting after one hour.
+Async jobs with a saved Vercel reference resume when the gateway next receives a video request.
+Interrupted single requests become failed and are never automatically repeated: their inputs
+were not persisted, and an interrupted request may already have been charged.
+
+Video charges, including charged failures, add **once per job** to the same per-key UTC
+monthly total returned by `GET /v1/images/cost`: `{"month":"YYYY-MM","total_usd":"decimal",
+"charged_calls":1}`. Repeated status/content reads add no charge. Missing cost stays unknown;
+video estimates never debit the total. The existing $20 Vercel key budget and 80%/100% alerts
+cover images and video together. Keys, prompts and media never enter the jobs table or logs.
