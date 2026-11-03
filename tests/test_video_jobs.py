@@ -141,6 +141,61 @@ async def settle(instance):
     await asyncio.gather(*list(instance.tasks.values()))
 
 
+async def test_reference_only_start_sends_reference_inputs(gateway):
+    instance, _, seen, _, _ = gateway
+    app = FastAPI()
+
+    @app.api_route("/{path:path}", methods=["POST"])
+    async def dispatch(request: Request):
+        return await instance.handle(request)
+
+    body = payload(model="video-grok", referenceImages=[MEDIA, MEDIA])
+    del body["image"]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        result = await client.post("/v1/videos", json=body, headers={"Authorization": "Bearer a"})
+        assert result.status_code == 202
+        await settle(instance)
+    wire = json.loads(next(r.content for r in seen if r.url.path.endswith("/start")))
+    assert wire["inputReferences"] == [video.media_file(MEDIA, "image")] * 2
+    assert "image" not in wire and "frameImages" not in wire
+
+
+@pytest.mark.parametrize("case", ["neither", "both", "too_many", "end", "empty"])
+def test_invalid_reference_combinations_return_400(gateway, case):
+    _, store, seen, _, client = gateway
+    body = payload(model="video-grok")
+    if case != "both":
+        del body["image"]
+    if case != "neither":
+        body["referenceImages"] = (
+            [] if case == "empty" else [MEDIA] * (6 if case == "too_many" else 1)
+        )
+    if case == "end":
+        body["endImage"] = MEDIA
+    assert (
+        client.post("/v1/videos", json=body, headers={"Authorization": "Bearer a"}).status_code
+        == 400
+    )
+    assert not seen and not store.rows
+
+
+def test_start_image_alone_retains_wire_format(gateway):
+    instance, *_ = gateway
+    _, _, wire = instance.validate(payload(model="video-grok"))
+    assert wire["image"] == video.media_file(MEDIA, "image")
+    assert "inputReferences" not in wire and "frameImages" not in wire
+
+
+def test_start_with_references_remains_capability_gated(gateway):
+    instance, *_ = gateway
+    instance.models["video-grok"]["model_info"]["capabilities"]["start_with_references"] = True
+    _, _, wire = instance.validate(payload(model="video-grok", referenceImages=[MEDIA]))
+    assert wire["inputReferences"] == [video.media_file(MEDIA, "image")] * 2
+    assert "image" not in wire
+
+
 async def test_start_status_content_key_isolation_and_cost_once(gateway, caplog):
     instance, store, seen, _, _ = gateway
     app = FastAPI()

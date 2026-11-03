@@ -2476,6 +2476,8 @@ No provider key is added to the API or worker. The gateway mounts the transport 
 `src/homelab/api/video_jobs.py` read-only, alongside the config; the API startup applies
 `video_jobs.sql` beside the existing image accounting migration.
 Kling 2.5 Turbo refuses an end frame in standard mode; no listed model takes an end frame.
+Grok generation accepts one to five reference images without a start or end image, as an
+alternative to a start image. The references are sent as `inputReferences`.
 
 Job status and content require the creating client's bearer key. Fetch content promptly through
 the loopback gateway; never expose its URL or use a public upload to bypass inline size limits.
