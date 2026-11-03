@@ -193,10 +193,11 @@ if the retry body differs. Without it, each accepted POST creates a new paid job
  "image":"data:image/png;base64,...","duration":1,"resolution":"854x480","generateAudio":false}
 ```
 
-`image_to_video` requires `image`; no listed model accepts `endImage`. Kling inherits the
-start image's aspect ratio and refuses `aspectRatio`; its resolution selects quality mode. `referenceImages` is
-reserved for profiles explicitly supporting references together with a start image; the
-current selection refuses that combination rather than silently ignoring the start frame.
+`image_to_video` requires either `image` or a nonempty `referenceImages` array up to the
+profile's reference limit. `video-grok` accepts one to five reference images without a start
+or end image. A start image with references requires explicit profile support; no current
+profile supports that combination. No listed model accepts `endImage`. Kling inherits the
+start image's aspect ratio and refuses `aspectRatio`; its resolution selects quality mode.
 `upscale_video` requires `video: "data:video/mp4;base64,..."` and `resolution`; omit `prompt`
 or send an empty string. Optional `source` supplies actual input `{width,height,duration,frameRate}`
 and optional `frameCount`. `edit_video` requires `video` and a nonempty `prompt`; duration,

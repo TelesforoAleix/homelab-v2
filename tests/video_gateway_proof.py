@@ -51,6 +51,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:4000")
     parser.add_argument("--kling-end-frame", action="store_true")
+    parser.add_argument("--grok-references", action="store_true")
     args = parser.parse_args()
     with httpx.Client(
         base_url=args.base_url,
@@ -58,6 +59,52 @@ def main():
         trust_env=False,
         headers={"Authorization": "Bearer " + secrets.token_hex(32)},
     ) as client:
+        if args.grok_references:
+            images = [
+                "data:image/png;base64," + base64.b64encode(reference_png(seed)).decode()
+                for seed in (41, 42)
+            ]
+            response = client.post(
+                "/v1/videos",
+                json={
+                    "model": "video-grok",
+                    "operation": "image_to_video",
+                    "prompt": "Abstract shapes move gently.",
+                    "referenceImages": images,
+                    "duration": 2,
+                    "resolution": "854x480",
+                },
+            )  # One paid start, never retry.
+            print(json.dumps({"start_http": response.status_code}), flush=True)
+            if response.status_code != 202:
+                raise RuntimeError("Start refused; do not retry automatically")
+            job_id = response.json()["id"]
+            deadline = time.monotonic() + 3600
+            while time.monotonic() < deadline:
+                result = client.get("/v1/videos/" + job_id)
+                result.raise_for_status()
+                job = result.json()
+                if job["status"] in ("completed", "failed"):
+                    size = None
+                    if job["status"] == "completed":
+                        with client.stream("GET", "/v1/videos/" + job_id + "/content") as content:
+                            content.raise_for_status()
+                            size = sum(len(part) for part in content.iter_bytes())
+                    print(
+                        json.dumps(
+                            {
+                                "status": job["status"],
+                                "error": job["error"],
+                                "cost_usd": job["cost_usd"],
+                                "clip_bytes": size,
+                            }
+                        ),
+                        flush=True,
+                    )
+                    return
+                time.sleep(5)
+            raise RuntimeError("Job did not finish; do not retry automatically")
+
         if args.kling_end_frame:
 
             def image(seed):

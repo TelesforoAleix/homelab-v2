@@ -293,25 +293,28 @@ class VideoGateway:
         caps = {**caps, **caps.get(operation, {})}
         wire = {"prompt": prompt, "n": 1}
         if operation == "image_to_video":
-            wire["image"] = media_file(body.get("image"), "image")
+            has_image = "image" in body
+            refs = body.get("referenceImages", [])
+            if not isinstance(refs, list) or len(refs) > caps["reference_images"]:
+                raise ValueError
+            if not has_image and not refs:
+                raise ValueError
+            if has_image:
+                wire["image"] = media_file(body["image"], "image")
             if body.get("video") is not None or body.get("source") is not None:
                 raise ValueError
             if "endImage" in body:
-                if not caps["end_frame"]:
+                if not has_image or not caps["end_frame"]:
                     raise ValueError
                 wire["frameImages"] = [
                     {"frameType": "first_frame", "image": wire.pop("image")},
                     {"frameType": "last_frame", "image": media_file(body["endImage"], "image")},
                 ]
-            refs = body.get("referenceImages", [])
-            if not isinstance(refs, list) or len(refs) > caps["reference_images"]:
-                raise ValueError
             if refs:
-                if not caps.get("start_with_references") or "frameImages" in wire:
+                if "endImage" in body or (has_image and not caps.get("start_with_references")):
                     raise ValueError
-                wire["inputReferences"] = [
-                    wire.pop("image"),
-                    *(media_file(r, "image") for r in refs),
+                wire["inputReferences"] = ([wire.pop("image")] if has_image else []) + [
+                    media_file(r, "image") for r in refs
                 ]
         else:
             if any(k in body for k in ("image", "endImage", "referenceImages")):
