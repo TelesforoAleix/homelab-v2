@@ -596,10 +596,10 @@ UUIDv5 from the key hash and request token. The jobs primary key deduplicates st
 repeating the token returns the original job, independent of body changes. Without the header,
 each POST is new. Raw tokens are not stored. A start stores metadata before returning 202 `{id,operation,model,status:"queued",cost_usd:null}`.
 Status reads use the same shape with `queued|running|completed|failed` and a decimal-string
-cost once known. SHA-256 of the bearer key selects owned jobs; other keys receive 404 for
+cost once known and `error` null unless failed; failures carry a stored type and sanitized short message. SHA-256 of the bearer key selects owned jobs; other keys receive 404 for
 both status and content. Content streams bytes, returns 409 until completion and 410 after
 expiry. The video response-header allowlist is exactly `content-type`, `content-length`,
-`x-homelab-cost-usd`. Provider diagnostics, references and URLs never reach the client.
+`x-homelab-cost-usd`. Provider references, response bodies and URLs never reach the client; a failed job may expose its sanitized provider message to its owner.
 
 Only the gateway holds the existing image-key secret. Config holds the media purposes and
 native model identifiers separately from LiteLLM's model list. The native transport follows
@@ -641,4 +641,4 @@ failures count too. Video estimates are never money. Unknown remains null. The o
 ownership. The $20 Vercel budget and host 80%/100% notifications are unchanged. Existing image
 cost-source precedence remains unchanged. A transient final-accounting failure retains the
 confirmed charge in memory and retries its transaction on the next video request; logs contain
-only job ID, configured purpose, state, timing and numeric cost, never input or diagnostics.
+only job ID, configured purpose, state, timing, numeric cost, error type and error code or class, never input or error messages.

@@ -12,7 +12,6 @@ import argparse
 import base64
 import hashlib
 import json
-import random
 import secrets
 import struct
 import time
@@ -21,10 +20,19 @@ import zlib
 import httpx
 
 
-def reference_png():
+def reference_png(seed=41):
     width, height = 640, 560
-    rng = random.Random(41)
-    raw = b"".join(b"\0" + rng.randbytes(width * 3) for _ in range(height))
+    background = bytes((30, 80, 160)) if seed == 41 else bytes((150, 80, 30))
+    square = bytes((220, 210, 80)) if seed == 41 else bytes((50, 180, 120))
+    raw = b"".join(
+        b"\0"
+        + (
+            background * 200 + square * 240 + background * 200
+            if 160 <= y < 400
+            else background * width
+        )
+        for y in range(height)
+    )
 
     def chunk(kind, data):
         return (
@@ -34,7 +42,7 @@ def reference_png():
     return (
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IDAT", zlib.compress(raw, level=0))
         + chunk(b"IEND", b"")
     )
 
@@ -42,6 +50,7 @@ def reference_png():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:4000")
+    parser.add_argument("--kling-end-frame", action="store_true")
     args = parser.parse_args()
     with httpx.Client(
         base_url=args.base_url,
@@ -49,6 +58,47 @@ def main():
         trust_env=False,
         headers={"Authorization": "Bearer " + secrets.token_hex(32)},
     ) as client:
+        if args.kling_end_frame:
+
+            def image(seed):
+                return "data:image/png;base64," + base64.b64encode(reference_png(seed)).decode()
+
+            response = client.post(
+                "/v1/videos",
+                json={
+                    "model": "video-kling-turbo",
+                    "operation": "image_to_video",
+                    "prompt": "A gentle transition between abstract colors.",
+                    "image": image(41),
+                    "endImage": image(42),
+                    "duration": 5,
+                    "resolution": "1280x720",
+                },
+            )  # Exactly one paid start; no retries.
+            print(json.dumps({"start_http": response.status_code}), flush=True)
+            if response.status_code != 202:
+                raise RuntimeError("Start refused; do not retry automatically")
+            job_id = response.json()["id"]
+            deadline = time.monotonic() + 3600
+            while time.monotonic() < deadline:
+                result = client.get("/v1/videos/" + job_id)
+                result.raise_for_status()
+                job = result.json()
+                if job["status"] in ("completed", "failed"):
+                    print(
+                        json.dumps(
+                            {
+                                "status": job["status"],
+                                "error": job["error"],
+                                "cost_usd": job["cost_usd"],
+                            }
+                        ),
+                        flush=True,
+                    )
+                    return
+                time.sleep(5)
+            raise RuntimeError("Job did not finish; do not retry automatically")
+
         catalogue = client.get("/v1/model/info").json()
         profiles = {row["model_name"]: row["model_info"] for row in catalogue["data"]}
         image = reference_png()
