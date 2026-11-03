@@ -508,12 +508,10 @@ async def test_async_charged_failure_and_final_accounting_retry(gateway, monkeyp
     assert len(seen) == 2  # One start and one status, no paid retry.
 
 
-def test_kling_end_frame_and_edit_video_inline_contract(gateway):
+def test_kling_rejects_end_frame_and_edit_video_inline_contract(gateway):
     instance, *_ = gateway
-    _, _, wire = instance.validate(
-        payload(model="video-kling-turbo", endImage=MEDIA, resolution="1280x720")
-    )
-    assert [frame["frameType"] for frame in wire["frameImages"]] == ["first_frame", "last_frame"]
+    with pytest.raises(ValueError):
+        instance.validate(payload(model="video-kling-turbo", endImage=MEDIA, resolution="1280x720"))
     source = "data:video/mp4;base64," + base64.b64encode(b"fixture-video").decode()
     _, _, wire = instance.validate(
         {
