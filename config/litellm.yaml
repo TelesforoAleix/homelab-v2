@@ -353,7 +353,7 @@ media_model_list:
         resolutions: [1280x720, 1920x1080]
         aspect_ratios: ['16:9', '9:16', '1:1']
         audio: false
-        end_frame: true
+        end_frame: false
         reference_images: 0
         reference_videos: 0
         mask: false

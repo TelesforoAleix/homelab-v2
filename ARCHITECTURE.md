@@ -585,8 +585,8 @@ Home Lab middleware owns `POST /v1/videos`, `GET /v1/videos/{id}` and
 JSON `{model, operation, prompt?, image?, endImage?, referenceImages?, video?, duration?,
 aspectRatio?, resolution?, generateAudio?, source?}`. Inputs are inline base64 data URIs;
 URLs, provider/routing options and query parameters are rejected. Generation requires a
-start image; upscale/edit require MP4 video. Only Kling accepts an end image in the current
-selection. Start-plus-reference combinations are refused because the selected models do
+start image; upscale/edit require MP4 video. No listed model accepts an end image.
+Start-plus-reference combinations are refused because the selected models do
 not document preserving both controls. Source metadata for upscale is
 `{width,height,duration,frameRate,frameCount?}`. Bodies are limited to 48 MiB before upstream
 access; invalid fields and unsupported capabilities return 400, oversized bodies 413.
