@@ -2489,7 +2489,7 @@ cost is unknown, not zero. Reconcile such calls with Vercel's dashboard. If fina
 fails temporarily, the next video request retries the pending transaction; restarting first
 can lose that in-memory confirmation. Known costs and terminal states commit atomically.
 No status read or content download charges a job again. Audit logs contain only UUID, configured
-purpose, state, duration and numeric cost; default HTTP/library diagnostics remain disabled.
+purpose, state, duration, numeric cost and failure type and code or class; error messages are not logged. Failed status responses contain a stored short sanitized reason. Default HTTP/library diagnostics remain disabled.
 
 Read-only accounting checks from the node (no client keys or content):
 

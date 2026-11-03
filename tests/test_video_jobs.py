@@ -40,6 +40,7 @@ class MemoryStore:
             reference=None,
             status="queued",
             cost_usd=None,
+            error=None,
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )
@@ -49,8 +50,10 @@ class MemoryStore:
         row = self.rows.get(job_id)
         return row.copy() if row and row["client_key_hash"] == key_hash else None
 
-    async def update(self, job_id, *, status=None, reference=None, cost=None):
+    async def update(self, job_id, *, status=None, reference=None, cost=None, failure=None):
         row = self.rows[job_id]
+        if failure is not None:
+            row["error"] = failure
         if status:
             row["status"] = status
         if reference is not None:
@@ -464,7 +467,7 @@ def test_image_upscale_native_transport_and_billed_cost(monkeypatch):
 
 async def test_async_charged_failure_and_final_accounting_retry(gateway, monkeypatch):
     instance, store, seen, state, _ = gateway
-    state.update(status="error", error="private-upstream-diagnostic")
+    state.update(status="error", error="Provider rejected the request.")
     original = store.update
     failures = []
 
@@ -482,7 +485,7 @@ async def test_async_charged_failure_and_final_accounting_retry(gateway, monkeyp
     await store.create(job_id, hashlib.sha256(b"key-a").hexdigest(), operation, model)
     await instance.run(job_id, model, wire=wire)
     assert store.calls == 0
-    assert instance.pending_charge[job_id] == ("failed", Decimal("0.05"))
+    assert instance.pending_charge[job_id][:2] == ("failed", Decimal("0.05"))
     from starlette.requests import Request
 
     app = FastAPI()
@@ -500,7 +503,7 @@ async def test_async_charged_failure_and_final_accounting_retry(gateway, monkeyp
             )
             assert result.json()["status"] == "failed"
             assert result.json()["cost_usd"] == "0.05"
-            assert "private" not in result.text
+            assert result.json()["error"]["type"] == "provider"
     assert store.calls == 1 and store.total == Decimal("0.05")
     assert len(seen) == 2  # One start and one status, no paid retry.
 
@@ -575,3 +578,71 @@ def test_kling_resolution_selects_provider_mode_and_edit_rejects_audio_control(g
                 "generateAudio": False,
             }
         )
+
+
+@pytest.mark.parametrize("kind", ["provider", "timeout", "gateway", "restart"])
+def test_public_failure_reason(kind):
+    row = {
+        "id": "1",
+        "operation": "image_to_video",
+        "model": "video",
+        "status": "failed",
+        "cost_usd": None,
+        "error": {"type": kind, "message": "Failed."},
+    }
+    assert video.public_job(row)["error"] == row["error"]
+    row["status"] = "completed"
+    assert video.public_job(row)["error"] is None
+
+
+def test_provider_message_sanitization():
+    message = "Rejected https://example.invalid/path " + "A" * 400
+    clean = video.safe_message(message, {})
+    assert len(clean) <= 300
+    assert "https://" not in clean and "A" * 40 not in clean
+    assert len(video.safe_message("word " * 100, {})) == 299
+
+
+async def test_provider_failure_is_stored_without_message_in_log(gateway, caplog):
+    instance, store, _, state, _ = gateway
+    state.update(status="error", error={"message": "Provider rejected request", "code": "rejected"})
+    model, operation, wire = instance.validate(payload())
+    row = await store.create("00000000-0000-0000-0000-000000000009", "a", operation, model)
+    with caplog.at_level(logging.INFO):
+        await instance.run(row["id"], model, wire=wire)
+    assert store.rows[row["id"]]["error"] == {
+        "type": "provider",
+        "message": "Provider rejected request",
+    }
+    assert "ProviderFailure" in caplog.text and "Provider rejected request" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "exception,kind", [(TimeoutError(), "timeout"), (RuntimeError(), "gateway")]
+)
+async def test_exception_failure_is_persisted(gateway, monkeypatch, exception, kind):
+    instance, store, _, _, _ = gateway
+    model, operation, wire = instance.validate(payload())
+    row = await store.create("00000000-0000-0000-0000-000000000008", "a", operation, model)
+
+    async def fail(*args, **kwargs):
+        raise exception
+
+    monkeypatch.setattr(instance, "single", fail)
+    monkeypatch.setattr(video, "ASYNC_BODY_BYTES", 0)
+    await instance.run(row["id"], model, wire=wire)
+    assert video.public_job(store.rows[row["id"]])["error"]["type"] == kind
+
+
+async def test_recovery_records_restart(gateway, monkeypatch):
+    instance, store, _, _, _ = gateway
+    row = await store.create(
+        "00000000-0000-0000-0000-000000000007", "a", "image_to_video", "video-grok-lite"
+    )
+
+    async def recover():
+        return [row]
+
+    monkeypatch.setattr(store, "recover", recover)
+    await instance.recover()
+    assert video.public_job(store.rows[row["id"]])["error"]["type"] == "restart"

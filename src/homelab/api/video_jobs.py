@@ -69,6 +69,28 @@ def error(status, message):
     )
 
 
+def safe_message(message, wire=None):
+    if not isinstance(message, str):
+        return "The video provider failed."
+    message = re.sub(r"(?i)(?:https?://|data:|www\.)\S+", "[removed]", message)
+    message = re.sub(r"[A-Za-z0-9+/=_-]{40,}", "[removed]", message)
+    message = " ".join(message.split())[:300].strip()
+    return message or "The video provider failed."
+
+
+class ProviderFailure(Exception):
+    def __init__(self, body, wire=None):
+        detail = body.get("error") if isinstance(body, dict) else None
+        if isinstance(detail, dict):
+            message = detail.get("message")
+        else:
+            message = detail
+        if not isinstance(message, str) and isinstance(body, dict):
+            message = body.get("message")
+        self.message = safe_message(message, wire)
+        self.code = "ProviderFailure"
+
+
 def public_job(row):
     return {
         "id": str(row["id"]),
@@ -76,6 +98,9 @@ def public_job(row):
         "model": row["model"],
         "status": row["status"],
         "cost_usd": format(row["cost_usd"], "f") if row["cost_usd"] is not None else None,
+        "error": (row.get("error") or {"type": "gateway", "message": "The video job failed."})
+        if row["status"] == "failed"
+        else None,
     }
 
 
@@ -143,7 +168,7 @@ class PostgresStore:
             )
             return await cursor.fetchall()
 
-    async def update(self, job_id, *, status=None, reference=None, cost=None):
+    async def update(self, job_id, *, status=None, reference=None, cost=None, failure=None):
         from psycopg.types.json import Jsonb
 
         async with await self.connect() as connection:
@@ -165,11 +190,14 @@ class PostgresStore:
                 row["cost_usd"] = cost
             cursor = await connection.execute(
                 """UPDATE homelab_video_jobs SET status = %s, reference = %s, cost_usd = %s,
-                   updated_at = now() WHERE id = %s RETURNING *""",
+                   error = %s, updated_at = now() WHERE id = %s RETURNING *""",
                 (
                     status or row["status"],
                     Jsonb(reference if reference is not None else row["reference"]),
                     row["cost_usd"],
+                    Jsonb(failure if failure is not None else row["error"])
+                    if failure is not None or row["error"] is not None
+                    else None,
                     job_id,
                 ),
             )
@@ -222,7 +250,14 @@ class VideoGateway:
                 else:
                     # Inline inputs deliberately do not persist. Never replay an ambiguous
                     # paid single request after a restart, or invent a cost for it.
-                    await self.store.update(row["id"], status="failed")
+                    await self.store.update(
+                        row["id"],
+                        status="failed",
+                        failure={
+                            "type": "restart",
+                            "message": "The video job was interrupted by a gateway restart.",
+                        },
+                    )
             self.recovered = True
 
     def validate(self, body):
@@ -352,9 +387,9 @@ class VideoGateway:
         if request.query_params:
             return error(400, "Query parameters are not offered")
         key_hash = hashlib.sha256(key.encode()).hexdigest()
-        for job_id, (state, cost) in list(self.pending_charge.items()):
+        for job_id, (state, cost, failure) in list(self.pending_charge.items()):
             try:
-                await self.store.update(job_id, status=state, cost=cost)
+                await self.store.update(job_id, status=state, cost=cost, failure=failure)
                 del self.pending_charge[job_id]
             except Exception:
                 return error(503, "Video cost could not be recorded")
@@ -416,6 +451,8 @@ class VideoGateway:
         started = monotonic()
         status = "failed"
         cost = None
+        failure = None
+        code = None
         try:
             await self.store.update(job_id, status="running")
             async with asyncio.timeout(JOB_SECONDS), self.client() as client:
@@ -426,10 +463,15 @@ class VideoGateway:
                         result = await client.post(
                             self.base_url + "/video-model/start", headers=headers, content=raw
                         )
-                        body = result.json()
+                        try:
+                            body = result.json()
+                        except ValueError:
+                            if result.status_code >= 400:
+                                raise ProviderFailure({}, wire) from None
+                            raise
                         cost = billed_cost(body)
                         if result.status_code >= 400:
-                            raise ValueError
+                            raise ProviderFailure(body, wire)
                         reference = body["operation"]
                         await self.store.update(job_id, reference=reference)
                     else:
@@ -441,16 +483,21 @@ class VideoGateway:
                             headers=headers,
                             json={"operation": reference},
                         )
-                        body = result.json()
+                        try:
+                            body = result.json()
+                        except ValueError:
+                            if result.status_code >= 400:
+                                raise ProviderFailure({}, wire) from None
+                            raise
                         cost = billed_cost(body) if billed_cost(body) is not None else cost
                         if result.status_code >= 400:
-                            raise ValueError
+                            raise ProviderFailure(body, wire)
                         if body.get("status") != "pending":
                             break
                         await asyncio.sleep(self.poll_seconds)
                 cost = billed_cost(body) if billed_cost(body) is not None else cost
                 if body.get("status") == "error" or body.get("type") == "error":
-                    raise ValueError
+                    raise ProviderFailure(body, wire)
                 videos = body.get("videos")
                 if not isinstance(videos, list) or not videos:
                     raise ValueError
@@ -466,22 +513,41 @@ class VideoGateway:
                     del self.results[next(iter(self.results))]
                 self.results[job_id] = (monotonic(), video)
                 status = "completed"
-        except (Exception, asyncio.CancelledError):
-            pass
+        except ProviderFailure as exc:
+            failure = {"type": "provider", "message": exc.message}
+            code = exc.code
+        except (TimeoutError, httpx.TimeoutException) as exc:
+            failure = {"type": "timeout", "message": "The video job timed out."}
+            code = type(exc).__name__
+        except asyncio.CancelledError:
+            failure = {
+                "type": "restart",
+                "message": "The video job was interrupted by a gateway restart.",
+            }
+            code = "CancelledError"
+        except Exception as exc:
+            failure = {
+                "type": "gateway",
+                "message": "The video gateway could not complete the job.",
+            }
+            code = type(exc).__name__
         finally:
             try:
-                await self.store.update(job_id, status=status, cost=cost)
+                await self.store.update(job_id, status=status, cost=cost, failure=failure)
             except Exception:
                 # Retain the charge in memory for a later read to retry the transaction.
-                self.pending_charge[job_id] = (status, cost)
+                self.pending_charge[job_id] = (status, cost, failure)
                 logger.error("video_cost_record_failed job=%s", job_id)
             logger.info(
-                "video_job id=%s model=%s status=%s elapsed_seconds=%.3f cost_usd=%s",
+                "video_job id=%s model=%s status=%s elapsed_seconds=%.3f cost_usd=%s "
+                "error_type=%s error_code=%s",
                 job_id,
                 model,
                 status,
                 monotonic() - started,
                 cost,
+                failure["type"] if failure else None,
+                code,
             )
 
     async def single(self, client, headers, raw):
@@ -491,7 +557,14 @@ class VideoGateway:
         ) as response:
             if response.status_code >= 400:
                 # Cost metadata on a charged HTTP failure is still consumed privately.
-                return json.loads(await response.aread())
+                try:
+                    body = json.loads(await response.aread())
+                except ValueError:
+                    body = {}
+                if not isinstance(body, dict):
+                    body = {}
+                body["type"] = "error"
+                return body
             data = []
             async for line in response.aiter_lines():
                 if line.startswith("data:"):

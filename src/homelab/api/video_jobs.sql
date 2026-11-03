@@ -9,3 +9,5 @@ CREATE TABLE IF NOT EXISTS homelab_video_jobs (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE homelab_video_jobs ADD COLUMN IF NOT EXISTS error jsonb;
