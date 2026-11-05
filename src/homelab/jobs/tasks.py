@@ -11,8 +11,16 @@ from homelab.knowledge.index import build_stores, ingest, probe_embedding_dimens
 from homelab.knowledge.sources import load_documents
 from homelab.models import load_routes
 from homelab.settings import get_settings
+from homelab.tasks.store import JOB, QUEUE
 
 logger = logging.getLogger(__name__)
+
+
+@app.task(queue=QUEUE, name=JOB)
+def run_coding_task(task_id: int) -> None:
+    """Registered so a deferred job is valid. The worker does not serve this queue and has no
+    Docker access, so it can never run a task."""
+    raise NotImplementedError("the tasks queue has no consumer yet")
 
 
 @app.task(queue="default", name="ping")

@@ -517,7 +517,8 @@ No hosted observability callbacks are configured. `/health` keeps `status`, `ver
 `homelab-task-run` runs one ticket by hand against one working copy; see the
 [runbook](docs/operations.md#coding-tasks-in-a-container). Pi is the agent. It has no sandbox of
 its own, and model-generated commands and repository content are untrusted, so the containers
-are the boundary. There is no queue, task database, retry, commit or push.
+are the boundary. It has no retry, commit or push. A durable record and a queue exist for tasks
+([Task store](#task-store)), but nothing connects them to this script yet.
 
 | Step | Runs | Network | Token | Read-only in the copy |
 |---|---|---|---|---|
@@ -550,11 +551,81 @@ from LiteLLM (`enable_icc` works per network), so a lock allows one run at a tim
 record stays in a root-only folder on the encrypted volume. It holds repository content by
 design, and the token is scrubbed from every file in it.
 
+### Task store
+
+A planner outside this repository cuts work into ordered tasks and hands them over as a file.
+`python -m homelab.tasks.submit` reads one from stdin, in any container built from this image:
+
+```json
+{
+  "slice": "free text naming the piece of work",
+  "repository": "owner/name",
+  "branch": "main",
+  "base_commit": "40 to 64 lowercase hex digits",
+  "tasks": [
+    {
+      "position": 1,
+      "depends_on": [],
+      "title": "Short title",
+      "goal": "What the task must achieve",
+      "allowed_files": ["src/example.py"],
+      "check_command": "uv run pytest",
+      "pinned_paths": ["tests/test_example.py"],
+      "priority": 0,
+      "severity": "normal"
+    }
+  ]
+}
+```
+
+`depends_on`, `pinned_paths`, `priority` and `severity` are optional, with the defaults shown;
+every other field is required and an unknown field is refused. `position` is a whole number from 1,
+and orders the slice; only `depends_on` gates a task. It lists positions of the same slice, in
+this file or in one submitted earlier for the same repository and branch. `allowed_files` is not
+empty. It and `pinned_paths` are repository paths, under `homelab-task-run`'s rule for a pin.
+`priority` is an integer, higher first, and becomes the job's Procrastinate priority. `severity`
+is free text, for the planner and later stages.
+
+The file is validated whole: types, repeated positions, and cycles. Then one transaction writes
+the tasks and defers one job for each task whose dependencies are all `done`, through
+Procrastinate's external-connection option, so a refused or failed submission leaves neither tasks
+nor jobs. An unknown dependency is refused, and so is a slice and position that already exist. On
+success it prints the new ids as a JSON list in position order. A refusal exits 1 and names the
+field or position on stderr, never its content.
+
+The queue is `tasks`, and a job carries only the task id. It has no consumer: `run_coding_task` is
+registered so the job is valid and raises if run. The `worker` service serves only `local` and
+`default` and has no Docker access, so a job stays `todo` and no service can run a task. A task
+waiting for a dependency has a row and no job.
+
+`python -m homelab.jobs.schema`, the worker's start step, applies `src/homelab/tasks/schema.sql`
+after Procrastinate's schema. Every statement is idempotent, and a failure stops the worker
+starting. There are four tables:
+
+| Table | One row per | Holds |
+|---|---|---|
+| `homelab_roles` | role | `routes`: an ordered JSON list; the next entry is one tier up |
+| `homelab_tasks` | task | the file's fields, status, reason, timestamps |
+| `homelab_task_attempts` | attempt of a task | number, role, route, status, why it ended, run id, check exit code |
+| `homelab_task_traces` | model-using job | task, attempt, role, route, kind, steps, tokens, cost, seconds, result |
+
+A route is `{"kind": "litellm", "purpose": ...}` or `{"kind": "cli", "tool": ..., "model": ...}`.
+Start inserts `worker`, `ticket-reviewer` and `side-job` if they are missing, each with one route
+to `task-worker`, and leaves existing rows alone. Provider and model names live only in the table,
+which is edited directly; a trigger keeps `updated_at` true. Attempts and traces copy their role
+and route, so history survives an edit. Runs compare in plain SQL:
+
+```sql
+SELECT role, route, kind, count(*), sum(output_tokens), sum(cost_usd), avg(seconds)
+FROM homelab_task_traces GROUP BY role, route, kind;
+```
+
 ## Jobs
 
 The Procrastinate app persists jobs in Postgres. Its `ping` task runs on the default queue;
 `ingest_brain` retains its durable task name but ingests the active collection on the
-concurrency-1 `local` queue and is not scheduled.
+concurrency-1 `local` queue and is not scheduled. `run_coding_task` is on the unserved `tasks`
+queue.
 
 ## Knowledge
 

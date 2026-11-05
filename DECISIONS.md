@@ -803,3 +803,22 @@ would need LiteLLM to join and leave networks. A lock is enough for hand-run tri
 **2026-11-05 — The task image reuses the context image's Node digest.** One already-reviewed base
 on the node. Bookworm has no Python 3.13, so the uv version pinned for that image installs it;
 the build refuses a Node below Pi's 22.19 minimum rather than trusting the tag's name.
+
+**2026-11-05 — A task file's jobs commit with its tasks.** Procrastinate can run a defer on a
+caller's connection, so the rows and the jobs share one transaction. Deferring after the commit
+could leave a task that never gets a job, with no sign of it. The share lock on earlier dependencies
+closes the same gap from the other side: whatever marks one done cannot miss a task that is still
+being written.
+
+**2026-11-05 — One slice can arrive in several files.** A repeat is refused per slice and position,
+not per slice, so a later file may add positions, and `depends_on` may name earlier ones in the same
+repository and branch. Dependencies are positions because the planner has no ids. Stored rows hold
+task ids, and a task with an earlier `done` dependency is deferred at once.
+
+**2026-11-05 — `severity` is free text; `priority` is an integer.** Nothing reads severity yet, and
+a check on a guessed vocabulary would refuse good files. Priority has a meaning already: it is
+Procrastinate's own job priority.
+
+**2026-11-05 — `routes` is checked only as a list.** The table is edited directly and a stricter
+check would have to change with every new route kind. Whatever uses a route validates it there.
+
