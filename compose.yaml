@@ -56,9 +56,11 @@ services:
     volumes:
       - ./config:/etc/litellm:ro
       - ./src/homelab/api/video_jobs.py:/opt/homelab-api/video_jobs.py:ro
+      - ${HOMELAB_TASK_TOKENS_PATH:-/srv/homelab/task-tokens}:/run/homelab-task-tokens:ro
     networks:
       - default
       - models
+      - tasks
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
@@ -162,3 +164,10 @@ secrets:
 networks:
   models:
     name: homelab-models
+  # LiteLLM and one task container at a time; nothing else, and no route out.
+  tasks:
+    name: homelab-tasks
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.253.87.0/24

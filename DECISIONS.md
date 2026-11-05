@@ -777,3 +777,29 @@ as a new multipart image-edit purpose; the existing image purposes remain on Lit
 GPT and Nano profiles gain operations, capability and price projections from their existing
 profiles, retaining their output estimates and reference charges. No general image model is
 misrepresented as an upscaler. One default per supported operation is advertised.
+
+**2026-11-05 — Task tokens are files of hashes, enforced by the existing middleware.** A task
+container must not inherit the network trust other clients have, and a master key or virtual
+keys would change every client. The store is a root-written directory mounted read-only into
+LiteLLM: a token needs no database, a table would need a migration the proxy does not own, and
+deleting a file is an immediate revocation. The subnet check uses the socket's peer, which Uvicorn
+rewrites only for loopback peers. `application/json` is required from the subnet because LiteLLM
+chooses its parser by content type, and the body it reads must be the one the rule judged.
+
+**2026-11-05 — The host treats a working copy as hostile, even for git.** The runner is root and
+an agent can write anywhere it can reach. Host-side `git diff` would execute a planted
+`core.fsmonitor`, filter or hook as root. So git runs only in containers, with `.git` mounted
+read-only in all three steps: that also protects the base commit and later host use of the copy.
+A tar of the base would have been the alternative, with more moving parts and no gain once `.git`
+cannot change. `.venv` is read-only for the agent and the check so a passing test cannot come
+from a replaced pytest; the agent has no package index, so it loses nothing. The check step
+writes the diff because a separate container would be a fourth step: stdout carries the diff,
+stderr the check.
+
+**2026-11-05 — One task run at a time, by lock.** Docker's `enable_icc=false` would keep task
+containers apart but also cut them off from LiteLLM on the same bridge, and a network per run
+would need LiteLLM to join and leave networks. A lock is enough for hand-run trials.
+
+**2026-11-05 — The task image reuses the context image's Node digest.** One already-reviewed base
+on the node. Bookworm has no Python 3.13, so the uv version pinned for that image installs it;
+the build refuses a Node below Pi's 22.19 minimum rather than trusting the tag's name.

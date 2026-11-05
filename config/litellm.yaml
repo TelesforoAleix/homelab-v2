@@ -24,6 +24,12 @@ model_list:
       api_base: https://ai-gateway.vercel.sh/v1
       api_key: os.environ/HOMELAB_GATEWAY_API_KEY
       reasoning_effort: low
+  - model_name: task-worker
+    litellm_params:
+      model: openai/deepseek/deepseek-v4.1-flash
+      api_base: https://ai-gateway.vercel.sh/v1
+      api_key: os.environ/HOMELAB_GATEWAY_API_KEY
+      reasoning_effort: low
   - model_name: chat:high
     litellm_params:
       model: openai/deepseek/deepseek-v4.1-flash
@@ -298,6 +304,10 @@ general_settings:
   disable_spend_logs: true
   forward_client_headers_to_llm_api: false
   forward_llm_provider_auth_headers: false
+
+# Requests from this subnet need a run's task token; compose.yaml creates the network.
+task_subnet: 10.253.87.0/24
+task_token_dir: /run/homelab-task-tokens
 
 # Home Lab owns these native gateway calls; LiteLLM's video providers are unused.
 media_gateway_url: https://ai-gateway.vercel.sh/v4/ai

@@ -18,6 +18,7 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
         "embed-large-bulk",
         "embed-large-bulk-*",
         "grade",
+        "task-worker",
         "translate",
         "vision",
         "vision-*",
@@ -40,6 +41,7 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
             "reasoning_effort": effort,
         }
     assert rows["frontline"] == rows["chat"]
+    assert rows["task-worker"] == rows["chat"]
     assert rows["embed"] == {
         "model": "openai/llama-nemotron-embed-1b-v2",
         "api_base": "http://llama-embed:8080/v1",
@@ -110,7 +112,7 @@ def test_proxy_is_the_only_network_member_and_gateway_secret_holder():
     assert proxy["restart"] == "unless-stopped"
     assert proxy["logging"] == {"driver": "journald"}
     assert proxy["ports"] == ["127.0.0.1:4000:4000"]
-    assert proxy["networks"] == ["default", "models"]
+    assert proxy["networks"] == ["default", "models", "tasks"]
     assert compose["networks"]["models"] == {"name": "homelab-models"}
     assert proxy["secrets"] == ["gateway_api_key", "image_gateway_api_key"]
     assert compose["secrets"]["image_gateway_api_key"] == {
@@ -255,7 +257,7 @@ def test_large_embeddings_are_private_cpu_only_and_hardened():
 def test_proxy_module_mount_does_not_need_a_mountpoint_inside_readonly_config():
     compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
     proxy = compose["services"]["litellm"]
-    mounts = [volume.split(":") for volume in proxy["volumes"]]
+    mounts = [volume.rsplit(":", 2) for volume in proxy["volumes"]]
     for index, (_, target, mode) in enumerate(mounts):
         if mode != "ro":
             continue
