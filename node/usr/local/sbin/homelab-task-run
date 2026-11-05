@@ -1,10 +1,11 @@
 #!/usr/bin/python3 -I
-"""Run one coding ticket in three isolated containers and leave a record of what happened.
+"""Run one coding ticket in isolated containers and leave a record of what happened.
 
 Everything inside a working copy is untrusted: the repository, the commands the model writes,
 and whatever they leave behind. Nothing here runs git or reads the copy's contents on the host;
-that happens in the containers. Its `.git` is mounted read-only in all three steps and `.venv`
-in the last two, so the base commit, hooks and installed test tools stay as prepared.
+that happens in the containers. Its `.git` is mounted read-only in prepare, agent and check, and
+`.venv` in all but prepare, so the base commit, hooks and installed test tools stay as prepared.
+Given `--allow`, a passing check is followed by a commit step, the only one that may write `.git`.
 """
 import argparse
 import fcntl
@@ -26,8 +27,10 @@ VOLUME = Path("/srv/homelab")
 RUNS = VOLUME / "task-runs"
 TOKENS = VOLUME / "task-tokens"
 LOCK = Path("/run/lock/homelab-task-run.lock")
-IMAGE = "homelab-task:1"
+IMAGE = "homelab-task:2"
 TASK_NETWORK = "homelab-tasks"
+PACKAGE_NETWORK = "homelab-packages"
+PACKAGE_PROXY = "http://package-proxy:8888"
 MODELS_URL = "http://litellm:4000/v1"
 LITELLM_GID = 10001
 MEMORY = "8g"
@@ -36,8 +39,11 @@ PIDS = "512"
 TMPFS = "4g"
 OUTPUT_LIMIT = 256 * 1024 * 1024
 TOKEN_GRACE_SECONDS = 60
+MAX_REQUESTS = 100
 PURPOSE = re.compile(r"[a-z0-9][a-z0-9.-]{0,63}\Z")
 CHECK_STARTED = "homelab-task-run: check started"
+COMMIT_MESSAGE = ".task-commit-message"
+BUDGET_SPENT = "request budget is spent"
 
 # Reports the base commit on stdout: the only thing this step says to the host.
 PREPARE = """set -eu
@@ -91,6 +97,90 @@ echo '%s' >&2
 exec sh -c "$command" >&2
 """ % CHECK_STARTED
 
+# The only step that can write `.git`, so it trusts nothing the tree or `.venv` could have supplied:
+# the system Python in isolated mode, a fixed PATH, no git config but the clone's, hooks off. It
+# never runs anything from the copy. commit-tree, unlike `git commit`, looks at no working tree or
+# submodule. stdout is one line for the host: `commit <id>`, or `refused <reason>` with exit 3.
+COMMIT = r"""
+import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+
+spec = json.loads(sys.argv[1])
+base, allowed, pinned, message_file = (
+    spec["base"], spec["allowed"], spec["pinned"], spec["message_file"]
+)
+os.environ.update(
+    PATH="/usr/bin:/bin",
+    GIT_CONFIG_NOSYSTEM="1",
+    GIT_CONFIG_GLOBAL=os.devnull,
+    GIT_COMMITTER_NAME=os.environ["GIT_AUTHOR_NAME"],
+    GIT_COMMITTER_EMAIL=os.environ["GIT_AUTHOR_EMAIL"],
+)
+
+
+def git(*args, **kwargs):
+    command = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *args]
+    return subprocess.run(command, check=True, stdout=subprocess.PIPE, **kwargs).stdout
+
+
+def refuse(reason, detail=""):
+    print("refused", reason)
+    print("refused:", reason, detail, file=sys.stderr)
+    sys.exit(3)
+
+
+def covers(entry, path):
+    return path == entry or path.startswith(entry + "/")
+
+
+def guarded(path):
+    parts = path.split("/")
+    return parts[-1] == "uv.lock" or any(part.startswith(".git") for part in parts)
+
+
+def read_message():
+    try:
+        descriptor = os.open(message_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        refuse("no_message")
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            refuse("no_message")
+        message = stream.read(65536).strip()
+    if not message:
+        refuse("no_message")
+    return message + b"\n"
+
+
+message = read_message()
+exclude = os.path.join(tempfile.mkdtemp(), "exclude")
+with open(exclude, "w") as stream:
+    stream.write("/.venv/\n/" + message_file + "\n")
+git("-c", "core.excludesFile=" + exclude, "add", "-A")
+raw = git("diff", "--cached", "--raw", "--no-renames", "-z", "--abbrev=40", base).split(b"\0")
+if len(raw) < 2:
+    refuse("no_change")
+for meta, name in zip(raw[0::2], raw[1::2]):
+    modes, path = meta.split()[:2], os.fsdecode(name)
+    entries = [entry for entry in allowed if covers(entry, path)]
+    if any(covers(pin, path) for pin in pinned):
+        refuse("pinned", path)
+    if not entries:
+        refuse("outside_allowed", path)
+    if guarded(path) and not any(guarded(entry) for entry in entries):
+        refuse("guarded", path)
+    if any(mode.lstrip(b":") == b"160000" for mode in modes):
+        refuse("submodule", path)
+tree = git("write-tree").decode().strip()
+commit = git("commit-tree", tree, "-p", base, input=message).decode().strip()
+git("update-ref", "HEAD", commit, base)
+print("commit", commit)
+"""
+
 
 class Refused(Exception):
     """An input the script will not run with; the message is for the caller."""
@@ -136,7 +226,19 @@ def pinned_path(value):
     return value
 
 
-def container(name, copy, uid, gid, network, *, venv_read_only, env=(), stdin=False):
+def container(
+    name,
+    copy,
+    uid,
+    gid,
+    network,
+    *,
+    venv_read_only,
+    git_read_only=True,
+    env=(),
+    stdin=False,
+    entry=("sh", "-c"),
+):
     tmpfs = f"rw,exec,nosuid,nodev,size={TMPFS}"
     command = [
         "docker", "run", "--rm", "--name", name, "--pull", "never", "--init",
@@ -154,8 +256,9 @@ def container(name, copy, uid, gid, network, *, venv_read_only, env=(), stdin=Fa
         "--network", network,
         "--workdir", "/work",
         "--mount", f"type=bind,src={copy},dst=/work",
-        "--mount", f"type=bind,src={copy}/.git,dst=/work/.git,readonly",
     ]
+    if git_read_only:
+        command += ["--mount", f"type=bind,src={copy}/.git,dst=/work/.git,readonly"]
     if venv_read_only:
         require_real_directory(copy / ".venv")
         command += ["--mount", f"type=bind,src={copy}/.venv,dst=/work/.venv,readonly"]
@@ -163,7 +266,7 @@ def container(name, copy, uid, gid, network, *, venv_read_only, env=(), stdin=Fa
         command.append("--interactive")
     for variable in env:
         command += ["--env", variable]
-    return command + [IMAGE, "sh", "-c"]
+    return [*command, IMAGE, *entry]
 
 
 def capture(command, name, stdout_path, stderr_path, seconds, *, stdin=None, env=None):
@@ -226,11 +329,17 @@ def clear_tokens():
         path.unlink()
 
 
-def issue_token(token, purpose, seconds):
+def issue_token(token, purpose, seconds, max_requests):
     path = TOKENS / hashlib.sha256(token.encode()).hexdigest()
     temporary = path.with_suffix(".tmp")
     temporary.write_text(
-        json.dumps({"purposes": [purpose], "expires_at": int(time.time()) + seconds})
+        json.dumps(
+            {
+                "purposes": [purpose],
+                "expires_at": int(time.time()) + seconds,
+                "max_requests": max_requests,
+            }
+        )
     )
     os.chown(temporary, 0, LITELLM_GID)
     temporary.chmod(0o640)
@@ -281,6 +390,7 @@ def summarize_events(path):
     """Steps, tokens and how the last model reply ended. Pi exits 0 even when the model failed."""
     steps = 0
     last_stop = None
+    budget_spent = False
     tokens = {"fresh": 0, "output": 0, "cached": 0, "cache_write": 0}
     with open(path, "rb") as stream:
         for line in stream:
@@ -294,12 +404,13 @@ def summarize_events(path):
                 steps += 1
             if kind == "message_end" and message.get("role") == "assistant":
                 last_stop = message.get("stopReason")
+                budget_spent = BUDGET_SPENT in str(message.get("errorMessage"))
                 usage = message.get("usage") or {}
                 tokens["fresh"] += usage.get("input", 0)
                 tokens["output"] += usage.get("output", 0)
                 tokens["cached"] += usage.get("cacheRead", 0)
                 tokens["cache_write"] += usage.get("cacheWrite", 0)
-    return {"steps": steps, "tokens": tokens, "last_stop": last_stop}
+    return {"steps": steps, "tokens": tokens, "last_stop": last_stop, "budget_spent": budget_spent}
 
 
 def scrub(paths, token):
@@ -315,8 +426,13 @@ def run(args):
     pins = [pinned_path(value) for value in args.pin]
     if not PURPOSE.fullmatch(args.purpose):
         raise Refused("invalid purpose")
+    allowed = [pinned_path(value) for value in args.allow]
+    if allowed and not (args.author_name and args.author_email):
+        raise Refused("a commit needs an author")
     if args.time_limit <= 0:
         raise Refused("time limit must be positive")
+    if args.max_requests <= 0:
+        raise Refused("request budget must be positive")
     if not os.path.ismount(VOLUME):
         raise Refused("data volume is locked")
     if not Path(args.ticket).read_bytes().strip():
@@ -341,18 +457,23 @@ def run(args):
         "tokens": None,
         "last_stop": None,
         "check_exit_code": None,
+        "commit": None,
         "ended": "interrupted",
     }
     token = secrets.token_urlsafe(32)
     try:
-        record["ended"] = execute(args, record, folder, (copy, uid, gid), pins, token)
+        owner = (copy, uid, gid)
+        ended = execute(args, record, folder, owner, pins, token)
+        if ended == "check_passed" and allowed:
+            ended = commit(args, record, folder, owner, pins, allowed)
+        record["ended"] = ended
     finally:
         scrub(sorted(folder.iterdir()), token)
         record["ended_at"] = datetime.now(UTC).isoformat(timespec="seconds")
         record["seconds"] = round(time.monotonic() - started, 1)
         (folder / "run.json").write_text(json.dumps(record, indent=2) + "\n")
     print(json.dumps({"run_folder": str(folder), **record}))
-    return 0 if record["ended"] == "check_passed" else 1
+    return 0 if record["ended"] in {"check_passed", "committed"} else 1
 
 
 def execute(args, record, folder, owner, pins, token):
@@ -361,7 +482,13 @@ def execute(args, record, folder, owner, pins, token):
     name = f"homelab-task-{record['run_id'].lower()}"
 
     code, stopped = capture(
-        container(f"{name}-prepare", *owner, "bridge", venv_read_only=False)
+        container(
+            f"{name}-prepare",
+            *owner,
+            PACKAGE_NETWORK,
+            venv_read_only=False,
+            env=[f"HTTPS_PROXY={PACKAGE_PROXY}"],
+        )
         + [PREPARE, "prepare", *pins],
         f"{name}-prepare",
         folder / "base-commit",
@@ -376,7 +503,7 @@ def execute(args, record, folder, owner, pins, token):
         return "prepare_failed"
     record["base_commit"] = base
 
-    grant = issue_token(token, args.purpose, seconds + TOKEN_GRACE_SECONDS)
+    grant = issue_token(token, args.purpose, seconds + TOKEN_GRACE_SECONDS, args.max_requests)
     try:
         with open(args.ticket, "rb") as ticket:
             code, stopped = capture(
@@ -413,6 +540,8 @@ def execute(args, record, folder, owner, pins, token):
     agent_ended = None
     if stopped != "exited":
         agent_ended = f"agent_{stopped}"
+    elif summary["budget_spent"]:
+        agent_ended = "agent_budget_spent"
     elif code != 0 or summary["last_stop"] != "stop":
         agent_ended = "agent_failed"
 
@@ -443,6 +572,46 @@ def execute(args, record, folder, owner, pins, token):
     return "check_passed" if code == 0 else "check_failed"
 
 
+def commit(args, record, folder, owner, pins, allowed):
+    """The fourth step, for a passing check only; returns why the run ended."""
+    name = f"homelab-task-{record['run_id'].lower()}-commit"
+    require_real_directory(owner[0] / ".git")
+    spec = {
+        "base": record["base_commit"],
+        "allowed": allowed,
+        "pinned": pins,
+        "message_file": COMMIT_MESSAGE,
+    }
+    # `.venv/bin` leads the image's PATH and prepare ran repository code, so name everything.
+    code, stopped = capture(
+        container(
+            name,
+            *owner,
+            "none",
+            venv_read_only=True,
+            git_read_only=False,
+            env=["PATH=/usr/bin:/bin", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL"],
+            entry=("/usr/bin/python3", "-I", "-c"),
+        )
+        + [COMMIT, json.dumps(spec)],
+        name,
+        folder / "commit.out",
+        folder / "commit.log",
+        args.time_limit * 60,
+        env={"GIT_AUTHOR_NAME": args.author_name, "GIT_AUTHOR_EMAIL": args.author_email},
+    )
+    result = (folder / "commit.out").read_text(errors="replace").strip()
+    (folder / "commit.out").unlink()
+    if stopped != "exited":
+        return f"commit_{stopped}"
+    if code == 0 and (found := re.fullmatch(r"commit ([0-9a-f]{40,64})", result)):
+        record["commit"] = found[1]
+        return "committed"
+    if code == 3 and (found := re.fullmatch(r"refused ([a-z_]+)", result)):
+        return f"commit_refused_{found[1]}"
+    return "commit_failed"
+
+
 def parse(argv):
     parser = argparse.ArgumentParser(prog="homelab-task-run", description=__doc__.splitlines()[0])
     parser.add_argument("--working-copy", required=True)
@@ -451,6 +620,14 @@ def parse(argv):
     parser.add_argument("--pin", action="append", default=[], help="path restored before the check")
     parser.add_argument("--purpose", default="task-worker")
     parser.add_argument("--time-limit", type=int, default=30, help="minutes per container")
+    parser.add_argument(
+        "--max-requests", type=int, default=MAX_REQUESTS, help="model requests for this run"
+    )
+    parser.add_argument(
+        "--allow", action="append", default=[], help="path a commit may touch; asks for a commit"
+    )
+    parser.add_argument("--author-name", help="commit author, with --allow")
+    parser.add_argument("--author-email", help="commit author, with --allow")
     return parser.parse_args(argv)
 
 

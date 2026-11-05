@@ -16,6 +16,8 @@ Task container ── homelab-tasks (run token) ──┤
                       (hosted chat/images/video)        (local embeddings)
 
 api / worker ── Postgres + pgvector (private default network)
+
+Task prepare ── homelab-packages ── package-proxy ── package indexes (HTTPS only)
 ```
 
 Home Lab owns provider keys, the route table, knowledge provenance, job durability and the API
@@ -26,8 +28,8 @@ retrieval; Procrastinate owns the job machinery.
 ## Deployment
 
 One `compose.yaml`: `api`, `worker`, `postgres` (pgvector image), `llama-embed` (llama.cpp
-server), `llama-embed-large` (CPU Qwen3-Embedding-4B) and `litellm`. Only `api` publishes a
-port, on loopback.
+server), `llama-embed-large` (CPU Qwen3-Embedding-4B), `litellm` and `package-proxy` (tinyproxy, for
+a task's prepare step). Only `api` publishes a port, on loopback.
 `node/etc/systemd/system/homelab.service` wraps the stack so it starts after the encrypted
 volume is unlocked (`homelab-data.target`) and
 stops with it. Brain and the corpus are bind-mounted read-only; Postgres data stays on main.
@@ -481,10 +483,13 @@ believes forwarded headers only from loopback, so a task container cannot claim 
 address. A request from the subnet needs a live task token and may then use only
 `POST /v1/chat/completions`, as `application/json`, with a purpose the token names. Anything
 else gets 401, 403, 415 or 400 and a `task_refused reason=...` audit line, before any other
-rule, including liveness. Requests from other networks never enter this path. The store is a
-directory on the encrypted volume, mounted read-only into LiteLLM: one file per token, named by
-the token's SHA-256, holding only its purposes and expiry. Deleting the file revokes it. The
-next request sees that, because each one reads the store. The token itself exists only in
+rule, including liveness. A request that passes counts against the token's `max_requests`, 100 by
+default; past it the answer is 429, reason `budget`. That budget is both the spend cap and the step
+limit of a run. It is counted per token hash in memory, so restarting LiteLLM forgives it. Requests
+from other networks never enter this path. The store is a directory on the encrypted volume,
+mounted read-only into LiteLLM: one file per token, named by the token's SHA-256, holding only its
+purposes, expiry and budget. Deleting the file revokes it. The next request sees that, because
+each one reads the store. The token itself exists only in
 the runner's memory and the agent container's environment. The `task-worker` purpose has
 exactly `chat`'s model and effort; it is an ordinary purpose to any other client.
 There is no master key, LiteLLM-managed database, UI or virtual key configuration.
@@ -514,30 +519,48 @@ No hosted observability callbacks are configured. `/health` keeps `status`, `ver
 
 ## Coding tasks
 
-`homelab-task-run` runs one ticket by hand against one working copy; see the
+`homelab-task-run` runs one ticket against one working copy; see the
 [runbook](docs/operations.md#coding-tasks-in-a-container). Pi is the agent. It has no sandbox of
 its own, and model-generated commands and repository content are untrusted, so the containers
-are the boundary. It has no retry, commit or push. A durable record and a queue exist for tasks
-([Task store](#task-store)), but nothing connects them to this script yet.
+are the boundary. By hand it stops at the check. The [task runner](#task-runner) calls it for
+each attempt at a queued task, and adds the commit step.
 
 | Step | Runs | Network | Token | Read-only in the copy |
 |---|---|---|---|---|
-| prepare | checks the copy is clean and pins exist; `uv sync --locked` | Docker's default bridge | none | `.git` |
+| prepare | checks the copy is clean and pins exist; `uv sync --locked` | `homelab-packages` only | none | `.git` |
 | agent | Pi, ticket on stdin | `homelab-tasks` only | the run's | `.git`, `.venv` |
 | check | writes the diff, restores pins, runs the check | none | none | `.git`, `.venv` |
+| commit | with `--allow`, after a passing check: judges the change, makes one commit | none | none | `.venv` |
 
 Every container is non-root (the working copy's owner, never root), has no capabilities and
 `no-new-privileges`, a read-only root with tmpfs `/tmp` and home, limits on memory, CPU and
 processes, and a wall-clock limit. It mounts only the working copy, and it uses Docker's `none`
 log driver, because the daemon's `json-file` default would keep prompts and code on disk.
 
-The host never runs git in a working copy or reads its content. Those files are attacker-
-influenced and the script is root: a planted `core.fsmonitor` or hook would run on the host.
-Git runs in the containers, and `.git` stays read-only there so hooks, config and the base
-commit are as they were. The check step keeps its index and new objects in `/tmp`. The diff is
+Prepare's only way out is `package-proxy`, a tinyproxy on the internal `homelab-packages` network,
+reached through `HTTPS_PROXY`. The proxy is that network's only other member and the only part with
+an outside route, its own `homelab-package-egress`. It allows `CONNECT` to port 443 of `pypi.org`,
+`files.pythonhosted.org` and `registry.npmjs.org` and refuses everything else, plain HTTP to those
+hosts included. Prepare runs the repository's build backend, so it can still talk to those hosts.
+
+The host never runs git in a working copy or reads its content before the commit step. Those files
+are attacker-influenced and the script is root: a planted `core.fsmonitor` or hook would run on the
+host. Git runs in the containers, and `.git` stays read-only in the first three steps so hooks,
+config and the base commit are as they were. The check step keeps its index and new objects in `/tmp`. The diff is
 taken before pins are restored, so it shows an attempt to change them. `.venv` is read-only for
 the agent and the check, and the check ignores in-tree bytecode, so the agent cannot replace
 the test runner. Bind sources are refused if they are symlinks, which Docker would follow.
+
+The commit step is the only one that can write `.git`, so it runs nothing the copy supplied. `.venv/bin`
+leads the image's `PATH` and prepare ran repository code, so it starts `/usr/bin/python3 -I` by full
+path with a fixed `PATH`, ignores global and system git config, and turns hooks off. It stages the
+tree, excluding `.venv` and `.task-commit-message`, and refuses (exit 3, failing the attempt) when
+the change has a path outside `--allow` or inside a pin, an embedded repository, no message or
+nothing changed. A path with a component starting `.git`, or a `uv.lock`, also needs an `--allow`
+entry that is itself such a path, so `src` does not cover `src/.gitattributes`. An `--allow` entry
+covers itself and anything below it. The commit is made with `commit-tree`, which reads no working
+tree, on the base commit, by the author given on the command line. The repository's own
+configuration has no say in it, and the message is the file the agent wrote.
 
 Pi runs with project approval, extensions, skills, templates, themes, MCP and sessions off,
 which also skips the `sessionDir` lookup that happens before project trust. `AGENTS.md` still
@@ -547,9 +570,56 @@ exhausting its retries, so a run judges the agent by its last stop reason, not i
 The token is issued just before the agent starts, expires a minute after its limit, and is
 deleted when the agent stops, even on a signal; a run also clears whatever a dead run left.
 Docker cannot isolate containers on one bridge from each other without also cutting them off
-from LiteLLM (`enable_icc` works per network), so a lock allows one run at a time. The
+from LiteLLM (`enable_icc` works per network), so a lock allows one run at a time. A spent budget
+ends a run as `agent_budget_spent`: Pi reports the proxy's refusal as its last error. The
 record stays in a root-only folder on the encrypted volume. It holds repository content by
 design, and the token is scrubbed from every file in it.
+
+### Task runner
+
+`homelab-task-runner` is a systemd service on the host, because it starts containers and pushes, and
+no container may do either. It is a slow loop, one task at a time. It waits while the data volume
+is locked or a run by hand holds the lock, and every 30 seconds when the queue is empty.
+
+```text
+claim ── fresh clone ── homelab-task-run (prepare, agent, check, commit) ── push ── finish
+              └───────────── a new attempt, from a new clone ◄───────────────┘
+```
+
+**The store.** Postgres has no host port, so the runner uses `docker exec homelab-worker-1 python -m
+homelab.tasks.claim` and `homelab.tasks.finish`, as the image-cost timer does. Claiming calls
+Procrastinate's own `fetch_job` in the same transaction as the task's `running`, so a job goes to
+one caller and the two states cannot differ. Finishing moves the job to `succeeded` or `failed`
+with the task. Every `finish` event can be repeated; the runner repeats one until it lands. On
+start the runner removes containers and copies a dead runner left and calls `claim --recover`,
+which marks its attempt `runner_died` and retries its job, so the task is `queued` again.
+
+**Working copies** are under `/srv/homelab/task-work/<task id>/`, owned by the unprivileged system
+user `homelab-task`, who runs the clone. Each attempt clones the slice branch's tip over HTTPS with
+no template, so an attempt inherits nothing from the last. The folder is removed when the task
+ends. `base_commit` is kept as a record and does not choose the start.
+
+**Attempts.** Routes come from `homelab_roles`, role `worker`, and an attempt uses one route from
+start to end. A failed check gets one more run on the same route, in a new clone, with the end of
+the check's output in the ticket. Any other failure, or a second failed check, moves to the next
+route; when they are used up the task ends `escalated` with the last reason. A `cli` route is
+skipped with a logged reason. Each attempt writes an attempts row and a `lead` trace with its
+steps, tokens and seconds. Cost stays empty, and `cache_write` tokens stay in `run.json`.
+
+**The push** happens only here, as root, after the commit step. `git` runs against the copy's `.git`
+from outside the copy, which only git itself has written since the clone, with hooks and global
+config off. The URL and refspec (`<commit>:refs/heads/<branch>`) are given on the command line, and
+the key `/root/.ssh/task-push-<repository name>` through `GIT_SSH_COMMAND`, checking GitHub's host
+keys from `/etc/homelab-task/github_known_hosts`. It never forces. It refuses `main` and the
+default branch, which it asks the remote for, and an unknown default counts as refused. A task on
+such a branch fails before any attempt. No key is ever mounted in a container. A push git rejects
+because the branch moved reruns the task once from the new tip, then ends `escalated`. A missing key
+or any other push failure ends it `escalated` at once, and its `diff.patch` stays in the run folder.
+
+**Endings.** `done` defers each dependent with nothing else unmet. `escalated` means the attempts
+ran and a person is needed; `failed` means the task could not start (a refused repository or
+branch) or the runner hit a fault. After either, dependents stay queued with no job and the slice
+stops: a claim discards the job of any other task in it, leaving that task `queued`.
 
 ### Task store
 
@@ -593,10 +663,10 @@ nor jobs. An unknown dependency is refused, and so is a slice and position that 
 success it prints the new ids as a JSON list in position order. A refusal exits 1 and names the
 field or position on stderr, never its content.
 
-The queue is `tasks`, and a job carries only the task id. It has no consumer: `run_coding_task` is
-registered so the job is valid and raises if run. The `worker` service serves only `local` and
-`default` and has no Docker access, so a job stays `todo` and no service can run a task. A task
-waiting for a dependency has a row and no job.
+The queue is `tasks`, and a job carries only the task id. `run_coding_task` is registered so the
+job is valid and raises if run. The `worker` service serves only `local` and `default` and has no
+Docker access; the [task runner](#task-runner) on the host is the consumer. A task waiting for a
+dependency has a row and no job.
 
 `python -m homelab.jobs.schema`, the worker's start step, applies `src/homelab/tasks/schema.sql`
 after Procrastinate's schema. Every statement is idempotent, and a failure stops the worker
@@ -624,7 +694,7 @@ FROM homelab_task_traces GROUP BY role, route, kind;
 
 The Procrastinate app persists jobs in Postgres. Its `ping` task runs on the default queue;
 `ingest_brain` retains its durable task name but ingests the active collection on the
-concurrency-1 `local` queue and is not scheduled. `run_coding_task` is on the unserved `tasks`
+concurrency-1 `local` queue and is not scheduled. `run_coding_task` is on the `tasks`
 queue.
 
 ## Knowledge

@@ -50,12 +50,14 @@ Solid parts are built; dashed parts are planned.
 - [ARCHITECTURE.md](ARCHITECTURE.md) explains the boundaries and rules;
   [DECISIONS.md](DECISIONS.md) records the choices behind them.
 
-[Coding tasks](docs/operations.md#coding-tasks-in-a-container) run by hand on the node, one at a
-time: `homelab-task-run` gives a ticket to the Pi agent in an isolated container on one working
-copy, then judges the result with a pinned check. Three containers prepare, work and check.
-Only the agent reaches LiteLLM, on `homelab-tasks`, with a one-run token for its purpose.
-Tasks can also be [submitted](ARCHITECTURE.md#task-store) as a file to a durable store and queue
-in Postgres. Nothing consumes that queue yet.
+[Coding tasks](docs/operations.md#coding-tasks-in-a-container) run one at a time on the node:
+`homelab-task-run` gives a ticket to the Pi agent in an isolated container on one working copy,
+then judges the result with a pinned check. Separate containers prepare, work, check and commit.
+Only the agent reaches LiteLLM, on `homelab-tasks`, with a one-run token for its purpose and a
+request budget; prepare reaches only the package indexes, through a proxy.
+Tasks are [submitted](ARCHITECTURE.md#task-store) as a file to a durable store and queue in
+Postgres. The [task runner](ARCHITECTURE.md#task-runner), a host service, runs them with retries
+across routes, and pushes each one's commit to its slice branch.
 
 A [read-only code context server](docs/operations.md#code-context-server) gives Mac coding agents
 symbol navigation over SSH. It runs Serena without network access against separate,
@@ -106,7 +108,7 @@ Running the stack needs a provisioned node; see the [operator runbook](docs/oper
 | `src/homelab/models/` | Purpose discovery and model clients |
 | `src/homelab/knowledge/` | LlamaIndex ingestion and retrieval |
 | `src/homelab/jobs/` | Procrastinate tasks and worker |
-| `src/homelab/tasks/` | Coding task tables and the submit command |
+| `src/homelab/tasks/` | Coding task tables and the submit, claim and finish commands |
 | `config/litellm.yaml` | Model purposes and routes |
 | `node/` | Host files at their installed paths (table entries are merged) |
 | `mac/` | Usage profiles, measurements, model router and action listener |

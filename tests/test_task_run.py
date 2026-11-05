@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -184,7 +185,7 @@ def values(command, flag):
 
 
 @pytest.mark.parametrize(
-    "network,venv", [("bridge", False), ("homelab-tasks", True), ("none", True)]
+    "network,venv", [("homelab-packages", False), ("homelab-tasks", True), ("none", True)]
 )
 def test_every_container_has_the_same_confinement(repo, network, venv):
     command = flags(runner.container("name", repo, 1000, 1000, network, venv_read_only=venv))
@@ -278,12 +279,13 @@ def test_a_token_the_script_issues_is_one_the_proxy_accepts(tmp_path, monkeypatc
     monkeypatch.setattr(hook, "task_token_dir", tmp_path)
     monkeypatch.setattr(runner, "TOKENS", tmp_path)
     monkeypatch.setattr(runner.os, "chown", lambda *args: None)
-    path = runner.issue_token("secret-value", "task-worker", 60)
+    path = runner.issue_token("secret-value", "task-worker", 60, 100)
     assert path.name == hashlib.sha256(b"secret-value").hexdigest()
     assert oct(path.stat().st_mode & 0o777) == "0o640"
     assert "secret-value" not in path.read_text()
     assert [item.name for item in tmp_path.iterdir()] == [path.name]
-    assert hook.task_grant("secret-value") == ["task-worker"]
+    assert hook.task_grant("secret-value")["purposes"] == ["task-worker"]
+    assert hook.task_grant("secret-value")["max_requests"] == 100
     assert hook.task_grant("other") is None
     path.unlink()
     assert hook.task_grant("secret-value") is None
@@ -322,6 +324,7 @@ def test_events_give_steps_tokens_and_the_last_stop(tmp_path):
         "steps": 2,
         "tokens": {"fresh": 200, "output": 14, "cached": 80, "cache_write": 0},
         "last_stop": "stop",
+        "budget_spent": False,
     }
 
 
@@ -392,6 +395,7 @@ class Steps:
         self.tokens = tmp_path / "tokens"
         self.runs = tmp_path / "runs"
         self.agent, self.stops = agent, stops
+        self.commit, self.commit_output = (0, "exited"), "commit " + "c" * 40
         self.base = git(repo, "rev-parse", "HEAD").strip()
         self.prepare = (0, "exited")
         self.check = (0, "exited")
@@ -425,6 +429,9 @@ class Steps:
                 with open(stdout, "a") as stream:
                     stream.write(token + "\n")
             return self.agent
+        if step == "commit":
+            stdout.write_text(self.commit_output + "\n")
+            return self.commit
         stderr.write_text(runner.CHECK_STARTED + "\ncheck output\n")
         stdout.write_text("diff\n")
         if self.leak == "diff":
@@ -442,6 +449,10 @@ def arguments(repo, tmp_path, **overrides):
         "pin": ["tests"],
         "purpose": "task-worker",
         "time_limit": 30,
+        "max_requests": 100,
+        "allow": [],
+        "author_name": None,
+        "author_email": None,
     }
     return argparse.Namespace(**{**values_, **overrides})
 
@@ -485,7 +496,10 @@ def test_only_the_agent_has_a_token_and_only_while_it_runs(repo, tmp_path, monke
     assert "HOMELAB_TASK_TOKEN" not in steps.calls["check"]["env"]
     for step in steps.calls.values():
         assert token not in " ".join(step["command"])
-    assert values(steps.calls["prepare"]["command"], "--network") == ["bridge"]
+    assert values(steps.calls["prepare"]["command"], "--network") == ["homelab-packages"]
+    assert values(steps.calls["prepare"]["command"], "--env") == [
+        "HTTPS_PROXY=http://package-proxy:8888"
+    ]
     assert values(steps.calls["agent"]["command"], "--network") == ["homelab-tasks"]
     assert values(steps.calls["check"]["command"], "--network") == ["none"]
 
@@ -554,7 +568,15 @@ def test_an_interrupted_run_revokes_its_token(repo, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     "overrides",
-    [{"purpose": "chat:high"}, {"purpose": "../x"}, {"time_limit": 0}, {"pin": ["../outside"]}],
+    [
+        {"purpose": "chat:high"},
+        {"purpose": "../x"},
+        {"time_limit": 0},
+        {"pin": ["../outside"]},
+        {"max_requests": 0},
+        {"allow": ["../outside"]},
+        {"allow": ["src"]},
+    ],
 )
 def test_bad_inputs_stop_before_a_run_exists(repo, tmp_path, monkeypatch, overrides):
     steps = Steps(tmp_path, monkeypatch, repo)
@@ -598,6 +620,290 @@ def test_image_is_pinned_and_holds_no_secret():
     assert "npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.4.0" in dockerfile
     assert "uv==0.9.30" in dockerfile
     assert "uv python install 3.13" in dockerfile
-    for package in ["git", "ripgrep"]:
+    for package in ["git", "libpq5", "ripgrep"]:
         assert package in dockerfile
     assert "COPY" not in dockerfile and "ARG" not in dockerfile
+
+
+def test_the_image_tag_follows_the_dockerfile_change():
+    assert runner.IMAGE == "homelab-task:2"
+
+
+def test_a_grant_carries_the_request_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "TOKENS", tmp_path)
+    monkeypatch.setattr(runner.os, "chown", lambda *args: None)
+    path = runner.issue_token("token", "task-worker", 60, 25)
+    grant = json.loads(path.read_text())
+    assert grant["max_requests"] == 25 and grant["purposes"] == ["task-worker"]
+
+
+def test_the_default_budget_is_a_hundred_requests(repo, tmp_path, monkeypatch):
+    assert (
+        runner.parse(["--working-copy", "x", "--ticket", "t", "--check", "c"]).max_requests == 100
+    )
+
+
+def test_a_spent_budget_is_its_own_ending(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo, stops=("stop",))
+    original = steps.capture
+
+    def spent(command, name, stdout, stderr, seconds, **kwargs):
+        result = original(command, name, stdout, stderr, seconds, **kwargs)
+        if name.endswith("-agent"):
+            stdout.write_text(
+                json.dumps(
+                    {
+                        "type": "message_end",
+                        "message": {
+                            "role": "assistant",
+                            "stopReason": "error",
+                            "errorMessage": "429 This task's request budget is spent",
+                        },
+                    }
+                )
+                + "\n"
+            )
+        return result
+
+    monkeypatch.setattr(runner, "capture", spent)
+    assert runner.run(arguments(repo, tmp_path)) == 1
+    _, record = only_run(steps)
+    assert record["ended"] == "agent_budget_spent"
+    assert "commit" not in steps.calls
+
+
+# The commit step.
+
+AUTHOR = {"author_name": "Home Lab", "author_email": "lab@example.invalid"}
+
+
+def committing(repo, tmp_path, **overrides):
+    return arguments(repo, tmp_path, allow=["app.py"], **AUTHOR, **overrides)
+
+
+def test_a_passing_check_is_followed_by_the_commit_and_nothing_else_is(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    assert runner.run(committing(repo, tmp_path)) == 0
+    folder, record = only_run(steps)
+    assert record["ended"] == "committed"
+    assert record["commit"] == "c" * 40
+    assert list(steps.calls) == ["prepare", "agent", "check", "commit"]
+    assert not (folder / "commit.out").exists()
+    assert (folder / "commit.log").exists()
+
+
+def test_without_an_allow_list_a_run_stays_as_it_was(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    assert runner.run(arguments(repo, tmp_path)) == 0
+    assert only_run(steps)[1]["ended"] == "check_passed"
+    assert "commit" not in steps.calls
+
+
+def test_a_failed_check_never_reaches_the_commit(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.check = (1, "exited")
+    assert runner.run(committing(repo, tmp_path)) == 1
+    assert "commit" not in steps.calls
+
+
+def test_a_failed_agent_never_reaches_the_commit(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo, stops=("error",))
+    assert runner.run(committing(repo, tmp_path)) == 1
+    assert "commit" not in steps.calls
+
+
+def test_a_commit_needs_an_author(repo, tmp_path, monkeypatch):
+    Steps(tmp_path, monkeypatch, repo)
+    with pytest.raises(runner.Refused, match="author"):
+        runner.run(arguments(repo, tmp_path, allow=["app.py"]))
+
+
+def test_the_commit_step_alone_writes_git_with_nothing_from_the_copy(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    runner.run(committing(repo, tmp_path))
+    command = steps.calls["commit"]["command"]
+    assert values(command, "--network") == ["none"]
+    mounts = values(command, "--mount")
+    assert f"type=bind,src={repo},dst=/work" in mounts
+    assert not any(mount.endswith("dst=/work/.git,readonly") for mount in mounts)
+    assert f"type=bind,src={repo}/.venv,dst=/work/.venv,readonly" in mounts
+    # `.venv/bin` leads the image's PATH, and prepare ran the repository's build.
+    assert command[command.index(runner.IMAGE) + 1 :][:3] == ["/usr/bin/python3", "-I", "-c"]
+    assert "PATH=/usr/bin:/bin" in values(command, "--env")
+    for step in ["prepare", "agent", "check"]:
+        assert any(
+            mount.endswith("dst=/work/.git,readonly")
+            for mount in values(steps.calls[step]["command"], "--mount")
+        )
+    assert "HOMELAB_TASK_TOKEN" not in " ".join(command)
+    assert steps.calls["commit"]["env"]["GIT_AUTHOR_NAME"] == "Home Lab"
+    assert steps.grants_during["commit"] == []
+
+
+@pytest.mark.parametrize(
+    "result,output,ended",
+    [
+        ((3, "exited"), "refused outside_allowed", "commit_refused_outside_allowed"),
+        ((3, "exited"), "refused pinned", "commit_refused_pinned"),
+        ((3, "exited"), "nonsense", "commit_failed"),
+        ((1, "exited"), "", "commit_failed"),
+        ((0, "exited"), "commit nothex", "commit_failed"),
+        ((None, "timeout"), "", "commit_timeout"),
+    ],
+)
+def test_a_refused_or_failed_commit_fails_the_run(
+    repo, tmp_path, monkeypatch, result, output, ended
+):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.commit, steps.commit_output = result, output
+    assert runner.run(committing(repo, tmp_path)) == 1
+    _, record = only_run(steps)
+    assert record["ended"] == ended
+    assert record["commit"] is None
+
+
+def commit_step(repo, allowed=("app.py",), pinned=(), base=None):
+    spec = {
+        "base": base or git(repo, "rev-parse", "HEAD").strip(),
+        "allowed": list(allowed),
+        "pinned": list(pinned),
+        "message_file": runner.COMMIT_MESSAGE,
+    }
+    return subprocess.run(
+        [sys.executable, "-I", "-c", runner.COMMIT, json.dumps(spec)],
+        cwd=repo,
+        env={
+            "GIT_AUTHOR_NAME": "Home Lab",
+            "GIT_AUTHOR_EMAIL": "lab@example.invalid",
+            "TMPDIR": str(repo.parent),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+
+def change(repo, path="app.py", content="VALUE = 2\n", message="Make VALUE two\n"):
+    target = repo / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content)
+    if message is not None:
+        (repo / runner.COMMIT_MESSAGE).write_text(message)
+
+
+def test_the_commit_is_one_commit_of_the_tree_by_the_configured_author(repo):
+    base = git(repo, "rev-parse", "HEAD").strip()
+    git(repo, "config", "user.name", "From The Repository")
+    change(repo)
+    result = commit_step(repo)
+    assert result.returncode == 0, result.stderr
+    commit = result.stdout.split()[1]
+    assert git(repo, "rev-parse", "HEAD").strip() == commit
+    assert git(repo, "rev-parse", "HEAD^").strip() == base
+    assert git(repo, "log", "-1", "--format=%an|%ae|%cn|%ce|%B").strip() == (
+        "Home Lab|lab@example.invalid|Home Lab|lab@example.invalid|Make VALUE two"
+    )
+    assert git(repo, "show", "--name-only", "--format=", "HEAD").split() == ["app.py"]
+
+
+def test_the_commit_runs_no_hook(repo, tmp_path):
+    marker = tmp_path / "hook-ran"
+    for name in ["pre-commit", "commit-msg", "post-commit", "post-index-change",
+                 "reference-transaction"]:  # fmt: skip
+        hook = repo / ".git/hooks" / name
+        hook.parent.mkdir(exist_ok=True)
+        hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        hook.chmod(0o755)
+    change(repo)
+    assert commit_step(repo).returncode == 0
+    assert not marker.exists()
+
+
+def test_a_directory_in_the_allow_list_covers_what_is_below_it(repo):
+    change(repo, "src/deep/new.py")
+    assert commit_step(repo, allowed=["src"]).returncode == 0
+
+
+def test_venv_and_the_message_file_are_never_committed(repo):
+    git(repo, "rm", "-q", "--cached", ".gitignore")
+    (repo / ".gitignore").unlink()
+    git(repo, "commit", "-qm", "no ignore file")
+    (repo / ".venv/bin").mkdir()
+    (repo / ".venv/bin/tool").write_text("x")
+    change(repo)
+    assert commit_step(repo).returncode == 0
+    assert git(repo, "show", "--name-only", "--format=", "HEAD").split() == ["app.py"]
+
+
+@pytest.mark.parametrize(
+    "path,allowed,pinned,reason",
+    [
+        ("other.py", ["app.py"], [], "outside_allowed"),
+        ("app.py.bak", ["app.py"], [], "outside_allowed"),
+        ("srcs/x.py", ["src"], [], "outside_allowed"),
+        ("tests/test_app.py", ["tests"], ["tests/test_app.py"], "pinned"),
+        ("tests/new.py", ["tests"], ["tests"], "pinned"),
+        (".github/workflows/ci.yml", ["app.py"], [], "outside_allowed"),
+        ("src/.github/workflows/ci.yml", ["src"], [], "guarded"),
+        ("src/.gitattributes", ["src"], [], "guarded"),
+        ("src/.gitmodules", ["src"], [], "guarded"),
+        ("src/uv.lock", ["src"], [], "guarded"),
+    ],
+)
+def test_the_commit_refuses_a_path(repo, path, allowed, pinned, reason):
+    base = git(repo, "rev-parse", "HEAD").strip()
+    change(repo, path)
+    result = commit_step(repo, allowed=allowed, pinned=pinned)
+    assert result.returncode == 3
+    assert result.stdout.strip() == f"refused {reason}"
+    assert git(repo, "rev-parse", "HEAD").strip() == base
+
+
+@pytest.mark.parametrize(
+    "path,allowed",
+    [
+        (".github/workflows/ci.yml", [".github/workflows/ci.yml"]),
+        (".github/workflows/ci.yml", [".github"]),
+        (".gitignore", [".gitignore"]),
+        ("uv.lock", ["uv.lock"]),
+        ("src/uv.lock", ["src/uv.lock"]),
+    ],
+)
+def test_a_guarded_path_passes_only_when_named(repo, path, allowed):
+    change(repo, path, "named\n")
+    assert commit_step(repo, allowed=allowed).returncode == 0
+
+
+def test_a_deletion_outside_the_list_is_refused(repo):
+    (repo / "tests/test_app.py").unlink()
+    (repo / runner.COMMIT_MESSAGE).write_text("Remove a test\n")
+    assert commit_step(repo).stdout.strip() == "refused outside_allowed"
+
+
+def test_an_embedded_repository_is_refused(repo):
+    nested = repo / "app"
+    nested.mkdir()
+    (nested / "x").write_text("x\n")
+    git(nested, "init", "-q")
+    git(nested, "add", ".")
+    git(nested, "commit", "-qm", "nested")
+    (repo / runner.COMMIT_MESSAGE).write_text("Add\n")
+    assert commit_step(repo, allowed=["app"]).stdout.strip() == "refused submodule"
+
+
+def test_no_change_is_refused(repo):
+    (repo / runner.COMMIT_MESSAGE).write_text("Nothing\n")
+    assert commit_step(repo).stdout.strip() == "refused no_change"
+
+
+@pytest.mark.parametrize("message", [None, "", "  \n\n"])
+def test_no_message_is_refused(repo, message):
+    change(repo, message=message)
+    assert commit_step(repo).stdout.strip() == "refused no_message"
+
+
+def test_a_linked_message_is_refused(repo, tmp_path):
+    change(repo, message=None)
+    secret = tmp_path / "outside"
+    secret.write_text("outside the tree\n")
+    (repo / runner.COMMIT_MESSAGE).symlink_to(secret)
+    assert commit_step(repo).stdout.strip() == "refused no_message"

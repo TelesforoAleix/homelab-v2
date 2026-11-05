@@ -38,6 +38,9 @@ media_models = {row["model_name"]: row for row in config.get("media_model_list",
 model_info.update({name: row["model_info"] for name, row in media_models.items()})
 task_subnet = ip_network(config["task_subnet"])
 task_token_dir = Path(config["task_token_dir"])
+TASK_MAX_REQUESTS = 100
+# Requests a live token has made, by its hash. In memory: a proxy restart forgives the count.
+task_requests: dict[str, tuple[int, float]] = {}
 video_gateway = None
 
 
@@ -385,21 +388,37 @@ def from_task_network(request):
 
 
 def task_grant(key):
-    """A run's purposes while its token is live. Only the token's hash is ever stored."""
+    """A run's grant while its token is live. Only the token's hash is ever stored."""
     try:
         path = task_token_dir / hashlib.sha256(key.encode()).hexdigest()
         grant = json.loads(path.read_text())
         purposes, expires_at = grant["purposes"], grant["expires_at"]
-    except (OSError, ValueError, KeyError, TypeError):
+        max_requests = grant.get("max_requests", TASK_MAX_REQUESTS)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
     if (
         not isinstance(purposes, list)
         or isinstance(expires_at, bool)
         or not isinstance(expires_at, (int, float))
         or expires_at <= time()
+        or isinstance(max_requests, bool)
+        or not isinstance(max_requests, int)
+        or max_requests < 1
     ):
         return None
-    return purposes
+    return {"purposes": purposes, "expires_at": expires_at, "max_requests": max_requests}
+
+
+def task_budget_spent(key, grant):
+    """Count this request against the token. No await here, so requests cannot interleave."""
+    now = time()
+    for digest, (_, expires_at) in list(task_requests.items()):
+        if expires_at <= now:
+            del task_requests[digest]
+    digest = hashlib.sha256(key.encode()).hexdigest()
+    count = task_requests.get(digest, (0, 0))[0] + 1
+    task_requests[digest] = (count, grant["expires_at"])
+    return count > grant["max_requests"]
 
 
 async def task_refusal(request):
@@ -410,8 +429,8 @@ async def task_refusal(request):
         return error_response(status, message)
 
     scheme, _, key = request.headers.get("authorization", "").partition(" ")
-    purposes = task_grant(key) if scheme.lower() == "bearer" and key else None
-    if purposes is None:
+    grant = task_grant(key) if scheme.lower() == "bearer" and key else None
+    if grant is None:
         return refuse("token", 401, "A valid task token is required")
     if request.method != "POST" or request.url.path != "/v1/chat/completions":
         return refuse("path", 403, "Task tokens offer only POST /v1/chat/completions")
@@ -425,8 +444,11 @@ async def task_refusal(request):
     if not isinstance(body, dict):
         return refuse("body", 400, "Expected a JSON object")
     purpose = body.get("model")
-    if not isinstance(purpose, str) or purpose not in purposes:
+    if not isinstance(purpose, str) or purpose not in grant["purposes"]:
         return refuse("purpose", 403, "This task token does not offer that purpose")
+    # homelab-task-run looks for these words to tell a spent budget from a failed agent.
+    if task_budget_spent(key, grant):
+        return refuse("budget", 429, "This task's request budget is spent")
     return None
 
 

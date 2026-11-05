@@ -1,0 +1,31 @@
+# Home Lab coding task runner: consumes the `tasks` queue, one task at a time.
+#
+# On the host because it starts containers and pushes, and no container may do either. It reaches
+# the store through `docker exec homelab-worker-1`. It stops with the data volume and before the
+# stack, whose `down` cannot remove a network in use; a task it leaves `running` returns to the
+# queue at the next start.
+#
+# The author is Home Lab's, whatever the repository says. Override it with a drop-in.
+
+[Unit]
+Description=Home Lab coding task runner
+ConditionPathIsMountPoint=/srv/homelab
+Requires=docker.service
+After=docker.service homelab.service homelab-data.target
+PartOf=homelab-data.target homelab.service
+
+[Service]
+Type=exec
+User=root
+ExecStart=/usr/local/sbin/homelab-task-runner
+Environment=HOMELAB_TASK_AUTHOR_NAME=Home Lab
+Environment=HOMELAB_TASK_AUTHOR_EMAIL=home-lab@home-lab.invalid
+Restart=always
+RestartSec=30
+TimeoutStopSec=90
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=homelab-data.target
