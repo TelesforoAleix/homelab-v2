@@ -1495,6 +1495,51 @@ Build again after updating the image files. Refresh and serving need both the da
 Docker; unknown names and locked volumes do not start a container. A new client starts its own
 container; quitting the MCP session stops it.
 
+## Coding tasks in a container
+
+`homelab-task-run` gives one ticket to the Pi agent and judges the result. It is a manual tool:
+one run at a time, nothing is committed or pushed. See
+[Coding tasks](../ARCHITECTURE.md#coding-tasks) for the boundary.
+
+```bash
+sudo homelab-task-run --working-copy <path> --ticket <file> \
+  --check '.venv/bin/python -m pytest -q' --pin tests --pin pyproject.toml \
+  [--purpose task-worker] [--time-limit 30]
+```
+
+The working copy is a clean uv project on Python 3.13 with a `uv.lock`, a real `.git` directory
+(not a worktree), an unprivileged owner, and no secrets: the model reads what the agent reads.
+The containers run as that owner, so changes stay in that account's ownership. HEAD is the base
+commit. `--pin` is repeatable. A pinned path must exist in the base commit and returns to it before
+the check, a directory exactly, so added files go too. Pin everything that decides the verdict,
+including `conftest.py` and the test configuration in `pyproject.toml`, or the agent can change it.
+`--time-limit` is minutes per container, 30 by default. Dependencies cannot change after prepare:
+the agent has no package index, and `.venv` is read-only. `uv run` needs no sync there.
+
+Each run leaves `/srv/homelab/task-runs/<run id>/`, root-only. A run's working copy keeps the
+agent's changes, with the pins restored, so use a fresh copy for the next run.
+
+| File | Holds |
+|---|---|
+| `run.json` | Base commit, purpose, pins, Pi turns as `steps`, `tokens` (`fresh`, `output`, `cached`, `cache_write`, as Pi reports them), seconds, `check_exit_code`, `ended` |
+| `diff.patch` | Everything changed from the base commit except `.venv`, before pins were restored |
+| `check.log` | Output of the check |
+| `events.jsonl`, `agent.log` | Pi's JSON event log and its stderr |
+| `prepare.log` | Dependency installation |
+
+`ended` is `check_passed`, `check_failed`, `check_setup_failed`, `check_timeout`, `agent_failed`,
+`agent_timeout`, `prepare_failed` or `prepare_timeout`, or `<step>_output_limit` after 256 MiB
+of output. `interrupted` means the script was stopped. The command prints the same record and exits `0`
+only for `check_passed`, `1` for any other finished run and `2` for a refused input, such as
+another active run or a locked volume. An agent that failed or timed out still gets a diff; its
+check result is kept but `ended` names the agent.
+
+A run needs the data volume, Docker, the stack and the image. Update the image deliberately:
+change the Dockerfile, install it as in [Rebuilding the node](#rebuilding-the-node) and run
+`sudo docker build -t homelab-task:1 /opt/homelab-task`. The build needs Internet access and fails
+if the pinned base has Node below 22.19. Tokens live in `/srv/homelab/task-tokens`, `root:10001`
+`0750`, and are hashes; `sudo rm` of a file there revokes a token at once.
+
 ## Rebuilding the node
 
 Recovery is a rebuild from sources. No node backup exists or will be made. Host files come
@@ -1677,9 +1722,10 @@ SSH accounts work through Tailscale.
 | Repository directory | Directory mode | File mode |
 |---|---|---|
 | `node/opt/homelab-context/` | `0755` | `0644` |
+| `node/opt/homelab-task/` | `0755` | `0644` |
 
    ```bash
-   sudo install -d -m 0755 -o root -g root /etc/ssh /etc/ssh/sshd_config.d /etc/ufw /etc/docker /etc/sysctl.d /etc/profile.d /etc/sudoers.d /usr/local/sbin /opt/homelab-telegram-bot /opt/homelab-context /etc/systemd/system
+   sudo install -d -m 0755 -o root -g root /etc/ssh /etc/ssh/sshd_config.d /etc/ufw /etc/docker /etc/sysctl.d /etc/profile.d /etc/sudoers.d /usr/local/sbin /opt/homelab-telegram-bot /opt/homelab-context /opt/homelab-task /etc/systemd/system
    sudo install -d -m 0755 -o root -g root /etc/systemd/system/homelab-notify@.service.d /etc/systemd/system/homelab-watchdog.service.d /etc/systemd/system/homelab-telegram-bot.service.d
    sudo install -d -m 0750 -o root -g polkitd /etc/polkit-1/rules.d
    sudo install -m 0600 -o root -g root node/etc/ssh/sshd_config.d/10-homelab-hardening.conf /etc/ssh/sshd_config.d/10-homelab-hardening.conf
@@ -1696,6 +1742,8 @@ SSH accounts work through Tailscale.
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-inbox /usr/local/sbin/homelab-inbox
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-context /usr/local/sbin/homelab-context
    sudo install -m 0644 -o root -g root node/opt/homelab-context/* /opt/homelab-context/
+   sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-run /usr/local/sbin/homelab-task-run
+   sudo install -m 0644 -o root -g root node/opt/homelab-task/Dockerfile /opt/homelab-task/Dockerfile
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-queue-notice /usr/local/sbin/homelab-queue-notice
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-image-cost-notice /usr/local/sbin/homelab-image-cost-notice
    sudo install -d -m 0700 -o root -g root /var/lib/homelab-copy
@@ -1730,6 +1778,9 @@ SSH accounts work through Tailscale.
    The context image and its private repository list are set up after Docker and the data
    volume are available, following [Code context server](#code-context-server). Create
    `/etc/homelab-context/repositories` as `root:root` mode `0600` with the desired names.
+   Then build the task image with `sudo docker build -t homelab-task:1 /opt/homelab-task`.
+   Compose creates `/srv/homelab/task-tokens` on first start and the first run tightens it; see
+   [Coding tasks in a container](#coding-tasks-in-a-container).
 
    The bot environment stays on the root filesystem so it works before unlock. Venv
    directories are `0755`, data/Python files `0644`, and executable entry points `0755`,

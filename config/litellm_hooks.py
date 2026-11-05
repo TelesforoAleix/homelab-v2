@@ -11,8 +11,9 @@ import sys
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from ipaddress import ip_address, ip_network
 from pathlib import Path
-from time import monotonic
+from time import monotonic, time
 
 import httpx
 import yaml
@@ -35,6 +36,8 @@ model_info = {row["model_name"]: row.get("model_info", {}) for row in config["mo
 model_specs = {row["model_name"]: row["litellm_params"] for row in config["model_list"]}
 media_models = {row["model_name"]: row for row in config.get("media_model_list", [])}
 model_info.update({name: row["model_info"] for name, row in media_models.items()})
+task_subnet = ip_network(config["task_subnet"])
+task_token_dir = Path(config["task_token_dir"])
 video_gateway = None
 
 
@@ -373,10 +376,67 @@ def nested_fields_allowed(value, paths):
     return True
 
 
+def from_task_network(request):
+    # Uvicorn believes forwarded headers only from loopback, so this is the socket's peer.
+    try:
+        return ip_address(request.client.host) in task_subnet
+    except (AttributeError, ValueError):
+        return False
+
+
+def task_grant(key):
+    """A run's purposes while its token is live. Only the token's hash is ever stored."""
+    try:
+        path = task_token_dir / hashlib.sha256(key.encode()).hexdigest()
+        grant = json.loads(path.read_text())
+        purposes, expires_at = grant["purposes"], grant["expires_at"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if (
+        not isinstance(purposes, list)
+        or isinstance(expires_at, bool)
+        or not isinstance(expires_at, (int, float))
+        or expires_at <= time()
+    ):
+        return None
+    return purposes
+
+
+async def task_refusal(request):
+    """The whole contract for the task network; None lets the request continue as usual."""
+
+    def refuse(reason, status, message):
+        logger.info("task_refused reason=%s status=%d", reason, status)
+        return error_response(status, message)
+
+    scheme, _, key = request.headers.get("authorization", "").partition(" ")
+    purposes = task_grant(key) if scheme.lower() == "bearer" and key else None
+    if purposes is None:
+        return refuse("token", 401, "A valid task token is required")
+    if request.method != "POST" or request.url.path != "/v1/chat/completions":
+        return refuse("path", 403, "Task tokens offer only POST /v1/chat/completions")
+    # LiteLLM reads forms by content type: the body it parses must be the one judged here.
+    if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+        return refuse("content_type", 415, "Expected application/json")
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeError):
+        body = None
+    if not isinstance(body, dict):
+        return refuse("body", 400, "Expected a JSON object")
+    purpose = body.get("model")
+    if not isinstance(purpose, str) or purpose not in purposes:
+        return refuse("purpose", 403, "This task token does not offer that purpose")
+    return None
+
+
 class ModelEndpointMiddleware(BaseHTTPMiddleware):
     """Expose only the contract; observe the full response, including streams."""
 
     async def dispatch(self, request, call_next):
+        if from_task_network(request) and (refusal := await task_refusal(request)) is not None:
+            return refusal
+
         path = request.url.path
         if path == "/health/liveliness" and request.method == "GET":
             return await call_next(request)

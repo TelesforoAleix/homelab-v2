@@ -9,6 +9,7 @@
                      │ OpenAI-compatible HTTP, purpose names
 Other Compose clients ── homelab-models ── LiteLLM (127.0.0.1:4000)
 Host Telegram bot ── loopback HTTP ───────────┤
+Task container ── homelab-tasks (run token) ──┤
                                             │ default network
                               ┌─────────────┴──────────────┐
                        Vercel AI Gateway       llama-embed / llama-embed-large
@@ -472,6 +473,20 @@ named network, alongside the private default network it uses to reach both embed
 Postgres, API and both embedding servers do not join the client network. LiteLLM publishes
 only `127.0.0.1:4000`, for the host Telegram bot.
 The key sent by a client is never forwarded upstream; only media accounting uses its hash.
+
+A task container gets none of that trust. LiteLLM also joins `homelab-tasks`, an `internal`
+network on the fixed subnet in `config/litellm.yaml`, and nothing else in Compose does. The
+middleware's first act is to compare the socket's peer address with that subnet; Uvicorn
+believes forwarded headers only from loopback, so a task container cannot claim another
+address. A request from the subnet needs a live task token and may then use only
+`POST /v1/chat/completions`, as `application/json`, with a purpose the token names. Anything
+else gets 401, 403, 415 or 400 and a `task_refused reason=...` audit line, before any other
+rule, including liveness. Requests from other networks never enter this path. The store is a
+directory on the encrypted volume, mounted read-only into LiteLLM: one file per token, named by
+the token's SHA-256, holding only its purposes and expiry. Deleting the file revokes it. The
+next request sees that, because each one reads the store. The token itself exists only in
+the runner's memory and the agent container's environment. The `task-worker` purpose has
+exactly `chat`'s model and effort; it is an ordinary purpose to any other client.
 There is no master key, LiteLLM-managed database, UI or virtual key configuration.
 HTTP middleware exposes `GET /v1/models`, `GET /v1/model/info`, `GET /v1/images/cost`,
 `POST /v1/chat/completions`, `POST /v1/embeddings`, `POST /v1/images/edits`,
@@ -496,6 +511,44 @@ status. Unknown aliases are logged as `unknown` so arbitrary client strings cann
 and access logging is disabled because errors can contain bodies, prompts or credentials.
 No hosted observability callbacks are configured. `/health` keeps `status`, `version` and
 `routes`, and replaces `gateway_key_present` with `models_base_url`.
+
+## Coding tasks
+
+`homelab-task-run` runs one ticket by hand against one working copy; see the
+[runbook](docs/operations.md#coding-tasks-in-a-container). Pi is the agent. It has no sandbox of
+its own, and model-generated commands and repository content are untrusted, so the containers
+are the boundary. There is no queue, task database, retry, commit or push.
+
+| Step | Runs | Network | Token | Read-only in the copy |
+|---|---|---|---|---|
+| prepare | checks the copy is clean and pins exist; `uv sync --locked` | Docker's default bridge | none | `.git` |
+| agent | Pi, ticket on stdin | `homelab-tasks` only | the run's | `.git`, `.venv` |
+| check | writes the diff, restores pins, runs the check | none | none | `.git`, `.venv` |
+
+Every container is non-root (the working copy's owner, never root), has no capabilities and
+`no-new-privileges`, a read-only root with tmpfs `/tmp` and home, limits on memory, CPU and
+processes, and a wall-clock limit. It mounts only the working copy, and it uses Docker's `none`
+log driver, because the daemon's `json-file` default would keep prompts and code on disk.
+
+The host never runs git in a working copy or reads its content. Those files are attacker-
+influenced and the script is root: a planted `core.fsmonitor` or hook would run on the host.
+Git runs in the containers, and `.git` stays read-only there so hooks, config and the base
+commit are as they were. The check step keeps its index and new objects in `/tmp`. The diff is
+taken before pins are restored, so it shows an attempt to change them. `.venv` is read-only for
+the agent and the check, and the check ignores in-tree bytecode, so the agent cannot replace
+the test runner. Bind sources are refused if they are symlinks, which Docker would follow.
+
+Pi runs with project approval, extensions, skills, templates, themes, MCP and sessions off,
+which also skips the `sessionDir` lookup that happens before project trust. `AGENTS.md` still
+loads as context: it is no more trusted than any other file the agent can read. Pi exits 0 after
+exhausting its retries, so a run judges the agent by its last stop reason, not its exit code.
+
+The token is issued just before the agent starts, expires a minute after its limit, and is
+deleted when the agent stops, even on a signal; a run also clears whatever a dead run left.
+Docker cannot isolate containers on one bridge from each other without also cutting them off
+from LiteLLM (`enable_icc` works per network), so a lock allows one run at a time. The
+record stays in a root-only folder on the encrypted volume. It holds repository content by
+design, and the token is scrubbed from every file in it.
 
 ## Jobs
 

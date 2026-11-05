@@ -1,0 +1,480 @@
+#!/usr/bin/python3 -I
+"""Run one coding ticket in three isolated containers and leave a record of what happened.
+
+Everything inside a working copy is untrusted: the repository, the commands the model writes,
+and whatever they leave behind. Nothing here runs git or reads the copy's contents on the host;
+that happens in the containers. Its `.git` is mounted read-only in all three steps and `.venv`
+in the last two, so the base commit, hooks and installed test tools stay as prepared.
+"""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import secrets
+import selectors
+import signal
+import stat
+import subprocess
+import sys
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
+VOLUME = Path("/srv/homelab")
+RUNS = VOLUME / "task-runs"
+TOKENS = VOLUME / "task-tokens"
+LOCK = Path("/run/lock/homelab-task-run.lock")
+IMAGE = "homelab-task:1"
+TASK_NETWORK = "homelab-tasks"
+MODELS_URL = "http://litellm:4000/v1"
+LITELLM_GID = 10001
+MEMORY = "8g"
+CPUS = "2"
+PIDS = "512"
+TMPFS = "4g"
+OUTPUT_LIMIT = 256 * 1024 * 1024
+TOKEN_GRACE_SECONDS = 60
+PURPOSE = re.compile(r"[a-z0-9][a-z0-9.-]{0,63}\Z")
+CHECK_STARTED = "homelab-task-run: check started"
+
+# Reports the base commit on stdout: the only thing this step says to the host.
+PREPARE = """set -eu
+if [ -n "$(git --no-optional-locks status --porcelain)" ]; then
+  echo 'working copy is not clean' >&2
+  exit 3
+fi
+base=$(git rev-parse --verify 'HEAD^{commit}')
+for path in "$@"; do
+  git cat-file -e "$base:$path" || {
+    echo "pinned path is not in the base commit: $path" >&2
+    exit 3
+  }
+done
+uv sync --locked >&2
+printf '%s\\n' "$base"
+"""
+
+# The ticket arrives on stdin. Pi writes to its agent directory, so it lives on the tmpfs home.
+AGENT = """set -eu
+mkdir -p "$HOME/.pi/agent"
+printf '%s' "$HOMELAB_PI_MODELS" > "$HOME/.pi/agent/models.json"
+printf '%s' "$HOMELAB_PI_SETTINGS" > "$HOME/.pi/agent/settings.json"
+unset HOMELAB_PI_MODELS HOMELAB_PI_SETTINGS
+exec pi --mode json --no-session --no-approve --no-extensions --no-skills \
+  --no-prompt-templates --no-themes --no-mcp --offline --tools read,bash,edit,write \
+  --provider homelab --model "$HOMELAB_TASK_PURPOSE" --thinking off
+"""
+
+# stdout carries the diff and stderr everything else, so the check's output cannot mix with it.
+# The index and new objects live in /tmp because `.git` is read-only here.
+CHECK = """set -eu
+base=$1
+command=$2
+shift 2
+judge=${TMPDIR:-/tmp}/judge
+export GIT_INDEX_FILE="$judge/index"
+export GIT_OBJECT_DIRECTORY="$judge/objects"
+export GIT_ALTERNATE_OBJECT_DIRECTORIES="$PWD/.git/objects"
+mkdir -p "$GIT_OBJECT_DIRECTORY"
+echo /.venv/ > "$judge/exclude"
+git read-tree "$base"
+git -c core.excludesFile="$judge/exclude" add -A
+git diff --cached --binary --no-ext-diff --no-textconv "$base"
+for path in "$@"; do
+  rm -rf -- "$path"
+  git checkout "$base" -- "$path"
+done
+unset GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+echo '%s' >&2
+exec sh -c "$command" >&2
+""" % CHECK_STARTED
+
+
+class Refused(Exception):
+    """An input the script will not run with; the message is for the caller."""
+
+
+def terminate(signum, frame):
+    raise SystemExit(128 + signum)
+
+
+def working_copy(value):
+    path = Path(value).resolve(strict=True)
+    if "," in str(path) or "\n" in str(path):
+        raise Refused("working copy path cannot be mounted")
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise Refused("working copy is not a directory")
+    if info.st_uid == 0:
+        raise Refused("working copy must belong to an unprivileged account")
+    require_real_directory(path / ".git")
+    return path, info.st_uid, info.st_gid
+
+
+def require_real_directory(path):
+    # Docker follows a symlink in a bind source, which would mount a host path of its choosing.
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        raise Refused(f"{path.name} is missing from the working copy") from None
+    if not stat.S_ISDIR(info.st_mode):
+        raise Refused(f"{path.name} must be a real directory")
+
+
+def pinned_path(value):
+    parts = value.split("/")
+    if (
+        not value
+        or "\n" in value
+        or value.startswith("-")
+        or any(part in {"", ".", ".."} for part in parts)
+        or parts[0] in {".git", ".venv"}
+    ):
+        raise Refused(f"invalid pinned path: {value!r}")
+    return value
+
+
+def container(name, copy, uid, gid, network, *, venv_read_only, env=(), stdin=False):
+    tmpfs = f"rw,exec,nosuid,nodev,size={TMPFS}"
+    command = [
+        "docker", "run", "--rm", "--name", name, "--pull", "never", "--init",
+        "--user", f"{uid}:{gid}",
+        "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges",
+        "--read-only",
+        "--tmpfs", f"/tmp:{tmpfs},mode=1777",
+        "--tmpfs", f"/home/task:{tmpfs},uid={uid},gid={gid},mode=0700",
+        "--memory", MEMORY,
+        "--memory-swap", MEMORY,
+        "--cpus", CPUS,
+        "--pids-limit", PIDS,
+        "--log-driver", "none",
+        "--network", network,
+        "--workdir", "/work",
+        "--mount", f"type=bind,src={copy},dst=/work",
+        "--mount", f"type=bind,src={copy}/.git,dst=/work/.git,readonly",
+    ]
+    if venv_read_only:
+        require_real_directory(copy / ".venv")
+        command += ["--mount", f"type=bind,src={copy}/.venv,dst=/work/.venv,readonly"]
+    if stdin:
+        command.append("--interactive")
+    for variable in env:
+        command += ["--env", variable]
+    return command + [IMAGE, "sh", "-c"]
+
+
+def capture(command, name, stdout_path, stderr_path, seconds, *, stdin=None, env=None):
+    """Run to the end, the deadline or the output limit; return (exit code, how it stopped)."""
+    outcome = "exited"
+    deadline = time.monotonic() + seconds
+    written = 0
+    process = subprocess.Popen(
+        command,
+        stdin=stdin if stdin is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={"PATH": os.environ["PATH"], **(env or {})},
+    )
+    try:
+        with open(stdout_path, "wb") as stdout, open(stderr_path, "wb") as stderr:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, stdout)
+                selector.register(process.stderr, selectors.EVENT_READ, stderr)
+                while selector.get_map() and outcome == "exited":
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        outcome = "timeout"
+                        break
+                    for key, _ in selector.select(min(remaining, 1)):
+                        chunk = os.read(key.fileobj.fileno(), 65536)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        written += len(chunk)
+                        if written > OUTPUT_LIMIT:
+                            outcome = "output_limit"
+                            break
+                        key.data.write(chunk)
+        if outcome == "exited":
+            return process.wait(timeout=max(deadline - time.monotonic(), 1)), outcome
+        return None, outcome
+    except subprocess.TimeoutExpired:
+        return None, "timeout"
+    finally:
+        if process.poll() is None:
+            subprocess.run(
+                ["docker", "rm", "--force", name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            process.kill()
+            process.wait()
+        process.stdout.close()
+        process.stderr.close()
+
+
+def clear_tokens():
+    # The lock is held: no run is live, so anything left is from one that died.
+    TOKENS.mkdir(parents=True, exist_ok=True)
+    os.chown(TOKENS, 0, LITELLM_GID)
+    TOKENS.chmod(0o750)
+    for path in TOKENS.iterdir():
+        path.unlink()
+
+
+def issue_token(token, purpose, seconds):
+    path = TOKENS / hashlib.sha256(token.encode()).hexdigest()
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps({"purposes": [purpose], "expires_at": int(time.time()) + seconds})
+    )
+    os.chown(temporary, 0, LITELLM_GID)
+    temporary.chmod(0o640)
+    os.replace(temporary, path)
+    return path
+
+
+def pi_models(purpose):
+    return json.dumps(
+        {
+            "providers": {
+                "homelab": {
+                    "baseUrl": MODELS_URL,
+                    "api": "openai-completions",
+                    "apiKey": "$HOMELAB_TASK_TOKEN",
+                    # Keep to the OpenAI request fields the proxy accepts; it sets the effort.
+                    "compat": {
+                        "supportsStore": False,
+                        "supportsDeveloperRole": False,
+                        "supportsReasoningEffort": False,
+                        "maxTokensField": "max_tokens",
+                    },
+                    "models": [
+                        {
+                            "id": purpose,
+                            "name": purpose,
+                            "reasoning": False,
+                            "input": ["text"],
+                            "contextWindow": 128000,
+                            "maxTokens": 16384,
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        }
+                    ],
+                }
+            }
+        }
+    )
+
+
+def pi_settings():
+    # Keeps the token out of ordinary command output. Not a boundary: same user, same container.
+    return json.dumps(
+        {"shellCommandPrefix": "unset HOMELAB_TASK_TOKEN", "enableInstallTelemetry": False}
+    )
+
+
+def summarize_events(path):
+    """Steps, tokens and how the last model reply ended. Pi exits 0 even when the model failed."""
+    steps = 0
+    last_stop = None
+    tokens = {"fresh": 0, "output": 0, "cached": 0, "cache_write": 0}
+    with open(path, "rb") as stream:
+        for line in stream:
+            try:
+                event = json.loads(line)
+                kind = event["type"]
+                message = event.get("message") or {}
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+            if kind == "turn_end":
+                steps += 1
+            if kind == "message_end" and message.get("role") == "assistant":
+                last_stop = message.get("stopReason")
+                usage = message.get("usage") or {}
+                tokens["fresh"] += usage.get("input", 0)
+                tokens["output"] += usage.get("output", 0)
+                tokens["cached"] += usage.get("cacheRead", 0)
+                tokens["cache_write"] += usage.get("cacheWrite", 0)
+    return {"steps": steps, "tokens": tokens, "last_stop": last_stop}
+
+
+def scrub(paths, token):
+    for path in paths:
+        if path.exists():
+            content = path.read_bytes()
+            if token.encode() in content:
+                path.write_bytes(content.replace(token.encode(), b"[task-token]"))
+
+
+def run(args):
+    copy, uid, gid = working_copy(args.working_copy)
+    pins = [pinned_path(value) for value in args.pin]
+    if not PURPOSE.fullmatch(args.purpose):
+        raise Refused("invalid purpose")
+    if args.time_limit <= 0:
+        raise Refused("time limit must be positive")
+    if not os.path.ismount(VOLUME):
+        raise Refused("data volume is locked")
+    if not Path(args.ticket).read_bytes().strip():
+        raise Refused("ticket is empty")
+
+    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ-") + secrets.token_hex(3)
+    RUNS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    folder = RUNS / run_id
+    folder.mkdir(mode=0o700)
+    clear_tokens()
+    started = time.monotonic()
+    record = {
+        "run_id": run_id,
+        "working_copy": str(copy),
+        "purpose": args.purpose,
+        "pinned": pins,
+        "check_command": args.check,
+        "time_limit_minutes": args.time_limit,
+        "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "base_commit": None,
+        "steps": 0,
+        "tokens": None,
+        "last_stop": None,
+        "check_exit_code": None,
+        "ended": "interrupted",
+    }
+    token = secrets.token_urlsafe(32)
+    try:
+        record["ended"] = execute(args, record, folder, (copy, uid, gid), pins, token)
+    finally:
+        scrub(sorted(folder.iterdir()), token)
+        record["ended_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+        record["seconds"] = round(time.monotonic() - started, 1)
+        (folder / "run.json").write_text(json.dumps(record, indent=2) + "\n")
+    print(json.dumps({"run_folder": str(folder), **record}))
+    return 0 if record["ended"] == "check_passed" else 1
+
+
+def execute(args, record, folder, owner, pins, token):
+    """The three steps in order; returns why the run ended."""
+    seconds = args.time_limit * 60
+    name = f"homelab-task-{record['run_id'].lower()}"
+
+    code, stopped = capture(
+        container(f"{name}-prepare", *owner, "bridge", venv_read_only=False)
+        + [PREPARE, "prepare", *pins],
+        f"{name}-prepare",
+        folder / "base-commit",
+        folder / "prepare.log",
+        seconds,
+    )
+    base = (folder / "base-commit").read_text().strip()
+    (folder / "base-commit").unlink()
+    if stopped != "exited":
+        return f"prepare_{stopped}"
+    if code != 0 or not re.fullmatch(r"[0-9a-f]{40,64}", base):
+        return "prepare_failed"
+    record["base_commit"] = base
+
+    grant = issue_token(token, args.purpose, seconds + TOKEN_GRACE_SECONDS)
+    try:
+        with open(args.ticket, "rb") as ticket:
+            code, stopped = capture(
+                container(
+                    f"{name}-agent",
+                    *owner,
+                    TASK_NETWORK,
+                    venv_read_only=True,
+                    env=[
+                        "HOMELAB_TASK_TOKEN",
+                        "HOMELAB_TASK_PURPOSE",
+                        "HOMELAB_PI_MODELS",
+                        "HOMELAB_PI_SETTINGS",
+                    ],
+                    stdin=True,
+                )
+                + [AGENT],
+                f"{name}-agent",
+                folder / "events.jsonl",
+                folder / "agent.log",
+                seconds,
+                stdin=ticket,
+                env={
+                    "HOMELAB_TASK_TOKEN": token,
+                    "HOMELAB_TASK_PURPOSE": args.purpose,
+                    "HOMELAB_PI_MODELS": pi_models(args.purpose),
+                    "HOMELAB_PI_SETTINGS": pi_settings(),
+                },
+            )
+    finally:
+        grant.unlink(missing_ok=True)
+    summary = summarize_events(folder / "events.jsonl")
+    record.update(summary)
+    agent_ended = None
+    if stopped != "exited":
+        agent_ended = f"agent_{stopped}"
+    elif code != 0 or summary["last_stop"] != "stop":
+        agent_ended = "agent_failed"
+
+    # This container also writes the diff, so it runs however the agent ended.
+    code, stopped = capture(
+        container(
+            f"{name}-check",
+            *owner,
+            "none",
+            venv_read_only=True,
+            env=["UV_NO_SYNC", "PYTHONPYCACHEPREFIX"],
+        )
+        + [CHECK, "check", base, args.check, *pins],
+        f"{name}-check",
+        folder / "diff.patch",
+        folder / "check.log",
+        seconds,
+        env={"UV_NO_SYNC": "1", "PYTHONPYCACHEPREFIX": "/tmp/pycache"},
+    )
+    check_started = CHECK_STARTED.encode() in (folder / "check.log").read_bytes()
+    record["check_exit_code"] = code if check_started else None
+    if agent_ended is not None:
+        return agent_ended
+    if stopped != "exited":
+        return f"check_{stopped}"
+    if not check_started:
+        return "check_setup_failed"
+    return "check_passed" if code == 0 else "check_failed"
+
+
+def parse(argv):
+    parser = argparse.ArgumentParser(prog="homelab-task-run", description=__doc__.splitlines()[0])
+    parser.add_argument("--working-copy", required=True)
+    parser.add_argument("--ticket", required=True, help="file holding the ticket")
+    parser.add_argument("--check", required=True, help="done-check shell command")
+    parser.add_argument("--pin", action="append", default=[], help="path restored before the check")
+    parser.add_argument("--purpose", default="task-worker")
+    parser.add_argument("--time-limit", type=int, default=30, help="minutes per container")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse(argv)
+    if os.geteuid() != 0:
+        print("homelab-task-run: run with sudo", file=sys.stderr)
+        return 2
+    os.umask(0o077)
+    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(signum, terminate)
+    # Task containers share one network and cannot be kept apart on it: one run at a time.
+    with open(LOCK, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("homelab-task-run: another run is active", file=sys.stderr)
+            return 2
+        try:
+            return run(args)
+        except (Refused, OSError) as error:
+            print(f"homelab-task-run: {error}", file=sys.stderr)
+            return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

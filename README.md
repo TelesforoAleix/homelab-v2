@@ -50,6 +50,11 @@ Solid parts are built; dashed parts are planned.
 - [ARCHITECTURE.md](ARCHITECTURE.md) explains the boundaries and rules;
   [DECISIONS.md](DECISIONS.md) records the choices behind them.
 
+[Coding tasks](docs/operations.md#coding-tasks-in-a-container) run by hand on the node, one at a
+time: `homelab-task-run` gives a ticket to the Pi agent in an isolated container on one working
+copy, then judges the result with a pinned check. Three containers prepare, work and check.
+Only the agent reaches LiteLLM, on `homelab-tasks`, with a one-run token for its purpose.
+
 A [read-only code context server](docs/operations.md#code-context-server) gives Mac coding agents
 symbol navigation over SSH. It runs Serena without network access against separate,
 periodically refreshed copies of configured repositories on the encrypted volume.

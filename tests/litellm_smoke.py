@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import logging
@@ -311,6 +312,7 @@ def run(unset=False):
                         "image-gpt-2.5-flare",
                         "image-gpt-2.5-sunburst",
                         "image-nano-banana-2.1",
+                        "task-worker",
                         "translate",
                         "vision",
                         "vision:xhigh",
@@ -1058,8 +1060,56 @@ def run(unset=False):
                         and KEY not in response.text
                         and CONTENT not in response.text
                     )
+                    # A task peer through the real proxy, with the request shape Pi sends.
+                    tokens = Path(directory) / "task-tokens"
+                    tokens.mkdir()
+                    litellm_hooks.task_token_dir = tokens
+                    task_key = token_hex(24)
+                    (tokens / hashlib.sha256(task_key.encode()).hexdigest()).write_text(
+                        json.dumps({"purposes": ["task-worker"], "expires_at": time.time() + 60})
+                    )
+                    task_client = TestClient(app, client=("10.253.87.9", 50000))
+                    task_headers = {"Authorization": f"Bearer {task_key}"}
+                    task_chat = {
+                        "model": "task-worker",
+                        "messages": [{"role": "user", "content": CONTENT}],
+                        "stream": True,
+                        "stream_options": {"include_usage": True},
+                        "max_tokens": 64,
+                        "tools": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "bash",
+                                    "description": "Run a command",
+                                    "parameters": {"type": "object", "properties": {}},
+                                },
+                            }
+                        ],
+                    }
+                    before_task = len(requests)
+                    response = task_client.post(
+                        "/v1/chat/completions", headers=task_headers, json=task_chat
+                    )
+                    calls += 1
+                    assert response.status_code == 200, response.text
+                    assert len(requests) == before_task + 1
+                    assert requests[-1][1]["reasoning_effort"] == "low"
+                    for peer_headers, body, status in [
+                        ({}, task_chat, 401),
+                        (task_headers, {**task_chat, "model": "image-nano-banana-2.1"}, 403),
+                        (task_headers, {**task_chat, "model": "chat"}, 403),
+                    ]:
+                        response = task_client.post(
+                            "/v1/chat/completions", headers=peer_headers, json=body
+                        )
+                        assert response.status_code == status, response.text
+                    assert task_client.get("/v1/models", headers=task_headers).status_code == 403
+                    assert task_client.get("/health/liveliness").status_code == 401
+                    assert len(requests) == before_task + 1
                     assert client.get("/health/liveliness").status_code == 200
                 logs = output.getvalue()
+                assert task_key not in logs
                 assert (
                     CONTENT not in logs
                     and KEY not in logs
