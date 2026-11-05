@@ -238,6 +238,7 @@ def container(
     env=(),
     stdin=False,
     entry=("sh", "-c"),
+    entrypoint=None,
 ):
     tmpfs = f"rw,exec,nosuid,nodev,size={TMPFS}"
     command = [
@@ -266,6 +267,8 @@ def container(
         command.append("--interactive")
     for variable in env:
         command += ["--env", variable]
+    if entrypoint:
+        command += ["--entrypoint", entrypoint]
     return [*command, IMAGE, *entry]
 
 
@@ -591,7 +594,8 @@ def commit(args, record, folder, owner, pins, allowed):
             venv_read_only=True,
             git_read_only=False,
             env=["PATH=/usr/bin:/bin", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL"],
-            entry=("/usr/bin/python3", "-I", "-c"),
+            entrypoint="/usr/bin/python3",
+            entry=("-I", "-c"),
         )
         + [COMMIT, json.dumps(spec)],
         name,

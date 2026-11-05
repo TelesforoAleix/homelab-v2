@@ -18,7 +18,7 @@ PartOf=homelab-data.target homelab.service
 Type=exec
 User=root
 ExecStart=/usr/local/sbin/homelab-task-runner
-Environment=HOMELAB_TASK_AUTHOR_NAME=Home Lab
+Environment=HOMELAB_TASK_AUTHOR_NAME="Home Lab"
 Environment=HOMELAB_TASK_AUTHOR_EMAIL=home-lab@home-lab.invalid
 Restart=always
 RestartSec=30

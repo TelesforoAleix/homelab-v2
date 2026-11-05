@@ -1701,6 +1701,8 @@ SSH accounts work through Tailscale.
    sudo usermod -aG systemd-journal homelab-agent
    sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin homelab-bot
    sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin homelab-task
+   sudo apt-get install -y acl
+   sudo setfacl -m u:homelab-task:--x /srv/homelab
    sudo install -d -m 0700 -o aleix -g aleix /home/aleix/.ssh
    sudo install -d -m 0700 -o homelab-agent -g homelab-agent /home/homelab-agent/.ssh
    sudo install -m 0600 -o aleix -g aleix /dev/null /home/aleix/.ssh/authorized_keys
