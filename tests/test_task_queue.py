@@ -48,6 +48,32 @@ def end(database, task, status, reason=None):
         {"event": "end_task", "task_id": 1, "job_id": 1, "status": "queued"},
         {"event": "end_task", "task_id": "1", "job_id": 1, "status": "done"},
         {"event": "begin_attempt", "task_id": 1, "number": 0, "route": ROUTE},
+        {
+            "event": "end_attempt",
+            "task_id": 1,
+            "number": 1,
+            "route": ROUTE,
+            "status": "failed",
+            "reviews": [{"result": "pass"}],
+        },
+        {
+            "event": "end_attempt",
+            "task_id": 1,
+            "number": 1,
+            "route": ROUTE,
+            "status": "failed",
+            "review_route": ROUTE,
+            "reviews": [{"result": "maybe"}],
+        },
+        {
+            "event": "end_attempt",
+            "task_id": 1,
+            "number": 1,
+            "route": ROUTE,
+            "status": "failed",
+            "review_route": ROUTE,
+            "reviews": [{"result": "pass", "steps": -1}],
+        },
         {"event": "end_attempt", "task_id": 1, "number": 1, "route": ROUTE, "status": "running"},
         {
             "event": "end_attempt",
@@ -90,9 +116,22 @@ def test_claim_hands_over_the_task_and_moves_both_states(connection):  # noqa: F
     assert task["allowed_files"] == ["src/app.py"]
     assert task["pinned_paths"] == ["tests"]
     assert task["routes"] == [ROUTE]
+    assert task["review_routes"] == [ROUTE]
     assert task["next_attempt"] == 1
     assert statuses(connection) == ["running"]
     assert job_states(connection) == ["doing"]
+
+
+def test_claim_hands_over_the_reviewer_routes_of_its_own_role(connection):  # noqa: F811
+    edited = [{"kind": "litellm", "purpose": "task-review"}, {"kind": "cli", "tool": "t"}]
+    connection.execute(
+        "UPDATE homelab_roles SET routes = %s::jsonb WHERE role = 'ticket-reviewer'",
+        (json.dumps(edited),),
+    )
+    submit(connection, plan(entry(1)))
+    task = claiming.claim(connection)
+    assert task["review_routes"] == edited
+    assert task["routes"] == [ROUTE]
 
 
 def test_nothing_to_claim_is_none(connection):  # noqa: F811
@@ -211,6 +250,97 @@ def test_an_attempt_writes_its_row_and_its_lead_trace(connection):  # noqa: F811
            cost_usd, seconds::float, result FROM homelab_task_traces"""
     ).fetchall()
     assert rows == [(1, "worker", ROUTE, "lead", 4, 100, 40, 7, None, 12.5, "check_failed")]
+
+
+def test_an_event_with_reviews_parses():
+    event = finish.parse(
+        json.dumps(
+            {
+                "event": "end_attempt",
+                "task_id": 1,
+                "number": 1,
+                "route": ROUTE,
+                "status": "failed",
+                "review_route": ROUTE,
+                "reviews": [{"result": "fix", "steps": 2, "fresh_tokens": 5}],
+            }
+        ).encode()
+    )
+    assert event.reviews[0].result == "fix" and event.reviews[0].fresh_tokens == 5
+    assert (
+        finish.parse(
+            json.dumps(
+                {
+                    "event": "end_attempt",
+                    "task_id": 1,
+                    "number": 1,
+                    "route": ROUTE,
+                    "status": "done",
+                }
+            ).encode()
+        ).reviews
+        == []
+    )
+
+
+def test_each_review_writes_one_trace_and_a_repeated_event_writes_nothing(connection):  # noqa: F811
+    submit(connection, plan(entry(1)))
+    task = claiming.claim(connection)
+    finish.record(
+        connection,
+        finish.BeginAttempt(event="begin_attempt", task_id=task["id"], number=1, route=ROUTE),
+    )
+    reviewer = {"kind": "litellm", "purpose": "task-reviewer"}
+    event = finish.EndAttempt(
+        event="end_attempt",
+        task_id=task["id"],
+        number=1,
+        route=ROUTE,
+        status="failed",
+        reason="review_rejected",
+        steps=4,
+        review_route=reviewer,
+        reviews=[
+            finish.Review(
+                result="fix",
+                steps=3,
+                fresh_tokens=30,
+                cached_tokens=20,
+                output_tokens=5,
+                seconds=9.5,
+            ),
+            finish.Review(result="fix", steps=2, fresh_tokens=10, seconds=4),
+        ],
+    )
+
+    finish.record(connection, event)
+    finish.record(connection, event)
+
+    rows = connection.execute(
+        """SELECT attempt, role, route, kind, steps, fresh_tokens, cached_tokens, output_tokens,
+           cost_usd, seconds::float, result FROM homelab_task_traces ORDER BY id"""
+    ).fetchall()
+    assert rows == [
+        (1, "worker", ROUTE, "lead", 4, 0, 0, 0, None, 0.0, "review_rejected"),
+        (1, "ticket-reviewer", reviewer, "review", 3, 30, 20, 5, None, 9.5, "fix"),
+        (1, "ticket-reviewer", reviewer, "review", 2, 10, 0, 0, None, 4.0, "fix"),
+    ]
+
+
+def test_an_attempt_with_no_review_writes_only_its_lead_trace(connection):  # noqa: F811
+    submit(connection, plan(entry(1)))
+    task = claiming.claim(connection)
+    finish.record(
+        connection,
+        finish.BeginAttempt(event="begin_attempt", task_id=task["id"], number=1, route=ROUTE),
+    )
+    finish.record(
+        connection,
+        finish.EndAttempt(
+            event="end_attempt", task_id=task["id"], number=1, route=ROUTE, status="done"
+        ),
+    )
+    assert connection.execute("SELECT kind FROM homelab_task_traces").fetchall() == [("lead",)]
 
 
 def test_done_releases_only_dependents_with_nothing_unmet(connection):  # noqa: F811

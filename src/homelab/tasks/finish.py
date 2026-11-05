@@ -11,7 +11,7 @@ import sys
 from typing import Annotated, Any, Literal
 
 import psycopg
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import Field, TypeAdapter, ValidationError, model_validator
 
 from homelab.jobs.tasks import run_coding_task
 from homelab.settings import get_settings
@@ -28,6 +28,17 @@ class BeginAttempt(Strict):
     route: dict[str, Any]
 
 
+class Review(Strict):
+    """One review of an attempt's change; it becomes one `review` trace."""
+
+    result: Literal["pass", "fix", "failed"]
+    steps: Count = 0
+    fresh_tokens: Count = 0
+    cached_tokens: Count = 0
+    output_tokens: Count = 0
+    seconds: float = Field(default=0, ge=0)
+
+
 class EndAttempt(Strict):
     event: Literal["end_attempt"]
     task_id: int
@@ -42,6 +53,14 @@ class EndAttempt(Strict):
     cached_tokens: Count = 0
     output_tokens: Count = 0
     seconds: float = Field(default=0, ge=0)
+    review_route: dict[str, Any] | None = None
+    reviews: list[Review] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def reviews_name_their_route(self) -> EndAttempt:
+        if self.reviews and self.review_route is None:
+            raise ValueError("reviews need a review_route")
+        return self
 
 
 class EndTask(Strict):
@@ -74,7 +93,11 @@ def begin_attempt(connection: Any, event: BeginAttempt) -> None:
 
 
 def end_attempt(connection: Any, event: EndAttempt) -> None:
-    """Close the attempt and write its `lead` trace. Cost stays empty: nothing measures it yet."""
+    """Close the attempt and write its `lead` trace and one `review` trace per review.
+
+    The traces ride on the close that changed a row, so a repeated event writes nothing twice.
+    Cost stays empty: nothing measures it yet.
+    """
     with connection.transaction():
         closed = connection.execute(
             """UPDATE homelab_task_attempts
@@ -107,6 +130,25 @@ def end_attempt(connection: Any, event: EndAttempt) -> None:
                     event.reason or event.status,
                 ),
             )
+            for review in event.reviews:
+                connection.execute(
+                    """INSERT INTO homelab_task_traces
+                       (task_id, attempt, role, route, kind, steps, fresh_tokens, cached_tokens,
+                        output_tokens, seconds, result)
+                       VALUES (%s, %s, 'ticket-reviewer', %s::jsonb, 'review', %s, %s, %s, %s, %s,
+                               %s)""",
+                    (
+                        event.task_id,
+                        event.number,
+                        json.dumps(event.review_route),
+                        review.steps,
+                        review.fresh_tokens,
+                        review.cached_tokens,
+                        review.output_tokens,
+                        review.seconds,
+                        review.result,
+                    ),
+                )
 
 
 def end_task(connection: Any, event: EndTask) -> list[int]:

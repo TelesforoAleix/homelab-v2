@@ -20,6 +20,7 @@ runner = importlib.util.module_from_spec(spec)
 loader.exec_module(runner)
 
 CHEAP = {"kind": "litellm", "purpose": "task-worker"}
+REVIEWER = {"kind": "litellm", "purpose": "task-reviewer"}
 BETTER = {"kind": "litellm", "purpose": "task-better"}
 CLI = {"kind": "cli", "tool": "tool", "model": "model"}
 ENV = {
@@ -45,6 +46,7 @@ def task(**fields):
         "check_command": "pytest -q",
         "pinned_paths": ["tests"],
         "routes": [CHEAP],
+        "review_routes": [REVIEWER],
         "next_attempt": 1,
         **fields,
     }
@@ -58,6 +60,7 @@ class Script:
         self.pushes = list(pushes)
         self.events = []
         self.runs = []
+        self.review_purposes = []
         self.tmp_path = tmp_path
         monkeypatch.setattr(runner, "record", self.events.append)
         monkeypatch.setattr(runner, "fresh_copy", lambda item: tmp_path)
@@ -66,13 +69,19 @@ class Script:
         monkeypatch.setattr(runner, "run_ticket", self.run_ticket)
         monkeypatch.setattr(runner, "push", self.push)
 
-    def run_ticket(self, item, copy, purpose, check_output):
-        self.runs.append((purpose, check_output))
+    def run_ticket(self, item, copy, purpose, review_purpose, feedback):
+        self.runs.append((purpose, feedback))
+        self.review_purposes.append(review_purpose)
         ended = self.outcomes.pop(0)
+        extra = {}
+        if isinstance(ended, tuple):
+            ended, extra = ended
         folder = self.tmp_path / f"run{len(self.runs)}"
         folder.mkdir()
         (folder / "check.log").write_text(f"output of {len(self.runs)}")
+        (folder / "check-2.log").write_text(f"second output of {len(self.runs)}")
         return {
+            **extra,
             "ended": ended,
             "run_folder": str(folder),
             "run_id": f"run{len(self.runs)}",
@@ -112,7 +121,7 @@ def test_a_commit_that_pushes_ends_done_in_one_attempt(monkeypatch, tmp_path):
 def test_a_failed_check_retries_once_on_its_route_with_its_output(monkeypatch, tmp_path):
     script = Script(monkeypatch, tmp_path, "check_failed", "committed", pushes=["pushed"])
     runner.run_task(task(routes=[CHEAP, BETTER]))
-    assert script.runs == [("task-worker", None), ("task-worker", "output of 1")]
+    assert script.runs == [("task-worker", None), ("task-worker", ("check", "output of 1"))]
     assert script.ending() == ("done", None)
 
 
@@ -123,7 +132,7 @@ def test_a_second_failed_check_moves_to_the_next_route_without_the_output(monkey
     runner.run_task(task(routes=[CHEAP, BETTER]))
     assert script.runs == [
         ("task-worker", None),
-        ("task-worker", "output of 1"),
+        ("task-worker", ("check", "output of 1")),
         ("task-better", None),
     ]
     assert [event["number"] for event in script.named("end_attempt")] == [1, 2, 3]
@@ -245,7 +254,150 @@ def test_the_ticket_names_the_limits_and_the_message_file():
     assert "The goal" in text and "- src/app.py" in text and "pytest -q" in text
     assert runner.COMMIT_MESSAGE in text
     assert "failed its check" not in text
-    assert "boom" in runner.ticket(task(), "boom")
+    assert "boom" in runner.ticket(task(), ("check", "boom"))
+    assert "rejected by review" not in runner.ticket(task(), ("check", "boom"))
+    rejected = runner.ticket(task(), ("review", "Fix the skip.\nAnd more."))
+    assert "An earlier try at this task was rejected by review, and was discarded." in rejected
+    assert "> Fix the skip.\n> And more.\n" in rejected
+    assert "failed its check" not in rejected
+
+
+# The review.
+
+
+def rejected(notes="Fix the skip."):
+    return "review_rejected", {"review_notes": notes, "check_log": "check.log"}
+
+
+def test_every_run_is_asked_to_review_with_the_first_usable_reviewer_route(monkeypatch, tmp_path):
+    script = Script(monkeypatch, tmp_path, "committed", pushes=["pushed"])
+    other = {"kind": "litellm", "purpose": "task-other"}
+    runner.run_task(task(review_routes=[CLI, REVIEWER, other]))
+    assert script.review_purposes == ["task-reviewer"]
+    (attempt,) = script.named("end_attempt")
+    assert attempt["review_route"] == REVIEWER
+
+
+@pytest.mark.parametrize(
+    "routes", [[], [CLI], [{"kind": "other"}], [{"kind": "litellm", "purpose": "../x"}]]
+)
+def test_no_usable_review_route_escalates_before_any_attempt(monkeypatch, tmp_path, routes):
+    script = Script(monkeypatch, tmp_path)
+    runner.run_task(task(review_routes=routes))
+    assert script.runs == [] and script.named("begin_attempt") == []
+    assert script.ending() == ("escalated", "no_usable_review_route")
+
+
+def test_a_rejection_retries_once_on_its_route_with_the_notes(monkeypatch, tmp_path):
+    script = Script(monkeypatch, tmp_path, rejected(), "committed", pushes=["pushed"])
+    runner.run_task(task(routes=[CHEAP, BETTER]))
+    assert script.runs == [("task-worker", None), ("task-worker", ("review", "Fix the skip."))]
+    assert script.review_purposes == ["task-reviewer"] * 2
+    assert script.ending() == ("done", None)
+    assert [event["reason"] for event in script.named("end_attempt")] == ["review_rejected", None]
+
+
+def test_a_second_rejection_moves_to_the_next_route_without_the_notes(monkeypatch, tmp_path):
+    script = Script(
+        monkeypatch, tmp_path, rejected(), rejected("again"), "committed", pushes=["pushed"]
+    )
+    runner.run_task(task(routes=[CHEAP, BETTER]))
+    assert script.runs == [
+        ("task-worker", None),
+        ("task-worker", ("review", "Fix the skip.")),
+        ("task-better", None),
+    ]
+    assert script.ending() == ("done", None)
+
+
+def test_a_rejection_on_every_route_escalates_with_that_reason(monkeypatch, tmp_path):
+    script = Script(monkeypatch, tmp_path, *[rejected()] * 2)
+    runner.run_task(task())
+    assert script.ending() == ("escalated", "review_rejected")
+
+
+@pytest.mark.parametrize("ended", ["review_failed", "review_diff_too_large"])
+def test_a_review_that_cannot_decide_moves_on_at_once(monkeypatch, tmp_path, ended):
+    script = Script(monkeypatch, tmp_path, ended, "committed", pushes=["pushed"])
+    runner.run_task(task(routes=[CHEAP, BETTER]))
+    assert [purpose for purpose, _ in script.runs] == ["task-worker", "task-better"]
+    assert script.named("end_attempt")[0]["reason"] == ended
+
+
+def test_the_last_check_log_is_the_one_read_after_a_fix_round(monkeypatch, tmp_path):
+    failed = ("check_failed", {"check_log": "check-2.log"})
+    script = Script(monkeypatch, tmp_path, failed, "committed", pushes=["pushed"])
+    runner.run_task(task())
+    assert script.runs[1] == ("task-worker", ("check", "second output of 1"))
+
+
+@pytest.mark.parametrize("log", [None, "../../etc/passwd", "check-x.log", "events.jsonl"])
+def test_a_check_log_name_the_record_could_not_have_written_is_not_followed(
+    monkeypatch, tmp_path, log
+):
+    failed = ("check_failed", {"check_log": log})
+    script = Script(monkeypatch, tmp_path, failed, "committed", pushes=["pushed"])
+    runner.run_task(task())
+    assert script.runs[1] == ("task-worker", ("check", "output of 1"))
+
+
+def test_the_reviews_ride_on_the_attempts_end(monkeypatch, tmp_path):
+    reviews = [
+        {
+            "result": "fix",
+            "steps": 3,
+            "tokens": {"fresh": 30, "output": 4, "cached": 20, "cache_write": 0},
+            "seconds": 8.5,
+        },
+        {"result": "failed", "steps": 1, "tokens": None, "seconds": 2},
+    ]
+    script = Script(monkeypatch, tmp_path, ("review_failed", {"reviews": reviews}))
+    runner.run_task(task())
+    (attempt,) = script.named("end_attempt")
+    assert attempt["review_route"] == REVIEWER
+    assert attempt["reviews"] == [
+        {
+            "result": "fix",
+            "steps": 3,
+            "fresh_tokens": 30,
+            "cached_tokens": 20,
+            "output_tokens": 4,
+            "seconds": 8.5,
+        },
+        {
+            "result": "failed",
+            "steps": 1,
+            "fresh_tokens": 0,
+            "cached_tokens": 0,
+            "output_tokens": 0,
+            "seconds": 2,
+        },
+    ]
+    assert "reviews" in attempt and attempt["reviews"] != []
+
+
+def test_an_attempt_with_no_review_sends_an_empty_list(monkeypatch, tmp_path):
+    script = Script(monkeypatch, tmp_path, "check_failed", "check_failed")
+    runner.run_task(task())
+    assert [event["reviews"] for event in script.named("end_attempt")] == [[], []]
+
+
+def test_the_events_it_sends_are_ones_the_store_accepts(monkeypatch, tmp_path):
+    from homelab.tasks import finish
+
+    reviews = [{"result": "fix", "steps": 1, "tokens": {"fresh": 1}, "seconds": 1}]
+    script = Script(monkeypatch, tmp_path, ("review_failed", {"reviews": reviews}), "check_failed")
+    runner.run_task(task(routes=[CHEAP, BETTER]))
+    for event in script.events:
+        if isinstance(event, dict):
+            finish.parse(json.dumps(event).encode())
+
+
+def test_notes_are_never_logged(monkeypatch, tmp_path, caplog):
+    caplog.set_level("INFO", logger="homelab-task-runner")
+    Script(monkeypatch, tmp_path, rejected("do-not-log"), "committed", pushes=["pushed"])
+    runner.run_task(task())
+    assert "do-not-log" not in caplog.text
 
 
 def test_a_run_gets_the_task_and_the_configured_author(monkeypatch, tmp_path):
@@ -260,7 +412,7 @@ def test_a_run_gets_the_task_and_the_configured_author(monkeypatch, tmp_path):
     monkeypatch.setenv("HOMELAB_TASK_AUTHOR_NAME", "Configured")
     monkeypatch.setenv("HOMELAB_TASK_AUTHOR_EMAIL", "configured@example.invalid")
 
-    result = runner.run_ticket(task(), tmp_path, "task-worker", "boom")
+    result = runner.run_ticket(task(), tmp_path, "task-worker", "task-reviewer", ("check", "boom"))
 
     assert result == {"ended": "check_failed"}
     command = seen["command"]
@@ -269,6 +421,7 @@ def test_a_run_gets_the_task_and_the_configured_author(monkeypatch, tmp_path):
         ("--working-copy", str(tmp_path)),
         ("--check", "pytest -q"),
         ("--purpose", "task-worker"),
+        ("--review-purpose", "task-reviewer"),
         ("--pin", "tests"),
         ("--allow", "src/app.py"),
         ("--author-name", "Configured"),
@@ -284,7 +437,7 @@ def test_a_refused_run_is_an_ending_not_a_crash(monkeypatch, tmp_path):
     )
     monkeypatch.setenv("HOMELAB_TASK_AUTHOR_NAME", "x")
     monkeypatch.setenv("HOMELAB_TASK_AUTHOR_EMAIL", "x")
-    assert runner.run_ticket(task(), tmp_path, "p", None) == {"ended": "run_refused"}
+    assert runner.run_ticket(task(), tmp_path, "p", "r", None) == {"ended": "run_refused"}
 
 
 # The store.

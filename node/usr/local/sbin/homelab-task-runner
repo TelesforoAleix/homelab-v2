@@ -40,8 +40,10 @@ COMMIT_MESSAGE = ".task-commit-message"
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 PURPOSE = re.compile(r"[a-z0-9][a-z0-9.-]{0,63}\Z")
 COMMIT = re.compile(r"[0-9a-f]{40,64}\Z")
-# How a run can end with a failed check: these get one more run on the same route.
-CHECK_FAILURES = {"check_failed", "check_timeout"}
+# How a run can end with feedback to give: these get one more run on the same route, from a fresh
+# clone. A failed or oversized review is not among them; it goes on to the next route.
+RETRIES = {"check_failed", "check_timeout", "review_rejected"}
+CHECK_LOG = re.compile(r"check(-[0-9]+)?\.log\Z")
 
 logger = logging.getLogger("homelab-task-runner")
 
@@ -176,7 +178,8 @@ def fresh_copy(task):
     return copy if result.returncode == 0 else None
 
 
-def ticket(task, check_output):
+def ticket(task, feedback):
+    """The ticket. `feedback` is None, or ("check", output) or ("review", notes) of a lost try."""
     paths = "\n".join(f"- {path}" for path in task["allowed_files"])
     text = (
         f"# {task['title']}\n\n{task['goal']}\n\n"
@@ -186,18 +189,25 @@ def ticket(task, check_output):
         "top of the repository: a short subject line, then a body if it needs one. That file is "
         "not committed, and without it the work is thrown away.\n"
     )
-    if check_output is not None:
+    if feedback is not None and feedback[0] == "check":
         text += (
             "\nAn earlier try at this task failed its check, and was discarded. "
-            f"The end of the check's output:\n\n```\n{check_output}\n```\n"
+            f"The end of the check's output:\n\n```\n{feedback[1]}\n```\n"
+        )
+    elif feedback is not None:
+        quoted = "".join(f"> {line}\n" for line in feedback[1].splitlines())
+        text += (
+            "\nAn earlier try at this task was rejected by review, and was discarded. "
+            f"The reviewer's notes:\n\n{quoted}"
         )
     return text
 
 
-def run_ticket(task, copy, purpose, check_output):
+def run_ticket(task, copy, purpose, review_purpose, feedback):
     """One homelab-task-run; returns its record, whose `ended` says how it went."""
     command = [
         RUN, "--working-copy", str(copy), "--check", task["check_command"], "--purpose", purpose,
+        "--review-purpose", review_purpose,
         "--author-name", os.environ["HOMELAB_TASK_AUTHOR_NAME"],
         "--author-email", os.environ["HOMELAB_TASK_AUTHOR_EMAIL"],
     ]
@@ -206,7 +216,7 @@ def run_ticket(task, copy, purpose, check_output):
     for path in task["allowed_files"]:
         command += ["--allow", path]
     with tempfile.NamedTemporaryFile("w", encoding="utf-8") as stream:
-        stream.write(ticket(task, check_output))
+        stream.write(ticket(task, feedback))
         stream.flush()
         result = subprocess.run(
             [*command, "--ticket", stream.name],
@@ -221,7 +231,11 @@ def run_ticket(task, copy, purpose, check_output):
 
 
 def check_output_of(run):
-    with open(Path(run["run_folder"]) / "check.log", "rb") as stream:
+    # The record names the last check's log: a fix round has a log of its own.
+    log = run.get("check_log")
+    if not CHECK_LOG.fullmatch(str(log)):
+        log = "check.log"
+    with open(Path(run["run_folder"]) / log, "rb") as stream:
         stream.seek(0, os.SEEK_END)
         stream.seek(max(stream.tell() - CHECK_OUTPUT_BYTES, 0))
         return stream.read().decode(errors="replace")
@@ -269,15 +283,15 @@ def push(task, copy, commit):
     return "push_rejected" if moved else "push_failed"
 
 
-def attempt(task, route, number, check_output):
-    """One attempt, on one route, from a fresh clone; returns (how it ended, its check's output)."""
+def attempt(task, route, review_route, number, feedback):
+    """One attempt on one route, from a fresh clone; returns (its end, feedback for a retry)."""
     started = time.monotonic()
     record({"event": "begin_attempt", "task_id": task["id"], "number": number, "route": route})
     copy = fresh_copy(task)
     if copy is None:
         run = {"ended": "clone_failed"}
     else:
-        run = run_ticket(task, copy, route["purpose"], check_output)
+        run = run_ticket(task, copy, route["purpose"], review_route["purpose"], feedback)
     ended = run["ended"]
     if ended == "committed":
         ended = push(task, copy, run["commit"])
@@ -297,17 +311,33 @@ def attempt(task, route, number, check_output):
             "cached_tokens": tokens.get("cached", 0),
             "output_tokens": tokens.get("output", 0),
             "seconds": round(time.monotonic() - started, 1),
+            "review_route": review_route,
+            "reviews": [review_of(item) for item in run.get("reviews") or []],
         }
     )
     logger.info(
         "attempt task=%d number=%d purpose=%s ended=%s", task["id"], number, route["purpose"], ended
     )
-    return ended, check_output_of(run) if ended in CHECK_FAILURES else None
+    if ended == "review_rejected":
+        return ended, ("review", run.get("review_notes") or "")
+    return ended, (("check", check_output_of(run)) if ended in RETRIES else None)
 
 
-def usable_routes(task):
+def review_of(item):
+    tokens = item.get("tokens") or {}
+    return {
+        "result": item["result"],
+        "steps": item.get("steps", 0),
+        "fresh_tokens": tokens.get("fresh", 0),
+        "cached_tokens": tokens.get("cached", 0),
+        "output_tokens": tokens.get("output", 0),
+        "seconds": item.get("seconds", 0),
+    }
+
+
+def usable_routes(task, key="routes"):
     routes = []
-    for route in task["routes"]:
+    for route in task.get(key) or []:
         kind = route.get("kind") if isinstance(route, dict) else None
         if kind == "litellm" and PURPOSE.fullmatch(str(route.get("purpose"))):
             routes.append(route)
@@ -318,13 +348,16 @@ def usable_routes(task):
     return routes
 
 
-def run_routes(task, routes, numbers):
-    """Each route in order, a failed check once more on the same route; returns the last end."""
+def run_routes(task, routes, review_route, numbers):
+    """Each route in order, a failed check or a rejection once more on the same route.
+
+    Returns the last end.
+    """
     ended = "no_attempt"
     for route in routes:
-        ended, output = attempt(task, route, next(numbers), None)
-        if ended in CHECK_FAILURES:
-            ended, _ = attempt(task, route, next(numbers), output)
+        ended, feedback = attempt(task, route, review_route, next(numbers), None)
+        if ended in RETRIES:
+            ended, _ = attempt(task, route, review_route, next(numbers), feedback)
         if ended.startswith("push"):
             return ended
     return ended
@@ -335,11 +368,14 @@ def work(task):
     routes = usable_routes(task)
     if not routes:
         return "escalated", "no_usable_route"
+    reviewers = usable_routes(task, "review_routes")
+    if not reviewers:
+        return "escalated", "no_usable_review_route"
     numbers = itertools.count(task["next_attempt"])
-    ended = run_routes(task, routes, numbers)
+    ended = run_routes(task, routes, reviewers[0], numbers)
     if ended == "push_rejected":
         # The branch moved: once more from its new tip, with every route available again.
-        ended = run_routes(task, routes, numbers)
+        ended = run_routes(task, routes, reviewers[0], numbers)
     return ("done", None) if ended == "pushed" else ("escalated", ended)
 
 

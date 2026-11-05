@@ -6,6 +6,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -211,6 +212,18 @@ def test_every_container_has_the_same_confinement(repo, network, venv):
     assert "docker.sock" not in " ".join(command)
 
 
+def test_a_read_only_work_dir_is_one_read_only_mount(repo):
+    command = flags(
+        runner.container(
+            "name", repo, 1000, 1000, "homelab-tasks", venv_read_only=True, work_read_only=True
+        )
+    )
+    assert values(command, "--mount") == [f"type=bind,src={repo},dst=/work,readonly"]
+    # Everything else about its confinement is the same.
+    assert values(command, "--cap-drop") == ["ALL"] and "--read-only" in command
+    assert [value.split(":")[0] for value in values(command, "--tmpfs")] == ["/tmp", "/home/task"]
+
+
 def test_agent_ignores_what_the_folder_carries():
     for flag in [
         "--no-approve",
@@ -387,12 +400,30 @@ def test_capture_stops_a_container_that_floods_the_disk(tmp_path, fake_docker, m
     assert fake_docker.read_text() == "rm --force name\n"
 
 
+def reply(text, stop="stop", blocks=None):
+    """A reviewer's events: one tool-using turn, then a final reply of the given text."""
+    content = blocks if blocks is not None else [{"type": "text", "text": text}]
+    first = {**ASSISTANT, "stopReason": "toolUse", "content": [{"type": "toolCall"}]}
+    last = {**ASSISTANT, "stopReason": stop, "content": content}
+    return [
+        {"type": "message_end", "message": first},
+        {"type": "turn_end", "message": first},
+        {"type": "message_end", "message": last},
+        {"type": "turn_end", "message": last},
+    ]
+
+
 class Steps:
-    """Replaces the containers with scripted results and records what each was given."""
+    """Replaces the containers with scripted results and records what each was given.
+
+    Steps are named `prepare`, `agent`, `check`, `review`, then `agent2`, `check2`, `review2` for a
+    fix round, and `commit`.
+    """
 
     def __init__(self, tmp_path, monkeypatch, repo, *, agent=(0, "exited"), stops=("stop",)):
         self.calls = {}
         self.grants_during = {}
+        self.granted = {}
         self.tokens = tmp_path / "tokens"
         self.runs = tmp_path / "runs"
         self.agent, self.stops = agent, stops
@@ -400,6 +431,11 @@ class Steps:
         self.base = git(repo, "rev-parse", "HEAD").strip()
         self.prepare = (0, "exited")
         self.check = (0, "exited")
+        self.check2 = (0, "exited")
+        self.agent2 = (0, "exited")
+        self.diff = "diff\n"
+        # One item per review the run asks for: reply text, or a dict of events and the exit.
+        self.reviews = []
         self.leak = None
         monkeypatch.setattr(runner, "TOKENS", self.tokens)
         monkeypatch.setattr(runner, "RUNS", self.runs)
@@ -414,8 +450,10 @@ class Steps:
             "env": env or {},
             "stdin": stdin,
             "seconds": seconds,
+            "files": (stdout.name, stderr.name),
         }
         self.grants_during[step] = sorted(path.name for path in self.tokens.iterdir())
+        self.granted[step] = [json.loads(path.read_text()) for path in self.tokens.iterdir()]
         if stdin is not None:
             self.calls[step]["ticket"] = stdin.read()
         stdout.write_bytes(b"")
@@ -423,21 +461,31 @@ class Steps:
         if step == "prepare":
             stdout.write_text(self.base + "\n")
             return self.prepare
-        if step == "agent":
+        if step in {"agent", "agent2"}:
             token = env["HOMELAB_TASK_TOKEN"]
             events(stdout, *self.stops)
-            if self.leak == "events":
+            if self.leak in {"events", "all"}:
                 with open(stdout, "a") as stream:
                     stream.write(token + "\n")
-            return self.agent
+            return self.agent if step == "agent" else self.agent2
+        if step in {"review", "review2"}:
+            item = self.reviews.pop(0)
+            if isinstance(item, str):
+                item = {"events": reply(item)}
+            stdout.write_text("".join(json.dumps(event) + "\n" for event in item["events"]))
+            if self.leak == "all":
+                with open(stdout, "a") as stream:
+                    stream.write(env["HOMELAB_TASK_TOKEN"] + "\n")
+            return item.get("exit", (0, "exited"))
         if step == "commit":
             stdout.write_text(self.commit_output + "\n")
             return self.commit
-        stderr.write_text(runner.CHECK_STARTED + "\ncheck output\n")
-        stdout.write_text("diff\n")
+        stderr.write_text(runner.CHECK_STARTED + "\ncheck output of " + step + "\n")
+        diff = self.diff if isinstance(self.diff, bytes) else self.diff.encode()
+        stdout.write_bytes(diff if step == "check" else diff + b"second\n")
         if self.leak == "diff":
             stdout.write_text("+" + self.calls["agent"]["env"]["HOMELAB_TASK_TOKEN"] + "\n")
-        return self.check
+        return self.check if step == "check" else self.check2
 
 
 def arguments(repo, tmp_path, **overrides):
@@ -449,6 +497,7 @@ def arguments(repo, tmp_path, **overrides):
         "check": "pytest",
         "pin": ["tests"],
         "purpose": "task-worker",
+        "review_purpose": None,
         "time_limit": 30,
         "max_requests": 100,
         "allow": [],
@@ -920,3 +969,376 @@ def test_the_service_unit_parses_to_the_full_author_name():
         if text.startswith("Environment=HOMELAB_TASK_AUTHOR_NAME=")
     )
     assert shlex.split(line.removeprefix("Environment=")) == ["HOMELAB_TASK_AUTHOR_NAME=Home Lab"]
+
+
+# The review.
+
+PASS = "Looks right.\nVERDICT: PASS"
+FIX = "The skip hides the failure.\nVERDICT: FIX"
+FILES = [
+    "agent.log",
+    "check.log",
+    "diff.patch",
+    "events.jsonl",
+    "prepare.log",
+    "review.jsonl",
+    "review.log",
+    "run.json",
+]
+
+
+def reviewing(repo, tmp_path, **overrides):
+    fields = {"allow": ["app.py"], "review_purpose": "task-review", **AUTHOR, **overrides}
+    return arguments(repo, tmp_path, **fields)
+
+
+def digest(steps, step):
+    return hashlib.sha256(steps.calls[step]["env"]["HOMELAB_TASK_TOKEN"].encode()).hexdigest()
+
+
+def test_a_pass_goes_on_to_the_commit(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [PASS]
+    assert runner.run(reviewing(repo, tmp_path)) == 0
+    folder, record = only_run(steps)
+    assert list(steps.calls) == ["prepare", "agent", "check", "review", "commit"]
+    assert record["ended"] == "committed" and record["commit"] == "c" * 40
+    assert sorted(path.name for path in folder.iterdir()) == sorted([*FILES, "commit.log"])
+    (item,) = record["reviews"]
+    assert item["result"] == "pass" and item["steps"] == 2
+    assert item["tokens"] == {"fresh": 200, "output": 14, "cached": 80, "cache_write": 0}
+    assert item["seconds"] >= 0
+    # The reviewer's usage is its own: the worker's totals stay the worker's.
+    assert record["steps"] == 1 and record["tokens"]["fresh"] == 100
+    assert record["review_notes"] is None and record["check_log"] == "check.log"
+    assert record["review_purpose"] == "task-review"
+    assert steps.calls["review"]["files"] == ("review.jsonl", "review.log")
+
+
+def test_a_fix_gives_the_notes_to_one_more_round_in_the_same_copy(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [FIX, PASS]
+    assert runner.run(reviewing(repo, tmp_path)) == 0
+    folder, record = only_run(steps)
+    assert list(steps.calls) == [
+        "prepare",
+        "agent",
+        "check",
+        "review",
+        "agent2",
+        "check2",
+        "review2",
+        "commit",
+    ]
+    second = steps.calls["agent2"]["ticket"]
+    assert second.startswith(b"Make VALUE two.")
+    assert b"> The skip hides the failure." in second and b"VERDICT" not in second
+    assert steps.calls["agent2"]["files"] == ("events-2.jsonl", "agent-2.log")
+    assert steps.calls["check2"]["files"] == ("diff-2.patch", "check-2.log")
+    assert steps.calls["review2"]["files"] == ("review-2.jsonl", "review-2.log")
+    # Same working copy, same base commit.
+    assert (
+        steps.calls["agent2"]["command"][: steps.calls["agent2"]["command"].index(runner.IMAGE)][
+            -4:
+        ]
+        == steps.calls["agent"]["command"][: steps.calls["agent"]["command"].index(runner.IMAGE)][
+            -4:
+        ]
+    )
+    assert steps.calls["check2"]["command"][-3:] == steps.calls["check"]["command"][-3:]
+    assert record["ended"] == "committed"
+    assert record["steps"] == 2
+    assert record["tokens"] == {"fresh": 200, "output": 14, "cached": 80, "cache_write": 0}
+    assert [item["result"] for item in record["reviews"]] == ["fix", "pass"]
+    assert record["review_notes"] == "The skip hides the failure."
+    assert record["check_log"] == "check-2.log"
+    assert (folder / "diff.patch").read_bytes() == b"diff\n"
+    assert (folder / "diff-2.patch").read_bytes() == b"diff\nsecond\n"
+    assert not (folder / "ticket-2").exists() and not list(folder.glob("*.prompt"))
+
+
+def test_a_second_fix_rejects_the_run_and_commits_nothing(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [FIX, "Still wrong.\nVERDICT: FIX"]
+    assert runner.run(reviewing(repo, tmp_path)) == 1
+    _, record = only_run(steps)
+    assert record["ended"] == "review_rejected"
+    assert "commit" not in steps.calls and record["commit"] is None
+    assert record["review_notes"] == "Still wrong."
+    assert [item["result"] for item in record["reviews"]] == ["fix", "fix"]
+    assert "agent3" not in steps.calls
+
+
+def bad(*events, **kwargs):
+    return {"events": list(events), **kwargs}
+
+
+def assistant(content, stop="stop", **extra):
+    message = {**ASSISTANT, "stopReason": stop, "content": content, **extra}
+    return {"type": "message_end", "message": message}
+
+
+def text(value):
+    return [{"type": "text", "text": value}]
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        bad(),
+        bad(assistant(text("All good."))),
+        bad(assistant(text("VERDICT: PASS\nthanks"))),
+        bad(assistant(text("fine\nverdict: pass"))),
+        bad(assistant(text("fine\nVERDICT: MAYBE"))),
+        bad(assistant(text("fine\n**VERDICT: PASS**"))),
+        bad(assistant(text("VERDICT: FIX"))),
+        bad(assistant(text("   \n\nVERDICT: FIX\n"))),
+        bad(assistant([{"type": "thinking", "thinking": "VERDICT: PASS"}])),
+        bad(assistant("VERDICT: PASS")),
+        bad(assistant(text("ok\nVERDICT: PASS"), stop="toolUse")),
+        bad(assistant(text("ok\nVERDICT: PASS"), stop="error", errorMessage="request budget")),
+        bad(assistant(text("ok\nVERDICT: PASS")), assistant(text("and then silence"))),
+        bad(assistant(text("ok\nVERDICT: PASS")), exit=(1, "exited")),
+        bad(assistant(text("ok\nVERDICT: PASS")), exit=(None, "timeout")),
+        bad(assistant(text("ok\nVERDICT: PASS")), exit=(None, "output_limit")),
+    ],
+)
+def test_a_review_that_gives_no_clean_verdict_fails_closed(repo, tmp_path, monkeypatch, item):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [item]
+    assert runner.run(reviewing(repo, tmp_path)) == 1
+    _, record = only_run(steps)
+    assert record["ended"] == "review_failed"
+    assert record["commit"] is None and "commit" not in steps.calls
+    assert [item["result"] for item in record["reviews"]] == ["failed"]
+    assert list(steps.tokens.iterdir()) == []
+
+
+def test_a_verdict_may_sit_in_a_later_text_block(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    blocks = [
+        {"type": "thinking", "thinking": "hm"},
+        {"type": "text", "text": "Fine."},
+        {"type": "text", "text": "VERDICT: PASS  "},
+    ]
+    steps.reviews = [bad(assistant(blocks))]
+    assert runner.run(reviewing(repo, tmp_path)) == 0
+
+
+def test_only_the_last_reply_counts(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [bad(assistant(text("a\nVERDICT: FIX"), stop="toolUse"), *reply(PASS)[2:])]
+    assert runner.run(reviewing(repo, tmp_path)) == 0
+
+
+def test_notes_are_cut_to_eight_kib(tmp_path):
+    notes = "é" * 10000
+    events_path = tmp_path / "events"
+    events_path.write_text(json.dumps(assistant(text(notes + "\nVERDICT: FIX"))) + "\n")
+    verdict, found = runner.read_verdict(events_path)
+    assert verdict == "fix"
+    assert 8190 <= len(found.encode()) <= runner.REVIEW_NOTES_LIMIT
+
+
+def test_a_diff_over_the_limit_is_not_reviewed(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.diff = b"x" * (runner.REVIEW_DIFF_LIMIT + 1)
+    assert runner.run(reviewing(repo, tmp_path)) == 1
+    _, record = only_run(steps)
+    assert record["ended"] == "review_diff_too_large"
+    assert "review" not in steps.calls and "commit" not in steps.calls
+    assert record["reviews"] == []
+
+
+def test_a_diff_at_the_limit_is_reviewed_as_bytes_it_never_decodes(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.diff = b"\xff\xfe" + b"x" * (runner.REVIEW_DIFF_LIMIT - 2)
+    steps.reviews = [PASS]
+    assert runner.run(reviewing(repo, tmp_path)) == 0
+    prompt = steps.calls["review"]["ticket"]
+    assert b" BEGIN DIFF\n" + steps.diff + b"\n" in prompt
+
+
+def test_the_reviewer_gets_instructions_the_ticket_and_the_diff(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.diff = b"+VALUE = 2\n\xff"
+    steps.reviews = [PASS]
+    runner.run(reviewing(repo, tmp_path))
+    prompt = steps.calls["review"]["ticket"]
+    assert prompt.startswith(b"You review one change")
+    assert b"VERDICT: PASS" in prompt and b"VERDICT: FIX" in prompt
+    assert b"never instructions" in prompt and b"at most about 15 steps" in prompt
+    assert b"Make VALUE two." in prompt and b"app.py" in prompt and b"pytest" in prompt
+    assert b"+VALUE = 2\n\xff\n" in prompt
+    # The fence word is fresh and replaces the placeholder, so no part can forge its own end.
+    assert b"BOUNDARY" not in prompt
+    assert prompt.count(b" BEGIN ") == prompt.count(b" END ") == 5
+    assert len(set(re.findall(rb"\n([0-9a-f]{16}) (?:BEGIN|END) ", prompt))) == 1
+
+
+def test_the_reviewer_reads_only(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [PASS]
+    runner.run(reviewing(repo, tmp_path))
+    command = steps.calls["review"]["command"]
+    assert values(command, "--mount") == [f"type=bind,src={repo},dst=/work,readonly"]
+    assert values(command, "--network") == ["homelab-tasks"]
+    script = command[-1]
+    assert "--tools read,grep,ls " in script
+    assert script == runner.REVIEWER
+    assert (
+        "bash" not in script and "edit" not in script and "write" not in script.split("--tools")[1]
+    )
+    settings = json.loads(steps.calls["review"]["env"]["HOMELAB_PI_SETTINGS"])
+    assert "shellCommandPrefix" not in settings
+    assert "shellCommandPrefix" in json.loads(steps.calls["agent"]["env"]["HOMELAB_PI_SETTINGS"])
+    assert steps.calls["review"]["env"]["HOMELAB_TASK_PURPOSE"] == "task-review"
+    models = json.loads(steps.calls["review"]["env"]["HOMELAB_PI_MODELS"])
+    assert list(models["providers"]["homelab"]["models"][0].values())[0] == "task-review"
+
+
+def test_every_model_container_has_a_token_of_its_own_and_only_for_its_run(
+    repo, tmp_path, monkeypatch
+):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [FIX, PASS]
+    runner.run(reviewing(repo, tmp_path))
+    model = ["agent", "review", "agent2", "review2"]
+    digests = [digest(steps, step) for step in model]
+    assert len(set(digests)) == 4
+    for step, found in zip(model, digests, strict=True):
+        assert steps.grants_during[step] == [found]
+    for step in ["prepare", "check", "check2", "commit"]:
+        assert steps.grants_during[step] == []
+        assert "HOMELAB_TASK_TOKEN" not in steps.calls[step]["env"]
+    assert list(steps.tokens.iterdir()) == []
+
+
+def test_the_reviewer_may_ask_for_twenty_requests_of_its_purpose_only(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [FIX, PASS]
+    runner.run(reviewing(repo, tmp_path, max_requests=10))
+    assert runner.REVIEW_MAX_REQUESTS == 20
+    assert steps.granted["review"][0]["purposes"] == ["task-review"]
+    assert steps.granted["review"][0]["max_requests"] == 20
+    assert steps.granted["review2"][0]["max_requests"] == 20
+    assert steps.granted["agent"][0]["max_requests"] == 10
+    assert steps.granted["agent"][0]["purposes"] == ["task-worker"]
+    # The fix round gets what the first run left; the reviewer's requests are not taken from it.
+    assert steps.granted["agent2"][0]["max_requests"] == 9
+    assert steps.granted["agent2"][0]["purposes"] == ["task-worker"]
+
+
+def test_a_fix_with_no_budget_left_ends_without_another_agent(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [FIX]
+    assert runner.run(reviewing(repo, tmp_path, max_requests=1)) == 1
+    _, record = only_run(steps)
+    assert record["ended"] == "agent_budget_spent"
+    assert "agent2" not in steps.calls and "commit" not in steps.calls
+    assert record["review_notes"] == "The skip hides the failure."
+
+
+@pytest.mark.parametrize(
+    "agent2,stops,check2,ended,log",
+    [
+        ((0, "exited"), ("error",), (0, "exited"), "agent_failed", "check-2.log"),
+        ((None, "timeout"), ("toolUse",), (0, "exited"), "agent_timeout", "check-2.log"),
+        ((0, "exited"), ("stop",), (1, "exited"), "check_failed", "check-2.log"),
+        ((0, "exited"), ("stop",), (None, "timeout"), "check_timeout", "check-2.log"),
+    ],
+)
+def test_a_fix_round_that_fails_ends_as_those_steps_do(
+    repo, tmp_path, monkeypatch, agent2, stops, check2, ended, log
+):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [FIX]
+    steps.agent2, steps.check2 = agent2, check2
+    original = steps.capture
+
+    def second(command, name, stdout, *args, **kwargs):
+        if name.endswith("-agent2"):
+            steps.stops = stops
+        return original(command, name, stdout, *args, **kwargs)
+
+    monkeypatch.setattr(runner, "capture", second)
+    assert runner.run(reviewing(repo, tmp_path)) == 1
+    folder, record = only_run(steps)
+    assert record["ended"] == ended and record["check_log"] == log
+    assert "review2" not in steps.calls and "commit" not in steps.calls
+    assert (folder / log).exists()
+
+
+def test_every_token_a_run_issued_is_scrubbed(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.leak = "all"
+    steps.reviews = [FIX, PASS]
+    runner.run(reviewing(repo, tmp_path))
+    folder, _ = only_run(steps)
+    tokens = [
+        steps.calls[step]["env"]["HOMELAB_TASK_TOKEN"]
+        for step in ["agent", "review", "agent2", "review2"]
+    ]
+    assert len(set(tokens)) == 4
+    for path in folder.iterdir():
+        for token in tokens:
+            assert token.encode() not in path.read_bytes()
+    for name in ["events.jsonl", "review.jsonl", "events-2.jsonl", "review-2.jsonl"]:
+        assert b"[task-token]" in (folder / name).read_bytes()
+
+
+def test_a_run_interrupted_in_the_review_revokes_its_token(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [PASS]
+    original = steps.capture
+
+    def interrupted(command, name, *args, **kwargs):
+        result = original(command, name, *args, **kwargs)
+        if name.endswith("-review"):
+            raise SystemExit(143)
+        return result
+
+    monkeypatch.setattr(runner, "capture", interrupted)
+    with pytest.raises(SystemExit):
+        runner.run(reviewing(repo, tmp_path))
+    folder, record = only_run(steps)
+    assert record["ended"] == "interrupted"
+    assert list(steps.tokens.iterdir()) == []
+    assert not list(folder.glob("*.prompt"))
+
+
+def test_without_a_review_purpose_nothing_is_reviewed(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    assert runner.run(committing(repo, tmp_path)) == 0
+    folder, record = only_run(steps)
+    assert list(steps.calls) == ["prepare", "agent", "check", "commit"]
+    assert record["reviews"] == [] and record["review_purpose"] is None
+    assert not list(folder.glob("review*"))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"allow": []}, {"review_purpose": "chat:high"}, {"review_purpose": "../x"}],
+)
+def test_a_review_needs_a_commit_to_guard_and_a_valid_purpose(
+    repo, tmp_path, monkeypatch, overrides
+):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    with pytest.raises(runner.Refused):
+        runner.run(reviewing(repo, tmp_path, **overrides))
+    assert steps.calls == {} and not steps.runs.exists()
+
+
+def test_the_flag_is_parsed():
+    found = runner.parse(
+        ["--working-copy", "x", "--ticket", "t", "--check", "c", "--review-purpose", "p"]
+    )
+    assert found.review_purpose == "p"
+    assert (
+        runner.parse(["--working-copy", "x", "--ticket", "t", "--check", "c"]).review_purpose
+        is None
+    )
+
+
+def test_the_docstring_says_what_the_host_does_with_the_diff():
+    assert "handled as bytes" in runner.__doc__ and "never parsed" in runner.__doc__
