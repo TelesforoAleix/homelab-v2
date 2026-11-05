@@ -59,9 +59,12 @@ def claim(connection: Any) -> dict[str, Any] | None:
                    updated_at = now() WHERE id = %s""",
                 (task["id"],),
             )
-            routes = connection.execute(
-                "SELECT routes FROM homelab_roles WHERE role = 'worker'"
-            ).fetchone()
+            roles = dict(
+                connection.execute(
+                    """SELECT role, routes FROM homelab_roles
+                       WHERE role IN ('worker', 'ticket-reviewer')"""
+                ).fetchall()
+            )
             (attempts,) = connection.execute(
                 "SELECT coalesce(max(number), 0) FROM homelab_task_attempts WHERE task_id = %s",
                 (task["id"],),
@@ -69,7 +72,8 @@ def claim(connection: Any) -> dict[str, Any] | None:
             return {
                 **task,
                 "job_id": job_id,
-                "routes": routes[0] if routes else [],
+                "routes": roles.get("worker", []),
+                "review_routes": roles.get("ticket-reviewer", []),
                 "next_attempt": attempts + 1,
             }
 

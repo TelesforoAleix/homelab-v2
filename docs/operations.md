@@ -1520,23 +1520,42 @@ read-only. `uv run` needs no sync there. Prepare needs the stack's `package-prox
 `--allow <path>`, repeatable, with `--author-name` and `--author-email`, adds the commit step after
 a passing check. The agent must leave the message in `.task-commit-message`.
 
+`--review-purpose <purpose>` puts a review between a passing check and the commit step; it is
+refused without `--allow`, since a review only guards a commit, and without it no review runs. A
+second agent, with the model of that purpose and only `read`, `grep` and `ls` tools, reads the
+ticket, the allowed and pinned paths, the check command and the diff, and the repository with the
+working copy mounted read-only. It ends its reply with `VERDICT: PASS` or `VERDICT: FIX`, and a Fix
+carries short notes above that line. On a Pass the run goes on to the commit step. On a Fix the
+notes go to the worker in the same run and working copy: one more agent run, check and review.
+A second Fix ends the run `review_rejected`. Any reply that is not a clean verdict, a timeout,
+a spent budget or a non-zero exit ends it `review_failed`, and a diff over 256 KiB ends it
+`review_diff_too_large`; in all of these nothing is committed. The reviewer has its own token, for
+the review purpose only and 20 requests; the fix round's agent gets the request budget minus the
+steps already used, and with none left the run ends `agent_budget_spent`. **A review is not a
+security boundary.** The model reads untrusted text and can be wrong or talked round; only the
+commit step's rules on allowed paths and pins enforce anything.
+
 Each run leaves `/srv/homelab/task-runs/<run id>/`, root-only. A run's working copy keeps the
 agent's changes, with the pins restored, so use a fresh copy for the next run.
 
 | File | Holds |
 |---|---|
-| `run.json` | Base commit, purpose, pins, Pi turns as `steps`, `tokens` (`fresh`, `output`, `cached`, `cache_write`, as Pi reports them), seconds, `check_exit_code`, `ended` |
+| `run.json` | Base commit, purpose, pins, Pi turns as `steps`, `tokens` (`fresh`, `output`, `cached`, `cache_write`, as Pi reports them; both sum the worker's runs), seconds, `check_exit_code`, `check_log` (the last check's log), `ended`; with a review also `reviews` (per review: `result` `pass`, `fix` or `failed`, `steps`, `tokens`, `seconds`) and `review_notes` (the last Fix's) |
 | `diff.patch` | Everything changed from the base commit except `.venv`, before pins were restored |
 | `check.log` | Output of the check |
 | `events.jsonl`, `agent.log` | Pi's JSON event log and its stderr |
 | `prepare.log` | Dependency installation |
 | `commit.log` | Why the commit step refused, if it did, naming the path |
+| `review.jsonl`, `review.log` | The reviewer's events and stderr |
+| `*-2.*` | A fix round's own `events`, `agent`, `diff`, `check` and `review` files; the first round's names stay |
 
 `ended` is `check_passed`, `check_failed`, `check_setup_failed`, `check_timeout`, `agent_failed`,
 `agent_budget_spent`, `agent_timeout`, `prepare_failed` or `prepare_timeout`, or `<step>_output_limit`
 after 256 MiB of output. With `--allow` a passing check goes on to `committed`, `commit_failed`,
 `commit_timeout` or `commit_refused_<reason>`, where the reason is `outside_allowed`, `pinned`,
-`guarded`, `submodule`, `no_message` or `no_change`. `interrupted` means the script was stopped.
+`guarded`, `submodule`, `no_message` or `no_change`. With `--review-purpose` a passing check can
+instead end `review_rejected`, `review_failed` or `review_diff_too_large`, as above, and a fix
+round ends as its steps do (`agent_*`, `check_*`). `interrupted` means the script was stopped.
 The command prints the same record and exits `0` only for `check_passed` and `committed`, `1` for
 any other finished run and `2` for a refused input, such as
 another active run or a locked volume. An agent that failed or timed out still gets a diff; its
@@ -1554,6 +1573,12 @@ if the pinned base has Node below 22.19. Tokens live in `/srv/homelab/task-token
 It follows the data volume and the stack, so restarting `homelab.service` restarts it first. A
 stopped runner's task returns to the queue at its next start and runs again from a new clone.
 Its journal holds task ids, attempt endings and reasons, never task content.
+
+Every run it makes asks for a review, by the first usable `litellm` route of the `ticket-reviewer`
+role in `homelab_roles`; a task with none ends `escalated`, `no_usable_review_route`, before any
+attempt. A `review_rejected` attempt gets one more try on the same route from a fresh clone, with
+the reviewer's notes in the ticket; `review_failed` and `review_diff_too_large` go to the next route.
+Each review is a `review` trace of role `ticket-reviewer`.
 
 ```bash
 sudo systemctl status homelab-task-runner.service
@@ -1794,6 +1819,8 @@ SSH accounts work through Tailscale.
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-run /usr/local/sbin/homelab-task-run
    sudo install -m 0644 -o root -g root node/opt/homelab-task/Dockerfile /opt/homelab-task/Dockerfile
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-runner /usr/local/sbin/homelab-task-runner
+   (Both scripts review a change before it is committed. Nothing else is installed for that: the
+   `ticket-reviewer` role and its route are seeded by the store, and the image is unchanged.)
    sudo install -m 0644 -o root -g root node/etc/homelab-task/github_known_hosts /etc/homelab-task/github_known_hosts
    sudo install -m 0644 -o root -g root node/opt/homelab-package-proxy/* /opt/homelab-package-proxy/
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-queue-notice /usr/local/sbin/homelab-queue-notice

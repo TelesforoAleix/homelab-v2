@@ -523,14 +523,15 @@ No hosted observability callbacks are configured. `/health` keeps `status`, `ver
 [runbook](docs/operations.md#coding-tasks-in-a-container). Pi is the agent. It has no sandbox of
 its own, and model-generated commands and repository content are untrusted, so the containers
 are the boundary. By hand it stops at the check. The [task runner](#task-runner) calls it for
-each attempt at a queued task, and adds the commit step.
+each attempt at a queued task, with a review and the commit step.
 
 | Step | Runs | Network | Token | Read-only in the copy |
 |---|---|---|---|---|
 | prepare | checks the copy is clean and pins exist; `uv sync --locked` | `homelab-packages` only | none | `.git` |
 | agent | Pi, ticket on stdin | `homelab-tasks` only | the run's | `.git`, `.venv` |
 | check | writes the diff, restores pins, runs the check | none | none | `.git`, `.venv` |
-| commit | with `--allow`, after a passing check: judges the change, makes one commit | none | none | `.venv` |
+| review | with `--review-purpose`, after a passing check: Pi with `read,grep,ls`, instructions, ticket and diff on stdin | `homelab-tasks` only | its own, 20 requests | the whole copy |
+| commit | with `--allow`, after a passing check and review: judges the change, makes one commit | none | none | `.venv` |
 
 Every container is non-root (the working copy's owner, never root), has no capabilities and
 `no-new-privileges`, a read-only root with tmpfs `/tmp` and home, limits on memory, CPU and
@@ -575,6 +576,23 @@ ends a run as `agent_budget_spent`: Pi reports the proxy's refusal as its last e
 record stays in a root-only folder on the encrypted volume. It holds repository content by
 design, and the token is scrubbed from every file in it.
 
+**The review** sits between a passing check and the commit step, within the same attempt. The
+reviewer is a second Pi in a hardened container like the others, with the whole working copy
+mounted read-only and no `bash`, `edit` or `write`: it cannot change anything or rerun the tests,
+and its only token is for the review purpose with a budget of 20 requests. It judges only whether the
+diff does what the ticket asks, within its allowed paths, without weakening the check, and treats
+the repository, ticket and diff as data. The host passes the diff as bytes and never interprets it;
+each part of the prompt is fenced by a fresh random word so none can forge its own end. The host
+reads only the last assistant reply: it needs `stopReason` `stop` and a last non-empty line that is
+exactly `VERDICT: PASS` or `VERDICT: FIX`, and a Fix needs notes above it (cut to 8 KiB). A Pass goes
+on to the commit step. A Fix gives the notes to the worker in the same working copy for one more
+agent run (with the budget the first run left), check and review; a second Fix ends the run
+`review_rejected`. Anything unclear, a spent budget, a timeout or a non-zero exit ends it
+`review_failed`, and a diff over 256 KiB `review_diff_too_large`: an unreviewed commit never
+happens when a review was asked for. Every container that talks to a model gets a token of its own
+and each is scrubbed from the run folder. **The review is not a security boundary.** It is a model
+reading untrusted text; the commit step's rules on allowed paths and pins stay the only enforcement.
+
 ### Task runner
 
 `homelab-task-runner` is a systemd service on the host, because it starts containers and pushes, and
@@ -582,7 +600,7 @@ no container may do either. It is a slow loop, one task at a time. It waits whil
 is locked or a run by hand holds the lock, and every 30 seconds when the queue is empty.
 
 ```text
-claim ── fresh clone ── homelab-task-run (prepare, agent, check, commit) ── push ── finish
+claim ── fresh clone ── homelab-task-run (prepare, agent, check, review, commit) ── push ── finish
               └───────────── a new attempt, from a new clone ◄───────────────┘
 ```
 
@@ -605,6 +623,14 @@ the check's output in the ticket. Any other failure, or a second failed check, m
 route; when they are used up the task ends `escalated` with the last reason. A `cli` route is
 skipped with a logged reason. Each attempt writes an attempts row and a `lead` trace with its
 steps, tokens and seconds. Cost stays empty, and `cache_write` tokens stay in `run.json`.
+
+The runner always asks for a review. Its route is the first usable `litellm` route of role
+`ticket-reviewer` (`claim` returns it as `review_routes`); a task with none ends `escalated`,
+`no_usable_review_route`, before any attempt. A review rejected twice gets the same retry as a failed
+check, in a new clone with the notes in the ticket under their own heading; `review_failed` and
+`review_diff_too_large` go straight to the next route. Each review becomes one `review` trace of role
+`ticket-reviewer`, written in the same transaction as the attempt's close and only when that close
+changed a row, so a repeated event writes nothing twice.
 
 **The push** happens only here, as root, after the commit step. `git` runs against the copy's `.git`
 from outside the copy, which only git itself has written since the clone, with hooks and global
