@@ -54,6 +54,8 @@ Solid parts are built; dashed parts are planned.
 time: `homelab-task-run` gives a ticket to the Pi agent in an isolated container on one working
 copy, then judges the result with a pinned check. Three containers prepare, work and check.
 Only the agent reaches LiteLLM, on `homelab-tasks`, with a one-run token for its purpose.
+Tasks can also be [submitted](ARCHITECTURE.md#task-store) as a file to a durable store and queue
+in Postgres. Nothing consumes that queue yet.
 
 A [read-only code context server](docs/operations.md#code-context-server) gives Mac coding agents
 symbol navigation over SSH. It runs Serena without network access against separate,
@@ -104,6 +106,7 @@ Running the stack needs a provisioned node; see the [operator runbook](docs/oper
 | `src/homelab/models/` | Purpose discovery and model clients |
 | `src/homelab/knowledge/` | LlamaIndex ingestion and retrieval |
 | `src/homelab/jobs/` | Procrastinate tasks and worker |
+| `src/homelab/tasks/` | Coding task tables and the submit command |
 | `config/litellm.yaml` | Model purposes and routes |
 | `node/` | Host files at their installed paths (table entries are merged) |
 | `mac/` | Usage profiles, measurements, model router and action listener |
