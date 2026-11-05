@@ -6,6 +6,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -728,7 +729,9 @@ def test_the_commit_step_alone_writes_git_with_nothing_from_the_copy(repo, tmp_p
     assert not any(mount.endswith("dst=/work/.git,readonly") for mount in mounts)
     assert f"type=bind,src={repo}/.venv,dst=/work/.venv,readonly" in mounts
     # `.venv/bin` leads the image's PATH, and prepare ran the repository's build.
-    assert command[command.index(runner.IMAGE) + 1 :][:3] == ["/usr/bin/python3", "-I", "-c"]
+    # The image's own entrypoint lives outside that PATH, so the step replaces it.
+    assert values(command, "--entrypoint") == ["/usr/bin/python3"]
+    assert command[command.index(runner.IMAGE) + 1 :][:2] == ["-I", "-c"]
     assert "PATH=/usr/bin:/bin" in values(command, "--env")
     for step in ["prepare", "agent", "check"]:
         assert any(
@@ -907,3 +910,13 @@ def test_a_linked_message_is_refused(repo, tmp_path):
     secret.write_text("outside the tree\n")
     (repo / runner.COMMIT_MESSAGE).symlink_to(secret)
     assert commit_step(repo).stdout.strip() == "refused no_message"
+
+
+def test_the_service_unit_parses_to_the_full_author_name():
+    unit = Path(__file__).parent.parent / "node/etc/systemd/system/homelab-task-runner.service"
+    line = next(
+        text
+        for text in unit.read_text().splitlines()
+        if text.startswith("Environment=HOMELAB_TASK_AUTHOR_NAME=")
+    )
+    assert shlex.split(line.removeprefix("Environment=")) == ["HOMELAB_TASK_AUTHOR_NAME=Home Lab"]
