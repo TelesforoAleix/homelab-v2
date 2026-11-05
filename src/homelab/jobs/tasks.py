@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 @app.task(queue=QUEUE, name=JOB)
 def run_coding_task(task_id: int) -> None:
-    """Registered so a deferred job is valid. The worker does not serve this queue and has no
-    Docker access, so it can never run a task."""
-    raise NotImplementedError("the tasks queue has no consumer yet")
+    """Registered so a deferred job is valid. The host's homelab-task-runner claims these jobs;
+    the worker does not serve this queue and has no Docker access, so it can never run one."""
+    raise NotImplementedError("homelab-task-runner runs this job, not the worker")
 
 
 @app.task(queue="default", name="ping")

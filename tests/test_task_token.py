@@ -29,13 +29,14 @@ def hook(monkeypatch, tmp_path):
     return module
 
 
-def grant(directory, token=TOKEN, purposes=("task-worker",), expires_at=None):
+def grant(directory, token=TOKEN, purposes=("task-worker",), expires_at=None, **fields):
     path = directory / hashlib.sha256(token.encode()).hexdigest()
     path.write_text(
         json.dumps(
             {
                 "purposes": list(purposes),
                 "expires_at": time() + 60 if expires_at is None else expires_at,
+                **fields,
             }
         )
     )
@@ -251,3 +252,77 @@ def test_the_subnet_is_the_one_compose_creates():
         volume.endswith(":" + config["task_token_dir"] + ":ro")
         for volume in compose["services"]["litellm"]["volumes"]
     )
+
+
+def post(http):
+    return http.post("/v1/chat/completions", headers=BEARER, json=CHAT)
+
+
+def test_a_token_gets_its_budget_and_then_429(hook, tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="homelab.models")
+    grant(tmp_path, max_requests=2)
+    http, reached = client(hook)
+    assert [post(http).status_code for _ in range(4)] == [200, 200, 429, 429]
+    assert len(reached) == 2
+    assert "task_refused reason=budget status=429" in caplog.text
+
+
+def test_the_refusal_says_the_words_the_runner_looks_for(hook, tmp_path):
+    grant(tmp_path, max_requests=1)
+    http, _ = client(hook)
+    post(http)
+    assert "request budget is spent" in post(http).json()["error"]["message"]
+
+
+def test_the_default_budget_is_a_hundred(hook, tmp_path):
+    grant(tmp_path)
+    http, reached = client(hook)
+    assert {post(http).status_code for _ in range(100)} == {200}
+    assert post(http).status_code == 429
+    assert len(reached) == 100
+
+
+def test_each_token_has_its_own_count(hook, tmp_path):
+    grant(tmp_path, max_requests=1)
+    grant(tmp_path, token="another-token", max_requests=1)
+    http, _ = client(hook)
+    assert post(http).status_code == 200
+    other = {"authorization": "Bearer another-token"}
+    assert http.post("/v1/chat/completions", headers=other, json=CHAT).status_code == 200
+    assert post(http).status_code == 429
+
+
+def test_a_refused_request_does_not_spend_the_budget(hook, tmp_path):
+    grant(tmp_path, max_requests=1)
+    http, _ = client(hook)
+    wrong = {**CHAT, "model": "chat"}
+    assert http.post("/v1/chat/completions", headers=BEARER, json=wrong).status_code == 403
+    assert http.get("/v1/models", headers=BEARER).status_code == 403
+    assert post(http).status_code == 200
+
+
+def test_the_count_keeps_no_token_and_forgets_an_expired_one(hook, tmp_path):
+    grant(tmp_path, max_requests=5)
+    http, _ = client(hook)
+    post(http)
+    assert TOKEN not in hook.task_requests
+    (digest,) = hook.task_requests
+    hook.task_requests[digest] = (1, time() - 1)
+    post(http)
+    assert hook.task_requests[digest][0] == 1
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "100", 1.5, None])
+def test_a_malformed_budget_is_no_grant(hook, tmp_path, value):
+    grant(tmp_path, max_requests=value)
+    http, reached = client(hook)
+    assert post(http).status_code == 401
+    assert reached == []
+
+
+def test_other_networks_have_no_budget(hook, tmp_path):
+    grant(tmp_path, max_requests=1)
+    http, _ = client(hook, peer=OTHER_PEER)
+    assert hook.task_requests == {}
+    http.get("/health/liveliness")
+    assert hook.task_requests == {}

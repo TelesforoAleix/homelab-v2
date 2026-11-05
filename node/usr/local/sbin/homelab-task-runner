@@ -1,0 +1,440 @@
+#!/usr/bin/python3 -I
+"""Consume the `tasks` queue: run each task, retry it, and push the commit it ends in.
+
+A slow loop, one task at a time. The store is reached with `docker exec`, since Postgres has no host
+port and no container has Docker. homelab-task-run does the containers. This script holds the
+order of attempts and the push, the one step that needs a key and so never happens in a container.
+
+Git runs here only where no hostile file can reach it. A clone is an unprivileged user's, with no
+template. A push reads a `.git` nothing but the commit step's own git could write, by explicit
+URL and refspec, with hooks off. Nothing logged here carries task content.
+"""
+import fcntl
+import itertools
+import json
+import logging
+import os
+import pwd
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+VOLUME = Path("/srv/homelab")
+WORK = VOLUME / "task-work"
+RUN = "/usr/local/sbin/homelab-task-run"
+RUN_LOCK = Path("/run/lock/homelab-task-run.lock")
+WORKER = "homelab-worker-1"
+TASK_USER = "homelab-task"
+KEYS = Path("/root/.ssh")
+KNOWN_HOSTS = "/etc/homelab-task/github_known_hosts"
+POLL_SECONDS = 30
+STORE_SECONDS = 120
+GIT_SECONDS = 600
+CHECK_OUTPUT_BYTES = 16 * 1024
+COMMIT_MESSAGE = ".task-commit-message"
+REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+PURPOSE = re.compile(r"[a-z0-9][a-z0-9.-]{0,63}\Z")
+COMMIT = re.compile(r"[0-9a-f]{40,64}\Z")
+# How a run can end with a failed check: these get one more run on the same route.
+CHECK_FAILURES = {"check_failed", "check_timeout"}
+
+logger = logging.getLogger("homelab-task-runner")
+
+
+class Refused(Exception):
+    """A task that will not run; the message is the task's reason and carries no content."""
+
+
+class StoreUnavailable(Exception):
+    """The worker container did not answer."""
+
+
+def store(module, *args, event=None):
+    """One `docker exec`; returns its JSON. Task content stays in the pipes."""
+    try:
+        result = subprocess.run(
+            ["docker", "exec", "-i", WORKER, "python", "-m", f"homelab.tasks.{module}", *args],
+            input=b"" if event is None else json.dumps(event).encode(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=STORE_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise StoreUnavailable(type(error).__name__) from None
+    if result.returncode != 0:
+        raise StoreUnavailable(f"{module} exited {result.returncode}")
+    try:
+        return json.loads(result.stdout)
+    except ValueError:
+        raise StoreUnavailable(f"{module} gave no JSON") from None
+
+
+def record(event):
+    """A result must land, or the task would run again: keep trying while the service lives."""
+    while True:
+        try:
+            return store("finish", event=event)
+        except StoreUnavailable as error:
+            logger.warning("store unavailable event=%s error=%s", event["event"], error)
+            time.sleep(POLL_SECONDS)
+
+
+def git_env(**extra):
+    return {
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/nonexistent",
+        "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        **extra,
+    }
+
+
+def as_task_user():
+    return {"user": TASK_USER, "group": TASK_USER, "extra_groups": [], "umask": 0o077}
+
+
+def clone_url(repository):
+    return f"https://github.com/{repository}.git"
+
+
+def push_url(repository):
+    return f"git@github.com:{repository}.git"
+
+
+def key_path(repository):
+    return KEYS / f"task-push-{repository.rsplit('/', 1)[1]}"
+
+
+def default_branch(repository):
+    """Ask the remote, outside any working copy. None when it will not say."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--symref", "--", clone_url(repository), "HEAD"],
+            env=git_env(),
+            cwd="/",
+            capture_output=True,
+            text=True,
+            timeout=GIT_SECONDS,
+            check=False,
+            **as_task_user(),
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    found = re.search(r"^ref: refs/heads/(\S+)\tHEAD$", result.stdout, re.M)
+    return found[1] if result.returncode == 0 and found else None
+
+
+def refuse_branch(task):
+    """`main` and the default branch are never written, and an unknown default counts as one."""
+    default = default_branch(task["repository"])
+    if default is None:
+        raise Refused("default_branch_unknown")
+    if task["branch"] in {"main", default}:
+        raise Refused("default_branch_refused")
+
+
+def copy_path(task):
+    return WORK / str(task["id"])
+
+
+def remove_copy(task):
+    # rmtree does not follow a symlink the agent left, and removes nothing outside the folder.
+    shutil.rmtree(copy_path(task), ignore_errors=True)
+
+
+def fresh_copy(task):
+    """The slice branch's tip, in a new folder the task user owns; None if the clone failed."""
+    remove_copy(task)
+    copy = copy_path(task)
+    copy.mkdir(mode=0o700)
+    account = pwd.getpwnam(TASK_USER)
+    os.chown(copy, account.pw_uid, account.pw_gid)
+    try:
+        result = subprocess.run(
+            [
+                "git", "clone", "--quiet", "--template=", "--no-tags", "--single-branch",
+                "--branch", task["branch"], "--", clone_url(task["repository"]), str(copy),
+            ],
+            env=git_env(),
+            cwd="/",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=GIT_SECONDS,
+            check=False,
+            **as_task_user(),
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    return copy if result.returncode == 0 else None
+
+
+def ticket(task, check_output):
+    paths = "\n".join(f"- {path}" for path in task["allowed_files"])
+    text = (
+        f"# {task['title']}\n\n{task['goal']}\n\n"
+        f"Change only these paths, or files below them:\n{paths}\n\n"
+        f"The work is judged by this command: {task['check_command']}\n\n"
+        f"When you are done, write a commit message for your change to `{COMMIT_MESSAGE}` at the "
+        "top of the repository: a short subject line, then a body if it needs one. That file is "
+        "not committed, and without it the work is thrown away.\n"
+    )
+    if check_output is not None:
+        text += (
+            "\nAn earlier try at this task failed its check, and was discarded. "
+            f"The end of the check's output:\n\n```\n{check_output}\n```\n"
+        )
+    return text
+
+
+def run_ticket(task, copy, purpose, check_output):
+    """One homelab-task-run; returns its record, whose `ended` says how it went."""
+    command = [
+        RUN, "--working-copy", str(copy), "--check", task["check_command"], "--purpose", purpose,
+        "--author-name", os.environ["HOMELAB_TASK_AUTHOR_NAME"],
+        "--author-email", os.environ["HOMELAB_TASK_AUTHOR_EMAIL"],
+    ]
+    for path in task["pinned_paths"]:
+        command += ["--pin", path]
+    for path in task["allowed_files"]:
+        command += ["--allow", path]
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as stream:
+        stream.write(ticket(task, check_output))
+        stream.flush()
+        result = subprocess.run(
+            [*command, "--ticket", stream.name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    try:
+        return json.loads(result.stdout.splitlines()[-1])
+    except (IndexError, ValueError):
+        return {"ended": "run_refused"}
+
+
+def check_output_of(run):
+    with open(Path(run["run_folder"]) / "check.log", "rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        stream.seek(max(stream.tell() - CHECK_OUTPUT_BYTES, 0))
+        return stream.read().decode(errors="replace")
+
+
+def push(task, copy, commit):
+    """Send one commit to the task's branch; returns `pushed` or why not. Never forces."""
+    try:
+        refuse_branch(task)
+    except Refused as refusal:
+        return f"push_{refusal}"
+    key = key_path(task["repository"])
+    if not key.is_file():
+        return "push_key_missing"
+    if not COMMIT.fullmatch(commit):
+        return "push_bad_commit"
+    ssh = shlex.join(
+        [
+            "ssh", "-F", "/dev/null", "-i", str(key),
+            "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={KNOWN_HOSTS}",
+        ]
+    )
+    try:
+        result = subprocess.run(
+            [
+                "git", "--git-dir", f"{copy}/.git",
+                "-c", "core.hooksPath=/dev/null", "-c", "safe.directory=*",
+                "push", "--porcelain", "--no-verify", "--no-follow-tags",
+                "--", push_url(task["repository"]), f"{commit}:refs/heads/{task['branch']}",
+            ],
+            env=git_env(GIT_SSH_COMMAND=ssh),
+            cwd="/",
+            capture_output=True,
+            text=True,
+            timeout=GIT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "push_failed"
+    if result.returncode == 0:
+        return "pushed"
+    # `[rejected]` is git's own view that the branch moved; `[remote rejected]` is the server's no.
+    moved = re.search(r"^!\t.*\[rejected\]", result.stdout, re.M)
+    return "push_rejected" if moved else "push_failed"
+
+
+def attempt(task, route, number, check_output):
+    """One attempt, on one route, from a fresh clone; returns (how it ended, its check's output)."""
+    started = time.monotonic()
+    record({"event": "begin_attempt", "task_id": task["id"], "number": number, "route": route})
+    copy = fresh_copy(task)
+    if copy is None:
+        run = {"ended": "clone_failed"}
+    else:
+        run = run_ticket(task, copy, route["purpose"], check_output)
+    ended = run["ended"]
+    if ended == "committed":
+        ended = push(task, copy, run["commit"])
+    tokens = run.get("tokens") or {}
+    record(
+        {
+            "event": "end_attempt",
+            "task_id": task["id"],
+            "number": number,
+            "route": route,
+            "status": "done" if ended == "pushed" else "failed",
+            "reason": None if ended == "pushed" else ended,
+            "run_id": run.get("run_id"),
+            "check_exit_code": run.get("check_exit_code"),
+            "steps": run.get("steps", 0),
+            "fresh_tokens": tokens.get("fresh", 0),
+            "cached_tokens": tokens.get("cached", 0),
+            "output_tokens": tokens.get("output", 0),
+            "seconds": round(time.monotonic() - started, 1),
+        }
+    )
+    logger.info(
+        "attempt task=%d number=%d purpose=%s ended=%s", task["id"], number, route["purpose"], ended
+    )
+    return ended, check_output_of(run) if ended in CHECK_FAILURES else None
+
+
+def usable_routes(task):
+    routes = []
+    for route in task["routes"]:
+        kind = route.get("kind") if isinstance(route, dict) else None
+        if kind == "litellm" and PURPOSE.fullmatch(str(route.get("purpose"))):
+            routes.append(route)
+        elif kind == "cli":
+            logger.info("route skipped task=%d reason=cli_routes_do_not_run_yet", task["id"])
+        else:
+            logger.warning("route skipped task=%d reason=not_a_litellm_route", task["id"])
+    return routes
+
+
+def run_routes(task, routes, numbers):
+    """Each route in order, a failed check once more on the same route; returns the last end."""
+    ended = "no_attempt"
+    for route in routes:
+        ended, output = attempt(task, route, next(numbers), None)
+        if ended in CHECK_FAILURES:
+            ended, _ = attempt(task, route, next(numbers), output)
+        if ended.startswith("push"):
+            return ended
+    return ended
+
+
+def work(task):
+    """Every attempt a task gets; returns its final status and reason."""
+    routes = usable_routes(task)
+    if not routes:
+        return "escalated", "no_usable_route"
+    numbers = itertools.count(task["next_attempt"])
+    ended = run_routes(task, routes, numbers)
+    if ended == "push_rejected":
+        # The branch moved: once more from its new tip, with every route available again.
+        ended = run_routes(task, routes, numbers)
+    return ("done", None) if ended == "pushed" else ("escalated", ended)
+
+
+def run_task(task):
+    logger.info("task started id=%d", task["id"])
+    try:
+        if not REPOSITORY.fullmatch(task["repository"]) or ".." in task["repository"]:
+            raise Refused("repository_refused")
+        refuse_branch(task)
+        status, reason = work(task)
+    except Refused as refusal:
+        status, reason = "failed", str(refusal)
+    except Exception as error:  # A bad task must not stop the queue; systemd sees only real faults.
+        status, reason = "failed", f"runner_error_{type(error).__name__}"
+    finally:
+        remove_copy(task)
+    record(
+        {
+            "event": "end_task",
+            "task_id": task["id"],
+            "job_id": task["job_id"],
+            "status": status,
+            "reason": reason,
+        }
+    )
+    logger.info("task ended id=%d status=%s reason=%s", task["id"], status, reason)
+
+
+def run_lock_free():
+    """False while someone runs homelab-task-run by hand; it allows one run at a time."""
+    with open(RUN_LOCK, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+    return True
+
+
+def recover():
+    """Clear what a dead runner left: its containers, its copies, its claim."""
+    found = subprocess.run(
+        ["docker", "ps", "--all", "--quiet", "--filter", "name=^/homelab-task-"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if names := found.stdout.decode().split():
+        subprocess.run(
+            ["docker", "rm", "--force", *names],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    # The service's umask would close this to the task user, who must pass through it.
+    WORK.mkdir(exist_ok=True)
+    WORK.chmod(0o755)
+    for path in WORK.iterdir():
+        shutil.rmtree(path, ignore_errors=True)
+    logger.info("recovered jobs=%s", store("claim", "--recover"))
+
+
+def turn(state):
+    """One pass of the loop; True if it ran a task, so the next pass need not wait."""
+    if not os.path.ismount(VOLUME) or not run_lock_free():
+        return False
+    if not state["recovered"]:
+        recover()
+        state["recovered"] = True
+    try:
+        task = store("claim")
+    except StoreUnavailable:
+        # A lost answer may have claimed a task no one holds. Nothing runs now: recover again.
+        state["recovered"] = False
+        raise
+    if task is None:
+        return False
+    run_task(task)
+    return True
+
+
+def main():
+    if os.geteuid() != 0:
+        print("homelab-task-runner: run as the service", file=sys.stderr)
+        return 2
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    state = {"recovered": False}
+    while True:
+        try:
+            worked = turn(state)
+        except StoreUnavailable as error:
+            logger.warning("store unavailable error=%s", error)
+            worked = False
+        if not worked:
+            time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

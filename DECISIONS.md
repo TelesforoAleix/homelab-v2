@@ -822,3 +822,38 @@ Procrastinate's own job priority.
 **2026-11-05 — `routes` is checked only as a list.** The table is edited directly and a stricter
 check would have to change with every new route kind. Whatever uses a route validates it there.
 
+**2026-11-05 — Claiming calls Procrastinate's SQL function, not its job manager.** A job in `doing`
+and a task in `running` must change together, and the job manager runs on its own connection.
+`procrastinate_fetch_job_v2` and its neighbours are the library's own state machine, called on the
+caller's transaction, the way `defer` takes an external connection. A library upgrade that renames
+them fails the first claim, loudly. The job has no worker id: Procrastinate's worker registry
+expects heartbeats that a `docker exec` does not make.
+
+**2026-11-05 — A claim stops the slice, not the end of a task.** After `escalated` or `failed`, other
+tasks of that slice may still have jobs, and a later file can add more. Checking at claim covers
+both in one place. The discarded job ends `aborted`, because its task is `queued` and has not run.
+
+**2026-11-05 — Only a failed check retries on the same route.** Its output tells the agent something.
+A spent budget, a refused commit or a failed agent would most likely repeat, so they move to the next
+route. Each attempt clones again: the copy of a failed attempt is what failed.
+
+**2026-11-05 — The agent's commit message is a file in the tree.** `.git` is read-only for the agent,
+so it cannot commit, and Pi's last reply is prose for no reader in particular. An untracked
+`.task-commit-message` is plain to ask for and easy to exclude. A run without one fails, as a refusal.
+
+**2026-11-05 — The commit step uses `commit-tree` and the system Python.** `git commit` would look at
+the working tree and submodules, and a policy over paths with odd names is safer in Python than in
+sh. By full path, because `.venv/bin` is first in the image's `PATH` and `uv sync` has run the
+repository's build backend. That also means the step cannot trust `sh`.
+
+**2026-11-05 — The proxy filters URLs, not domains.** tinyproxy's domain filter would pass a plain
+`GET http://pypi.org/`, as `ConnectPort` governs only `CONNECT`. With `FilterURLs`, a tunnel is
+matched as `host:443` and a plain request as `http://...`, so anchored rules allow HTTPS alone.
+
+**2026-11-05 — A missing push key ends the task, after its check.** A check first would have saved
+the model spend, but the first trial on the node needs to reach a passing check before any key
+exists. The task ends `escalated` with `push_key_missing`, and its diff stays in the run folder.
+
+**2026-11-05 — GitHub's host keys are in the repository.** `accept-new` would trust whatever answers
+first, on the one connection that carries a write key. The keys are public and change rarely; a
+rotation fails closed, as a failed push.
