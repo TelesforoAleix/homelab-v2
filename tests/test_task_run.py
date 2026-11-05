@@ -915,8 +915,8 @@ def test_a_linked_message_is_refused(repo, tmp_path):
 def test_the_service_unit_parses_to_the_full_author_name():
     unit = Path(__file__).parent.parent / "node/etc/systemd/system/homelab-task-runner.service"
     line = next(
-        l
-        for l in unit.read_text().splitlines()
-        if l.startswith("Environment=HOMELAB_TASK_AUTHOR_NAME=")
+        text
+        for text in unit.read_text().splitlines()
+        if text.startswith("Environment=HOMELAB_TASK_AUTHOR_NAME=")
     )
     assert shlex.split(line.removeprefix("Environment=")) == ["HOMELAB_TASK_AUTHOR_NAME=Home Lab"]
