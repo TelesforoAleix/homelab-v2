@@ -70,7 +70,16 @@ for path in "$@"; do
     exit 3
   }
 done
-uv sync --locked >&2
+# A slow wheel download can time out; the files uv already fetched are not kept, so try again.
+tries=0
+until uv sync --locked >&2; do
+  tries=$((tries + 1))
+  if [ "$tries" -ge 3 ]; then
+    echo 'uv sync failed 3 times' >&2
+    exit 1
+  fi
+  sleep 5
+done
 printf '%s\\n' "$base"
 """
 
@@ -673,7 +682,7 @@ def execute(args, record, context, pins):
             *context.owner,
             PACKAGE_NETWORK,
             venv_read_only=False,
-            env=[f"HTTPS_PROXY={PACKAGE_PROXY}"],
+            env=[f"HTTPS_PROXY={PACKAGE_PROXY}", "UV_HTTP_TIMEOUT=120"],
         )
         + [PREPARE, "prepare", *pins],
         f"{context.name}-prepare",
