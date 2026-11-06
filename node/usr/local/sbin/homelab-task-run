@@ -772,7 +772,7 @@ def cli_worker(args, context, pins, ticket, record):
             for path, source, info in tree_files(origin):
                 after[path] = fingerprint(source, info)
                 permitted = (
-                    any(covers(entry, path) for entry in args.allow)
+                    (path == COMMIT_MESSAGE or any(covers(entry, path) for entry in args.allow))
                     and not any(covers(pin, path) for pin in pins)
                     and not any(part in {".git", ".venv"} for part in path.split("/"))
                 )
