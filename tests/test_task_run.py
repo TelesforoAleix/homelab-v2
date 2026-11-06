@@ -1540,6 +1540,8 @@ def test_cli_turn_reaches_the_existing_check_review_and_commit(
     _, record = only_run(steps)
     assert list(steps.calls) == ["prepare", "check", "review", "commit"]
     assert (repo / "app.py").read_text() == "VALUE = 2\n"
+    assert (repo / runner.COMMIT_MESSAGE).read_text() == "Change value\n"
+    assert record["cli_ignored_changes"] == 0
     assert record["ended"] == "committed"
     assert record["steps"] == 0 and not any(record["tokens"].values())
     assert "cost_usd" not in record
@@ -1665,9 +1667,7 @@ def test_cli_queue_attempt_reaches_push_with_unmeasured_worker_usage(
     def capture(*args, **kwargs):
         result = steps.capture(*args, **kwargs)
         if args[1].endswith("-commit"):
-            committed = commit_step(
-                repo, allowed=("app.py", ".task-commit-message"), base=steps.base
-            )
+            committed = commit_step(repo, allowed=("app.py",), base=steps.base)
             args[2].write_text(committed.stdout)
             args[3].write_text(committed.stderr)
             return committed.returncode, "exited"
@@ -1694,7 +1694,7 @@ def test_cli_queue_attempt_reaches_push_with_unmeasured_worker_usage(
     monkeypatch.setenv("HOMELAB_TASK_AUTHOR_NAME", "Fixture")
     monkeypatch.setenv("HOMELAB_TASK_AUTHOR_EMAIL", "fixture@example.invalid")
     caplog.set_level("INFO", logger="homelab-task-runner")
-    item = task(routes=[CODEX], allowed_files=["app.py", ".task-commit-message"])
+    item = task(routes=[CODEX], allowed_files=["app.py"])
     service.run_task(item)
     assert list(steps.calls) == ["prepare", "check", "review", "commit"]
     assert len(pushes) == 1 and pushes[0][:2] == (item, repo)
@@ -1710,14 +1710,18 @@ def test_cli_queue_attempt_reaches_push_with_unmeasured_worker_usage(
     assert json.loads(seen.read_text())["argv"][-1] == service.ticket(item, None)
 
 
-def test_cli_message_is_data_and_must_be_explicitly_allowed(
-    repo, tmp_path, monkeypatch, fake_factory
-):
+def test_cli_message_link_is_not_followed(repo, tmp_path, monkeypatch, fake_factory, caplog):
     steps = Steps(tmp_path, monkeypatch, repo)
     steps.reviews = [PASS]
-    fake_factory("(repo / '.task-commit-message').write_text('not allowed')\n")
+    outside = tmp_path / "message"
+    outside.write_text("Do not import this message\n")
+    fake_factory(f"(repo / {runner.COMMIT_MESSAGE!r}).symlink_to({str(outside)!r})\n")
     assert runner.run(cli_arguments(repo, tmp_path)) == 0
-    assert not (repo / ".task-commit-message").exists()
+    assert not (repo / runner.COMMIT_MESSAGE).exists()
+    assert not (repo / runner.COMMIT_MESSAGE).is_symlink()
+    assert outside.read_text() == "Do not import this message\n"
+    assert only_run(steps)[1]["cli_ignored_changes"] == 1
+    assert "Do not import this message" not in caplog.text
 
 
 def test_cli_input_directory_owners_are_the_factory_user(repo, tmp_path, monkeypatch, fake_factory):
