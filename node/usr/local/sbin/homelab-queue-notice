@@ -9,22 +9,25 @@ import unicodedata
 HELPER = "/usr/local/sbin/homelab-queue-notice"
 
 
-def message(text):
+def message(text, prefix="Mac queue: "):
     # Replace line breaks with spaces; strip C0/C1 and Unicode format controls.
     text = text.replace("\n", " ").replace("\r", " ")
     clean = "".join(c for c in text if not unicodedata.category(c).startswith("C"))
-    return ("Mac queue: " + clean)[:1000]
+    return (prefix + clean)[:1000]
 
 
 def main(args):
-    if args not in ([], ["--send"]):
+    task = "--task" in args
+    send = "--send" in args
+    if sorted(args) not in ([], ["--send"], ["--task"], ["--send", "--task"]):
         return 2
+    prefix = "Task: " if task else "Mac queue: "
     try:
-        if args == ["--send"]:
+        if send:
             if not os.environ.get("CREDENTIALS_DIRECTORY"):
                 return 2
             result = subprocess.run(
-                ["/usr/local/sbin/homelab-notify.sh", message(sys.stdin.read(16384))],
+                ["/usr/local/sbin/homelab-notify.sh", message(sys.stdin.read(16384), prefix)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=7,
@@ -58,6 +61,7 @@ def main(args):
                     "--property=UMask=0077",
                     HELPER,
                     "--send",
+                    *(["--task"] if task else []),
                 ],
                 input=sys.stdin.read(16384),
                 text=True,

@@ -27,6 +27,7 @@ from pathlib import Path
 VOLUME = Path("/srv/homelab")
 WORK = VOLUME / "task-work"
 RUN = "/usr/local/sbin/homelab-task-run"
+NOTICE = "/usr/local/sbin/homelab-queue-notice"
 RUN_LOCK = Path("/run/lock/homelab-task-run.lock")
 WORKER = "homelab-worker-1"
 TASK_USER = "homelab-task"
@@ -34,6 +35,7 @@ KEYS = Path("/root/.ssh")
 KNOWN_HOSTS = "/etc/homelab-task/github_known_hosts"
 POLL_SECONDS = 30
 STORE_SECONDS = 120
+NOTICE_SECONDS = 30
 GIT_SECONDS = 600
 CHECK_OUTPUT_BYTES = 16 * 1024
 COMMIT_MESSAGE = ".task-commit-message"
@@ -311,6 +313,7 @@ def attempt(task, route, review_route, number, feedback):
             "cached_tokens": tokens.get("cached", 0),
             "output_tokens": tokens.get("output", 0),
             "seconds": round(time.monotonic() - started, 1),
+            **known_cost(run),
             "review_route": review_route,
             "reviews": [review_of(item) for item in run.get("reviews") or []],
         }
@@ -323,6 +326,11 @@ def attempt(task, route, review_route, number, feedback):
     return ended, (("check", check_output_of(run)) if ended in RETRIES else None)
 
 
+def known_cost(item):
+    """The cost key only when the run measured it; an empty cost stays empty in the store."""
+    return {} if item.get("cost_usd") is None else {"cost_usd": item["cost_usd"]}
+
+
 def review_of(item):
     tokens = item.get("tokens") or {}
     return {
@@ -332,6 +340,7 @@ def review_of(item):
         "cached_tokens": tokens.get("cached", 0),
         "output_tokens": tokens.get("output", 0),
         "seconds": item.get("seconds", 0),
+        **known_cost(item),
     }
 
 
@@ -402,6 +411,27 @@ def run_task(task):
         }
     )
     logger.info("task ended id=%d status=%s reason=%s", task["id"], status, reason)
+    if status in {"escalated", "failed"}:
+        notify(task, status, reason)
+
+
+def notify(task, status, reason):
+    """Tell the phone a task stopped: ids and codes only. A failed notice changes nothing."""
+    text = f"{task['id']} {task['slice']} {status} {reason}"
+    try:
+        result = subprocess.run(
+            [NOTICE, "--task"],
+            input=text.encode(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=NOTICE_SECONDS,
+            check=False,
+        )
+        failure = f"exited {result.returncode}" if result.returncode else None
+    except (OSError, subprocess.SubprocessError) as error:
+        failure = type(error).__name__
+    if failure:
+        logger.warning("notice failed task=%d error=%s", task["id"], failure)
 
 
 def run_lock_free():

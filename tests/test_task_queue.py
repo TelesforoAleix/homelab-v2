@@ -406,3 +406,56 @@ def test_the_retry_of_an_attempt_row_is_ignored(connection):  # noqa: F811
     finish.record(connection, event)
     finish.record(connection, event)
     assert connection.execute("SELECT count(*) FROM homelab_task_attempts").fetchone() == (1,)
+
+
+def test_cost_lands_on_the_lead_and_review_traces_and_empty_stays_empty(connection):  # noqa: F811
+    submit(connection, plan(entry(1)))
+    task = claiming.claim(connection)
+    finish.record(
+        connection,
+        finish.BeginAttempt(event="begin_attempt", task_id=task["id"], number=1, route=ROUTE),
+    )
+    reviewer = {"kind": "litellm", "purpose": "task-reviewer"}
+    event = finish.EndAttempt(
+        event="end_attempt",
+        task_id=task["id"],
+        number=1,
+        route=ROUTE,
+        status="failed",
+        reason="review_rejected",
+        cost_usd=0.0125,
+        review_route=reviewer,
+        reviews=[
+            finish.Review(result="fix", cost_usd=0.003),
+            finish.Review(result="fix"),
+        ],
+    )
+    finish.record(connection, event)
+    finish.record(connection, event)
+    rows = connection.execute(
+        "SELECT kind, cost_usd::float FROM homelab_task_traces ORDER BY id"
+    ).fetchall()
+    assert rows == [("lead", 0.0125), ("review", 0.003), ("review", None)]
+
+
+@pytest.mark.parametrize("where", ["attempt", "review"])
+def test_a_negative_cost_is_refused(where):
+    event = {
+        "event": "end_attempt",
+        "task_id": 1,
+        "number": 1,
+        "route": ROUTE,
+        "status": "failed",
+        "review_route": ROUTE,
+        "reviews": [{"result": "fix"}],
+    }
+    if where == "attempt":
+        event["cost_usd"] = -0.1
+    else:
+        event["reviews"][0]["cost_usd"] = -0.1
+    with pytest.raises(Refused, match="cost_usd"):
+        finish.parse(json.dumps(event).encode())
+    for cost in (None, 0, 1.5):
+        event["cost_usd"] = cost
+        event["reviews"][0]["cost_usd"] = cost
+        finish.parse(json.dumps(event).encode())

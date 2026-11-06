@@ -857,3 +857,7 @@ exists. The task ends `escalated` with `push_key_missing`, and its diff stays in
 **2026-11-05 — GitHub's host keys are in the repository.** `accept-new` would trust whatever answers
 first, on the one connection that carries a write key. The keys are public and change rarely; a
 rotation fails closed, as a failed push.
+
+**2026-11-06 — A request that did not finish cleanly still writes a null cost line.** A stream cut
+short or a middleware fault could have billed something, and a missing line would let the run sum
+the lines that did arrive. The null makes the container's cost unknown, never a partial sum.

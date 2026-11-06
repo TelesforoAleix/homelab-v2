@@ -425,6 +425,9 @@ class Steps:
         self.grants_during = {}
         self.granted = {}
         self.tokens = tmp_path / "tokens"
+        self.costs = tmp_path / "costs"
+        # Per step, the lines the proxy would have appended for that container's token.
+        self.billed = {}
         self.runs = tmp_path / "runs"
         self.agent, self.stops = agent, stops
         self.commit, self.commit_output = (0, "exited"), "commit " + "c" * 40
@@ -438,6 +441,7 @@ class Steps:
         self.reviews = []
         self.leak = None
         monkeypatch.setattr(runner, "TOKENS", self.tokens)
+        monkeypatch.setattr(runner, "COSTS", self.costs)
         monkeypatch.setattr(runner, "RUNS", self.runs)
         monkeypatch.setattr(runner.os, "chown", lambda *args: None)
         monkeypatch.setattr(runner.os.path, "ismount", lambda path: True)
@@ -458,6 +462,9 @@ class Steps:
             self.calls[step]["ticket"] = stdin.read()
         stdout.write_bytes(b"")
         stderr.write_bytes(b"")
+        if step in self.billed:
+            digest = hashlib.sha256(env["HOMELAB_TASK_TOKEN"].encode()).hexdigest()
+            (self.costs / digest).write_text("".join(line + "\n" for line in self.billed[step]))
         if step == "prepare":
             stdout.write_text(self.base + "\n")
             return self.prepare
@@ -1342,3 +1349,106 @@ def test_the_flag_is_parsed():
 
 def test_the_docstring_says_what_the_host_does_with_the_diff():
     assert "handled as bytes" in runner.__doc__ and "never parsed" in runner.__doc__
+
+
+# What the proxy billed.
+
+
+def line(cost):
+    return json.dumps({"cost_usd": cost})
+
+
+def test_a_run_clears_the_costs_a_dead_run_left(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.costs.mkdir()
+    (steps.costs / "stale").write_text(line(9) + "\n")
+    runner.run(arguments(repo, tmp_path))
+    assert list(steps.costs.iterdir()) == []
+    assert oct(steps.costs.stat().st_mode & 0o777) == "0o770"
+
+
+def test_the_clearing_is_the_same_as_for_tokens(tmp_path, monkeypatch):
+    folder = tmp_path / "costs"
+    folder.mkdir()
+    (folder / "stale").write_text("{}")
+    owners = []
+    monkeypatch.setattr(runner, "COSTS", folder)
+    monkeypatch.setattr(runner.os, "chown", lambda *args: owners.append(args))
+    runner.clear_costs()
+    assert list(folder.iterdir()) == []
+    assert owners == [(folder, 0, runner.LITELLM_GID)]
+
+
+def test_a_container_costs_the_sum_of_its_lines_and_its_file_goes(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.billed = {"agent": [line(0.25), line(0.5), line(1)]}
+    runner.run(arguments(repo, tmp_path))
+    _, record = only_run(steps)
+    assert record["cost_usd"] == 1.75
+    assert list(steps.costs.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        None,
+        [],
+        [line(0.25), line(None)],
+        [line(0.25), "not json"],
+        [line(-1)],
+        ['{"cost": 1}'],
+        ['{"cost_usd": "1"}'],
+    ],
+)
+def test_a_missing_or_unknown_cost_is_null_never_a_partial_sum(repo, tmp_path, monkeypatch, lines):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    if lines is not None:
+        steps.billed = {"agent": lines}
+    runner.run(arguments(repo, tmp_path))
+    _, record = only_run(steps)
+    assert record["cost_usd"] is None
+    assert list(steps.costs.iterdir()) == []
+
+
+def test_the_worker_total_covers_every_run_and_one_unknown_makes_it_null(
+    repo, tmp_path, monkeypatch
+):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [FIX, PASS]
+    steps.billed = {"agent": [line(1)], "agent2": [line(2)], "review": [line(9)]}
+    assert runner.run(reviewing(repo, tmp_path)) == 0
+    _, record = only_run(steps)
+    assert record["cost_usd"] == 3
+    steps = Steps(tmp_path / "again", monkeypatch, repo)
+    steps.reviews = [FIX, PASS]
+    steps.billed = {"agent": [line(1)]}
+    (tmp_path / "again").mkdir(exist_ok=True)
+    runner.run(reviewing(repo, tmp_path))
+    assert only_run(steps)[1]["cost_usd"] is None
+
+
+def test_each_review_carries_its_own_cost(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [FIX, PASS]
+    steps.billed = {"agent": [line(1)], "review": [line(0.5)], "agent2": [line(1)]}
+    runner.run(reviewing(repo, tmp_path))
+    _, record = only_run(steps)
+    assert [item["cost_usd"] for item in record["reviews"]] == [0.5, None]
+    assert record["cost_usd"] == 2
+
+
+def test_an_interrupted_run_reports_no_partial_cost(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.billed = {"agent": [line(1)]}
+    original = steps.capture
+
+    def interrupted(command, name, *args, **kwargs):
+        if name.endswith("-agent"):
+            original(command, name, *args, **kwargs)
+            raise KeyboardInterrupt
+        return original(command, name, *args, **kwargs)
+
+    monkeypatch.setattr(runner, "capture", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        runner.run(arguments(repo, tmp_path))
+    assert only_run(steps)[1]["cost_usd"] == 1

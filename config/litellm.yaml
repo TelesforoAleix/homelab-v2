@@ -308,6 +308,8 @@ general_settings:
 # Requests from this subnet need a run's task token; compose.yaml creates the network.
 task_subnet: 10.253.87.0/24
 task_token_dir: /run/homelab-task-tokens
+# LiteLLM appends one line per task request here; homelab-task-run reads and removes them.
+task_cost_dir: /run/homelab-task-costs
 
 # Home Lab owns these native gateway calls; LiteLLM's video providers are unused.
 media_gateway_url: https://ai-gateway.vercel.sh/v4/ai

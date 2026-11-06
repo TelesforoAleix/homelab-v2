@@ -489,7 +489,13 @@ limit of a run. It is counted per token hash in memory, so restarting LiteLLM fo
 from other networks never enter this path. The store is a directory on the encrypted volume,
 mounted read-only into LiteLLM: one file per token, named by the token's SHA-256, holding only its
 purposes, expiry and budget. Deleting the file revokes it. The next request sees that, because
-each one reads the store. The token itself exists only in
+each one reads the store. The proxy also records what each request cost: for a request that
+passed, it keeps the last 16 KiB of the reply as it streams by, without changing or delaying it,
+and when the reply ends reads `usage.cost`, the amount the gateway billed. It appends
+`{"cost_usd": <number>}` (`null` when the cost is missing, not a non-negative number, or the status
+is 400 or more) to `task_cost_dir`, one file per token hash, mounted read-write in LiteLLM only and
+holding nothing else. A write that fails logs one line and never fails the request; refused
+requests and other networks write nothing. The token itself exists only in
 the runner's memory and the agent container's environment. The `task-worker` purpose has
 exactly `chat`'s model and effort; it is an ordinary purpose to any other client.
 There is no master key, LiteLLM-managed database, UI or virtual key configuration.
@@ -622,7 +628,11 @@ start to end. A failed check gets one more run on the same route, in a new clone
 the check's output in the ticket. Any other failure, or a second failed check, moves to the next
 route; when they are used up the task ends `escalated` with the last reason. A `cli` route is
 skipped with a logged reason. Each attempt writes an attempts row and a `lead` trace with its
-steps, tokens and seconds. Cost stays empty, and `cache_write` tokens stay in `run.json`.
+steps, tokens and seconds. `cost_usd` is what the proxy billed. `homelab-task-run` clears the cost folder at the start of a
+run and reads and removes each model container's file after it ends. A container's cost is the sum
+of its lines, and null if there is no file or any line is null; a partial sum is never a cost. The
+record's `cost_usd` is the worker's total over its runs, null if any is null, and each review has its
+own. An unknown cost stays empty in the traces, and `cache_write` tokens stay in `run.json`.
 
 The runner always asks for a review. Its route is the first usable `litellm` route of role
 `ticket-reviewer` (`claim` returns it as `review_routes`); a task with none ends `escalated`,
@@ -631,6 +641,11 @@ check, in a new clone with the notes in the ticket under their own heading; `rev
 `review_diff_too_large` go straight to the next route. Each review becomes one `review` trace of role
 `ticket-reviewer`, written in the same transaction as the attempt's close and only when that close
 changed a row, so a repeated event writes nothing twice.
+
+**The phone.** When a task ends `escalated` or `failed`, after `end_task` is recorded, the runner
+pipes one line to `homelab-queue-notice --task`: the task id, its slice, status and reason, with the
+prefix "Task: ". It carries no goal, title, notes or diff. A notice that fails is logged as one line
+and changes nothing.
 
 **The push** happens only here, as root, after the commit step. `git` runs against the copy's `.git`
 from outside the copy, which only git itself has written since the clone, with hooks and global
