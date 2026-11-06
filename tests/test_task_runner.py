@@ -348,8 +348,9 @@ def test_the_reviews_ride_on_the_attempts_end(monkeypatch, tmp_path):
             "steps": 3,
             "tokens": {"fresh": 30, "output": 4, "cached": 20, "cache_write": 0},
             "seconds": 8.5,
+            "cost_usd": 0.004,
         },
-        {"result": "failed", "steps": 1, "tokens": None, "seconds": 2},
+        {"result": "failed", "steps": 1, "tokens": None, "seconds": 2, "cost_usd": None},
     ]
     script = Script(monkeypatch, tmp_path, ("review_failed", {"reviews": reviews}))
     runner.run_task(task())
@@ -363,6 +364,7 @@ def test_the_reviews_ride_on_the_attempts_end(monkeypatch, tmp_path):
             "cached_tokens": 20,
             "output_tokens": 4,
             "seconds": 8.5,
+            "cost_usd": 0.004,
         },
         {
             "result": "failed",
@@ -830,3 +832,78 @@ def test_host_keys_are_githubs_only():
     lines = (ROOT / "node/etc/homelab-task/github_known_hosts").read_text().splitlines()
     assert {line.split()[0] for line in lines} == {"github.com"}
     assert json.dumps(lines).count("ssh-ed25519") == 1
+
+
+def test_the_cost_of_a_run_is_passed_on_and_an_unknown_one_stays_empty(monkeypatch, tmp_path):
+    script = Script(
+        monkeypatch, tmp_path, ("check_failed", {"cost_usd": 0.02}), "check_failed", "check_failed"
+    )
+    runner.run_task(task(routes=[CHEAP, BETTER]))
+    attempts = script.named("end_attempt")
+    assert [event.get("cost_usd") for event in attempts] == [0.02, None, None]
+    assert "cost_usd" not in attempts[1]
+
+
+class Notices:
+    def __init__(self, monkeypatch, script=None, result=0, error=None):
+        self.calls = []
+        self.recorded_before = []
+
+        def run(command, **kwargs):
+            self.calls.append((command, kwargs))
+            if script:
+                self.recorded_before.append(len(script.named("end_task")))
+            if error:
+                raise error
+            return subprocess.CompletedProcess(command, result)
+
+        monkeypatch.setattr(runner.subprocess, "run", run)
+
+
+@pytest.mark.parametrize(
+    "fields,outcomes,status",
+    [
+        ({"repository": "bad repo"}, [], "failed"),
+        ({}, ["check_failed", "check_failed"], "escalated"),
+    ],
+)
+def test_a_task_that_stops_sends_one_notice_after_it_is_recorded(
+    monkeypatch, tmp_path, fields, outcomes, status
+):
+    script = Script(monkeypatch, tmp_path, *outcomes)
+    notices = Notices(monkeypatch, script)
+    runner.run_task(task(**fields))
+    ((command, kwargs),) = notices.calls
+    assert command == [runner.NOTICE, "--task"]
+    ended, reason = script.ending()
+    assert ended == status
+    assert kwargs["input"] == f"7 sample {ended} {reason}".encode()
+    assert notices.recorded_before == [1]
+
+
+def test_a_notice_carries_no_task_content(monkeypatch, tmp_path):
+    Script(monkeypatch, tmp_path, "check_failed", "check_failed")
+    notices = Notices(monkeypatch)
+    runner.run_task(task(title="SECRET-TITLE", goal="SECRET-GOAL"))
+    assert notices.calls[0][1]["input"] == b"7 sample escalated check_failed"
+
+
+def test_a_done_task_sends_no_notice(monkeypatch, tmp_path):
+    Script(monkeypatch, tmp_path, "committed", pushes=["pushed"])
+    notices = Notices(monkeypatch)
+    runner.run_task(task())
+    assert notices.calls == []
+
+
+@pytest.mark.parametrize(
+    "result,error",
+    [(1, None), (0, OSError("nope")), (0, subprocess.TimeoutExpired("x", 1))],
+)
+def test_a_failed_notice_changes_nothing(monkeypatch, tmp_path, caplog, result, error):
+    caplog.set_level("INFO", logger="homelab-task-runner")
+    script = Script(monkeypatch, tmp_path, "check_failed", "check_failed")
+    Notices(monkeypatch, None, result, error)
+    runner.run_task(task())
+    assert script.ending() == ("escalated", "check_failed")
+    assert caplog.text.count("notice failed task=7") == 1
+    assert "SECRET" not in caplog.text

@@ -104,3 +104,24 @@ def test_credential_matches_existing_notifier_override(sender):
     )
     assert directive in properties
     assert not any(p.startswith("LoadCredential=") for p in properties)
+
+
+def test_a_task_notice_has_its_own_prefix_and_the_same_cleaning():
+    assert helper.message("7 slice failed\nreason\x1b", "Task: ") == "Task: 7 slice failed reason"
+    assert helper.message("x") == "Mac queue: x"
+
+
+def test_task_flag_picks_the_prefix_and_reaches_the_send_step(sender, monkeypatch):
+    assert helper.main(["--task"]) == 0
+    argv, kwargs = sender[0]
+    assert argv[0] == "/usr/bin/systemd-run"
+    assert argv[-3:] == [helper.HELPER, "--send", "--task"]
+    assert kwargs["input"] == "test\nnotice\x00"
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", "/run/credentials/test")
+    monkeypatch.setattr(helper.sys, "stdin", io.StringIO("test\nnotice\x00"))
+    assert helper.main(["--send", "--task"]) == 0
+    assert sender[1][0] == ["/usr/local/sbin/homelab-notify.sh", "Task: test notice"]
+    monkeypatch.setattr(helper.sys, "stdin", io.StringIO("test\nnotice\x00"))
+    assert helper.main(["--send"]) == 0
+    assert sender[2][0] == ["/usr/local/sbin/homelab-notify.sh", "Mac queue: test notice"]
+    assert helper.main(["--task", "--task", "--bad"]) == 2

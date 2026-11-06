@@ -12,6 +12,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from ipaddress import ip_address, ip_network
+from math import inf
 from pathlib import Path
 from time import monotonic, time
 
@@ -38,6 +39,8 @@ media_models = {row["model_name"]: row for row in config.get("media_model_list",
 model_info.update({name: row["model_info"] for name, row in media_models.items()})
 task_subnet = ip_network(config["task_subnet"])
 task_token_dir = Path(config["task_token_dir"])
+task_cost_dir = Path(config["task_cost_dir"])
+TASK_COST_TAIL = 16 * 1024
 TASK_MAX_REQUESTS = 100
 # Requests a live token has made, by its hash. In memory: a proxy restart forgives the count.
 task_requests: dict[str, tuple[int, float]] = {}
@@ -452,12 +455,59 @@ async def task_refusal(request):
     return None
 
 
+def billed_cost(tail):
+    """`usage.cost` of the last usage in a reply's tail (stream or plain JSON); None if unknown."""
+    text = tail.decode("utf-8", errors="replace")
+    usage = None
+    for line in reversed(text.splitlines()):
+        if not line.startswith("data:"):
+            continue
+        try:
+            found = json.loads(line[5:]).get("usage")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(found, dict):
+            usage = found
+            break
+    if usage is None:
+        # A plain reply: all of it if it fit, else the last `"usage"` member of a cut one.
+        try:
+            usage = json.loads(text).get("usage")
+        except (ValueError, AttributeError):
+            usage = None
+            at = text.rfind('"usage"')
+            colon = text.find(":", at) if at >= 0 else -1
+            if colon >= 0:
+                try:
+                    usage = json.JSONDecoder().raw_decode(text[colon + 1 :].lstrip())[0]
+                except ValueError:
+                    usage = None
+    cost = usage.get("cost") if isinstance(usage, dict) else None
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)) or not 0 <= cost < inf:
+        return None
+    return cost
+
+
+def record_task_cost(key, tail, status):
+    """Append this request's billed cost to its token's file; never fails the request."""
+    cost = billed_cost(tail) if status < 400 else None
+    try:
+        path = task_cost_dir / hashlib.sha256(key.encode()).hexdigest()
+        with open(path, "a") as costs:
+            costs.write(json.dumps({"cost_usd": cost}) + "\n")
+    except OSError as error:
+        logger.warning("task_cost_unrecorded error=%s", type(error).__name__)
+
+
 class ModelEndpointMiddleware(BaseHTTPMiddleware):
     """Expose only the contract; observe the full response, including streams."""
 
     async def dispatch(self, request, call_next):
-        if from_task_network(request) and (refusal := await task_refusal(request)) is not None:
-            return refusal
+        task_key = None
+        if from_task_network(request):
+            if (refusal := await task_refusal(request)) is not None:
+                return refusal
+            task_key = request.headers["authorization"].partition(" ")[2]
 
         path = request.url.path
         if path == "/health/liveliness" and request.method == "GET":
@@ -475,6 +525,7 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
         }
         token = audit.set(event)
         status = 500
+        tail = bytearray()
 
         def record():
             logger.info(
@@ -488,6 +539,8 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                 str(event.get("profile_blocked", False)).lower(),
                 str(event.get("profile_paused", False)).lower(),
             )
+            if task_key is not None:
+                record_task_cost(task_key, bytes(tail), status)
 
         try:
             fields = None
@@ -710,6 +763,9 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                     nonlocal status
                     try:
                         async for chunk in iterator:
+                            if task_key is not None:
+                                tail.extend(chunk.encode() if isinstance(chunk, str) else chunk)
+                                del tail[:-TASK_COST_TAIL]
                             yield chunk
                     except Exception:
                         status = 502
@@ -719,6 +775,7 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
 
                 response.body_iterator = observed()
             else:
+                tail.extend(getattr(response, "body", b"")[-TASK_COST_TAIL:])
                 record()
             return response
         except Exception:

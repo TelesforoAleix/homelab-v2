@@ -57,6 +57,7 @@ services:
       - ./config:/etc/litellm:ro
       - ./src/homelab/api/video_jobs.py:/opt/homelab-api/video_jobs.py:ro
       - ${HOMELAB_TASK_TOKENS_PATH:-/srv/homelab/task-tokens}:/run/homelab-task-tokens:ro
+      - ${HOMELAB_TASK_COSTS_PATH:-/srv/homelab/task-costs}:/run/homelab-task-costs
     networks:
       - default
       - models

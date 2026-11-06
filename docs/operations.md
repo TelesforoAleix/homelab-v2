@@ -1565,14 +1565,21 @@ A run needs the data volume, Docker, the stack and the image. Update the image d
 change the Dockerfile, install it as in [Rebuilding the node](#rebuilding-the-node) and run
 `sudo docker build -t homelab-task:2 /opt/homelab-task`. The build needs Internet access and fails
 if the pinned base has Node below 22.19. Tokens live in `/srv/homelab/task-tokens`, `root:10001`
-`0750`, and are hashes; `sudo rm` of a file there revokes a token at once.
+`0750`, and are hashes; `sudo rm` of a file there revokes a token at once. LiteLLM appends what
+each request cost to `/srv/homelab/task-costs/<token hash>` (`root:10001`, `0770`, cleared at the
+start of every run); the run reads and removes each file and reports `cost_usd` in its record, null
+when any part is unknown. Nothing but the numbers is in those files.
 
 ### The task runner
 
 `homelab-task-runner.service` consumes the queue; see [Task runner](../ARCHITECTURE.md#task-runner).
 It follows the data volume and the stack, so restarting `homelab.service` restarts it first. A
 stopped runner's task returns to the queue at its next start and runs again from a new clone.
-Its journal holds task ids, attempt endings and reasons, never task content.
+Its journal holds task ids, attempt endings and reasons, never task content. When a task ends
+`escalated` or `failed` it sends one phone notice, "Task: <id> <slice> <status> <reason>", through
+`homelab-queue-notice --task`; if that fails, the journal says `notice failed` and the queue goes on.
+Attempt and review traces carry `cost_usd`, the amount LiteLLM billed, empty when it could not be
+measured in full.
 
 Every run it makes asks for a review, by the first usable `litellm` route of the `ticket-reviewer`
 role in `homelab_roles`; a task with none ends `escalated`, `no_usable_review_route`, before any
@@ -1858,7 +1865,9 @@ SSH accounts work through Tailscale.
    volume are available, following [Code context server](#code-context-server). Create
    `/etc/homelab-context/repositories` as `root:root` mode `0600` with the desired names.
    Then build the task image with `sudo docker build -t homelab-task:2 /opt/homelab-task`.
-   Compose creates `/srv/homelab/task-tokens` on first start and the first run tightens it, and the
+   Compose creates `/srv/homelab/task-tokens` and `/srv/homelab/task-costs` on first start and the
+   first run tightens both (`root:10001`, `0750` and `0770`), so LiteLLM can append costs; restart
+   `homelab.service` after merging, since LiteLLM needs the new mount and `task_cost_dir`. The
    task runner creates `/srv/homelab/task-work`; see
    [Coding tasks in a container](#coding-tasks-in-a-container). Compose builds `package-proxy`
    from the application clone; the copy in `/opt` only records what is installed. Push keys are
@@ -1890,7 +1899,8 @@ SSH accounts work through Tailscale.
    daemon reload or bot restart is needed. The command starts a collected transient service
    with the existing bot account and TPM-sealed `LoadCredentialEncrypted` credential
    (`bot-token:/etc/homelab-telegram-bot/token.cred`), an eight-second runtime limit and no retry.
-   Stdin is bounded to 16,384 characters; line breaks become spaces, controls are stripped,
+   `--task` changes the prefix to "Task: " and passes it to the `--send` step; the task runner uses
+   it. Stdin is bounded to 16,384 characters; line breaks become spaces, controls are stripped,
    and the prefixed notice is capped at 1,000 characters. The shared sender's output is
    discarded so notice text cannot enter the journal. Validate the transient service properties
    with `systemd-analyze verify` before installing and test from the Mac:

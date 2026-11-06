@@ -37,6 +37,7 @@ class Review(Strict):
     cached_tokens: Count = 0
     output_tokens: Count = 0
     seconds: float = Field(default=0, ge=0)
+    cost_usd: float | None = Field(default=None, ge=0)
 
 
 class EndAttempt(Strict):
@@ -53,6 +54,7 @@ class EndAttempt(Strict):
     cached_tokens: Count = 0
     output_tokens: Count = 0
     seconds: float = Field(default=0, ge=0)
+    cost_usd: float | None = Field(default=None, ge=0)
     review_route: dict[str, Any] | None = None
     reviews: list[Review] = Field(default_factory=list, max_length=8)
 
@@ -96,7 +98,7 @@ def end_attempt(connection: Any, event: EndAttempt) -> None:
     """Close the attempt and write its `lead` trace and one `review` trace per review.
 
     The traces ride on the close that changed a row, so a repeated event writes nothing twice.
-    Cost stays empty: nothing measures it yet.
+    Cost is what the proxy billed; it stays empty when the runner could not measure all of it.
     """
     with connection.transaction():
         closed = connection.execute(
@@ -116,8 +118,8 @@ def end_attempt(connection: Any, event: EndAttempt) -> None:
             connection.execute(
                 """INSERT INTO homelab_task_traces
                    (task_id, attempt, role, route, kind, steps, fresh_tokens, cached_tokens,
-                    output_tokens, seconds, result)
-                   VALUES (%s, %s, 'worker', %s::jsonb, 'lead', %s, %s, %s, %s, %s, %s)""",
+                    output_tokens, seconds, cost_usd, result)
+                   VALUES (%s, %s, 'worker', %s::jsonb, 'lead', %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     event.task_id,
                     event.number,
@@ -127,6 +129,7 @@ def end_attempt(connection: Any, event: EndAttempt) -> None:
                     event.cached_tokens,
                     event.output_tokens,
                     event.seconds,
+                    event.cost_usd,
                     event.reason or event.status,
                 ),
             )
@@ -134,9 +137,9 @@ def end_attempt(connection: Any, event: EndAttempt) -> None:
                 connection.execute(
                     """INSERT INTO homelab_task_traces
                        (task_id, attempt, role, route, kind, steps, fresh_tokens, cached_tokens,
-                        output_tokens, seconds, result)
+                        output_tokens, seconds, cost_usd, result)
                        VALUES (%s, %s, 'ticket-reviewer', %s::jsonb, 'review', %s, %s, %s, %s, %s,
-                               %s)""",
+                               %s, %s)""",
                     (
                         event.task_id,
                         event.number,
@@ -146,6 +149,7 @@ def end_attempt(connection: Any, event: EndAttempt) -> None:
                         review.cached_tokens,
                         review.output_tokens,
                         review.seconds,
+                        review.cost_usd,
                         review.result,
                     ),
                 )

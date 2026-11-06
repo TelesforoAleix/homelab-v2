@@ -12,6 +12,7 @@ whole copy read-only; a Fix gives its notes to one more agent run and check, the
 Given `--allow`, a passing check (and review) is followed by a commit step, the only one that may
 write `.git`. The review is not a boundary: the commit step's rules alone enforce paths and pins.
 """
+
 import argparse
 import fcntl
 import hashlib
@@ -32,6 +33,7 @@ from pathlib import Path
 VOLUME = Path("/srv/homelab")
 RUNS = VOLUME / "task-runs"
 TOKENS = VOLUME / "task-tokens"
+COSTS = VOLUME / "task-costs"
 LOCK = Path("/run/lock/homelab-task-run.lock")
 IMAGE = "homelab-task:2"
 TASK_NETWORK = "homelab-tasks"
@@ -103,7 +105,8 @@ line that is exactly `VERDICT: PASS` or `VERDICT: FIX`. A fix needs notes above 
 
 # stdout carries the diff and stderr everything else, so the check's output cannot mix with it.
 # The index and new objects live in /tmp because `.git` is read-only here.
-CHECK = """set -eu
+CHECK = (
+    """set -eu
 base=$1
 command=$2
 shift 2
@@ -123,7 +126,9 @@ done
 unset GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 echo '%s' >&2
 exec sh -c "$command" >&2
-""" % CHECK_STARTED
+"""
+    % CHECK_STARTED
+)
 
 # The only step that can write `.git`, so it trusts nothing the tree or `.venv` could have supplied:
 # the system Python in isolated mode, a fixed PATH, no git config but the clone's, hooks off. It
@@ -271,21 +276,41 @@ def container(
 ):
     tmpfs = f"rw,exec,nosuid,nodev,size={TMPFS}"
     command = [
-        "docker", "run", "--rm", "--name", name, "--pull", "never", "--init",
-        "--user", f"{uid}:{gid}",
-        "--cap-drop", "ALL",
-        "--security-opt", "no-new-privileges",
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        name,
+        "--pull",
+        "never",
+        "--init",
+        "--user",
+        f"{uid}:{gid}",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
         "--read-only",
-        "--tmpfs", f"/tmp:{tmpfs},mode=1777",
-        "--tmpfs", f"/home/task:{tmpfs},uid={uid},gid={gid},mode=0700",
-        "--memory", MEMORY,
-        "--memory-swap", MEMORY,
-        "--cpus", CPUS,
-        "--pids-limit", PIDS,
-        "--log-driver", "none",
-        "--network", network,
-        "--workdir", "/work",
-        "--mount", f"type=bind,src={copy},dst=/work" + (",readonly" if work_read_only else ""),
+        "--tmpfs",
+        f"/tmp:{tmpfs},mode=1777",
+        "--tmpfs",
+        f"/home/task:{tmpfs},uid={uid},gid={gid},mode=0700",
+        "--memory",
+        MEMORY,
+        "--memory-swap",
+        MEMORY,
+        "--cpus",
+        CPUS,
+        "--pids-limit",
+        PIDS,
+        "--log-driver",
+        "none",
+        "--network",
+        network,
+        "--workdir",
+        "/work",
+        "--mount",
+        f"type=bind,src={copy},dst=/work" + (",readonly" if work_read_only else ""),
     ]
     if work_read_only:
         # One read-only mount covers `.git` and `.venv` too.
@@ -355,13 +380,53 @@ def capture(command, name, stdout_path, stderr_path, seconds, *, stdin=None, env
         process.stderr.close()
 
 
-def clear_tokens():
+def clear_folder(folder, mode):
     # The lock is held: no run is live, so anything left is from one that died.
-    TOKENS.mkdir(parents=True, exist_ok=True)
-    os.chown(TOKENS, 0, LITELLM_GID)
-    TOKENS.chmod(0o750)
-    for path in TOKENS.iterdir():
+    folder.mkdir(parents=True, exist_ok=True)
+    os.chown(folder, 0, LITELLM_GID)
+    folder.chmod(mode)
+    for path in folder.iterdir():
         path.unlink()
+
+
+def clear_tokens():
+    clear_folder(TOKENS, 0o750)
+
+
+def clear_costs():
+    # LiteLLM appends here as it runs as the group, so the folder is group-writable.
+    clear_folder(COSTS, 0o770)
+
+
+def read_cost(token):
+    """What the proxy billed one container: the sum of its lines, or None if any is unknown.
+
+    A partial sum is never a cost. The file is removed whatever it held.
+    """
+    path = COSTS / hashlib.sha256(token.encode()).hexdigest()
+    try:
+        lines = path.read_text().splitlines()
+    except (OSError, UnicodeError):
+        return None
+    finally:
+        path.unlink(missing_ok=True)
+    total = 0
+    for line in lines:
+        try:
+            cost = json.loads(line)["cost_usd"]
+        except (ValueError, KeyError, TypeError):
+            return None
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)) or not cost >= 0:
+            return None
+        total += cost
+    return total if lines else None
+
+
+def total_cost(costs):
+    """The sum over several containers; None when there are none or any is unknown."""
+    if not costs or any(cost is None for cost in costs):
+        return None
+    return sum(costs)
 
 
 def issue_token(token, purpose, seconds, max_requests):
@@ -467,6 +532,8 @@ class Context:
     owner: tuple
     seconds: int
     issued: list = field(default_factory=list)
+    worker_costs: list = field(default_factory=list)
+    last_cost: object = None
 
 
 def suffix(number):
@@ -512,6 +579,9 @@ def ask_model(context, step, purpose, max_requests, script, prompt, files, *, re
             )
     finally:
         grant.unlink(missing_ok=True)
+        context.last_cost = read_cost(token)
+        if not reviewing:
+            context.worker_costs.append(context.last_cost)
 
 
 def add_usage(record, summary):
@@ -550,6 +620,7 @@ def run(args):
     folder = RUNS / run_id
     folder.mkdir(mode=0o700)
     clear_tokens()
+    clear_costs()
     started = time.monotonic()
     record = {
         "run_id": run_id,
@@ -563,6 +634,7 @@ def run(args):
         "base_commit": None,
         "steps": 0,
         "tokens": None,
+        "cost_usd": None,
         "last_stop": None,
         "check_exit_code": None,
         "check_log": "check.log",
@@ -582,6 +654,7 @@ def run(args):
             ended = commit(args, record, folder, context.owner, pins, allowed)
         record["ended"] = ended
     finally:
+        record["cost_usd"] = total_cost(context.worker_costs)
         for token in context.issued:
             scrub(sorted(folder.iterdir()), token)
         record["ended_at"] = datetime.now(UTC).isoformat(timespec="seconds")
@@ -782,6 +855,7 @@ def review(args, record, context, pins, allowed, number):
             "result": verdict[0] if verdict else "failed",
             "steps": summary["steps"],
             "tokens": summary["tokens"],
+            "cost_usd": context.last_cost,
             "seconds": round(time.monotonic() - started, 1),
         }
     )
