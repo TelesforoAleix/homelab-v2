@@ -533,7 +533,7 @@ each attempt at a queued task, with a review and the commit step.
 
 | Step | Runs | Network | Token | Read-only in the copy |
 |---|---|---|---|---|
-| prepare | checks the copy is clean and pins exist; `uv sync --locked` | `homelab-packages` only | none | `.git` |
+| prepare | checks the copy is clean and pins exist; `uv sync --locked`, up to 3 tries | `homelab-packages` only | none | `.git` |
 | agent | Pi, ticket on stdin | `homelab-tasks` only | the run's | `.git`, `.venv` |
 | check | writes the diff, restores pins, runs the check | none | none | `.git`, `.venv` |
 | review | with `--review-purpose`, after a passing check: Pi with `read,grep,ls`, instructions, ticket and diff on stdin | `homelab-tasks` only | its own, 20 requests | the whole copy |
@@ -548,7 +548,9 @@ Prepare's only way out is `package-proxy`, a tinyproxy on the internal `homelab-
 reached through `HTTPS_PROXY`. The proxy is that network's only other member and the only part with
 an outside route, its own `homelab-package-egress`. It allows `CONNECT` to port 443 of `pypi.org`,
 `files.pythonhosted.org` and `registry.npmjs.org` and refuses everything else, plain HTTP to those
-hosts included. Prepare runs the repository's build backend, so it can still talk to those hosts.
+hosts included. Prepare gives uv 120 seconds per download (`UV_HTTP_TIMEOUT`) and runs
+`uv sync --locked` up to 3 times, 5 seconds apart, so one slow wheel does not end the run; the third
+failure ends it `prepare_failed`. Prepare runs the repository's build backend, so it can still talk to those hosts.
 
 The host never runs git in a working copy or reads its content before the commit step. Those files
 are attacker-influenced and the script is root: a planted `core.fsmonitor` or hook would run on the

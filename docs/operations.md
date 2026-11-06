@@ -1515,7 +1515,9 @@ the check, a directory exactly, so added files go too. Pin everything that decid
 including `conftest.py` and the test configuration in `pyproject.toml`, or the agent can change it.
 `--time-limit` is minutes per container, 30 by default. `--max-requests` is the run's model request
 budget. Dependencies cannot change after prepare: the agent has no package index, and `.venv` is
-read-only. `uv run` needs no sync there. Prepare needs the stack's `package-proxy`.
+read-only. `uv run` needs no sync there. Prepare needs the stack's `package-proxy`. It retries `uv sync --locked`
+up to 3 times, 5 seconds apart, with a 120-second download timeout; after the third failure the run
+ends `prepare_failed`.
 
 `--allow <path>`, repeatable, with `--author-name` and `--author-email`, adds the commit step after
 a passing check. The agent must leave the message in `.task-commit-message`.

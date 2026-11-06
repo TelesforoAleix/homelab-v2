@@ -109,6 +109,32 @@ def test_prepare_reports_only_the_base_commit(sealed, fake_uv):
     assert "uv sync --locked" in result.stderr
 
 
+def flaky_uv(folder, failures):
+    """A `uv` that fails `failures` times, counting calls in a file; `sleep` is a no-op."""
+    (folder / "sleep").write_text("#!/bin/sh\n")
+    (folder / "sleep").chmod(0o755)
+    (folder / "uv").write_text(
+        f'#!/bin/sh\necho x >> "{folder}/calls"\n[ "$(wc -l < "{folder}/calls")" -gt {failures} ]\n'
+    )
+    return folder / "calls"
+
+
+def test_prepare_retries_uv_sync_and_then_passes(sealed, fake_uv):
+    calls = flaky_uv(fake_uv, 2)
+    result = shell(runner.PREPARE, sealed, path=fake_uv)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == git(sealed, "rev-parse", "HEAD").strip()
+    assert len(calls.read_text().split()) == 3
+
+
+def test_prepare_gives_up_after_three_tries(sealed, fake_uv):
+    calls = flaky_uv(fake_uv, 99)
+    result = shell(runner.PREPARE, sealed, path=fake_uv)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert len(calls.read_text().split()) == 3
+
+
 def test_prepare_refuses_a_dirty_copy_and_an_unknown_pin(repo, fake_uv):
     assert shell(runner.PREPARE, repo, "missing.py", path=fake_uv).returncode == 3
     (repo / "app.py").write_text("VALUE = 2\n")
@@ -555,7 +581,8 @@ def test_only_the_agent_has_a_token_and_only_while_it_runs(repo, tmp_path, monke
         assert token not in " ".join(step["command"])
     assert values(steps.calls["prepare"]["command"], "--network") == ["homelab-packages"]
     assert values(steps.calls["prepare"]["command"], "--env") == [
-        "HTTPS_PROXY=http://package-proxy:8888"
+        "HTTPS_PROXY=http://package-proxy:8888",
+        "UV_HTTP_TIMEOUT=120",
     ]
     assert values(steps.calls["agent"]["command"], "--network") == ["homelab-tasks"]
     assert values(steps.calls["check"]["command"], "--network") == ["none"]
