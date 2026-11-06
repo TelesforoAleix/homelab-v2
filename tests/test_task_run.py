@@ -318,7 +318,7 @@ def test_a_token_the_script_issues_is_one_the_proxy_accepts(tmp_path, monkeypatc
     hook = load_hook(monkeypatch)
     monkeypatch.setattr(hook, "task_token_dir", tmp_path)
     monkeypatch.setattr(runner, "TOKENS", tmp_path)
-    monkeypatch.setattr(runner.os, "chown", lambda *args: None)
+    monkeypatch.setattr(runner.os, "chown", lambda *args, **kwargs: None)
     path = runner.issue_token("secret-value", "task-worker", 60, 100)
     assert path.name == hashlib.sha256(b"secret-value").hexdigest()
     assert oct(path.stat().st_mode & 0o777) == "0o640"
@@ -336,7 +336,7 @@ def test_clearing_tokens_drops_what_a_dead_run_left(tmp_path, monkeypatch):
     tokens.mkdir()
     (tokens / "stale").write_text("{}")
     monkeypatch.setattr(runner, "TOKENS", tokens)
-    monkeypatch.setattr(runner.os, "chown", lambda *args: None)
+    monkeypatch.setattr(runner.os, "chown", lambda *args, **kwargs: None)
     runner.clear_tokens()
     assert list(tokens.iterdir()) == []
     assert oct(tokens.stat().st_mode & 0o777) == "0o750"
@@ -469,7 +469,7 @@ class Steps:
         monkeypatch.setattr(runner, "TOKENS", self.tokens)
         monkeypatch.setattr(runner, "COSTS", self.costs)
         monkeypatch.setattr(runner, "RUNS", self.runs)
-        monkeypatch.setattr(runner.os, "chown", lambda *args: None)
+        monkeypatch.setattr(runner.os, "chown", lambda *args, **kwargs: None)
         monkeypatch.setattr(runner.os.path, "ismount", lambda path: True)
         monkeypatch.setattr(runner, "capture", self.capture)
 
@@ -530,6 +530,9 @@ def arguments(repo, tmp_path, **overrides):
         "check": "pytest",
         "pin": ["tests"],
         "purpose": "task-worker",
+        "cli_model": None,
+        "cli_effort": "medium",
+        "cli_name": None,
         "review_purpose": None,
         "time_limit": 30,
         "max_requests": 100,
@@ -715,7 +718,7 @@ def test_the_image_tag_follows_the_dockerfile_change():
 
 def test_a_grant_carries_the_request_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "TOKENS", tmp_path)
-    monkeypatch.setattr(runner.os, "chown", lambda *args: None)
+    monkeypatch.setattr(runner.os, "chown", lambda *args, **kwargs: None)
     path = runner.issue_token("token", "task-worker", 60, 25)
     grant = json.loads(path.read_text())
     assert grant["max_requests"] == 25 and grant["purposes"] == ["task-worker"]
@@ -1479,3 +1482,251 @@ def test_an_interrupted_run_reports_no_partial_cost(repo, tmp_path, monkeypatch)
     with pytest.raises(KeyboardInterrupt):
         runner.run(arguments(repo, tmp_path))
     assert only_run(steps)[1]["cost_usd"] == 1
+
+
+@pytest.fixture
+def fake_factory(tmp_path, monkeypatch):
+    """A real executable at the boundary, with containers elsewhere still scripted by Steps."""
+    work, runs, binary = (tmp_path / name for name in ("cli-work", "cli-runs", "cli-bin"))
+    for folder in (work, runs, binary):
+        folder.mkdir()
+    monkeypatch.setattr(runner, "CLI_WORK", work)
+    monkeypatch.setattr(runner, "CLI_RUNS", runs)
+    monkeypatch.setattr(runner.os, "fchown", lambda *args: None)
+    monkeypatch.setenv("PATH", f"{binary}:{os.environ['PATH']}")
+    seen = tmp_path / "cli-seen.jsonl"
+
+    def install(body):
+        command = binary / "factory-cli"
+        command.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys, time\nfrom pathlib import Path\n"
+            "argv = sys.argv[1:]\n"
+            "repo = Path(argv[argv.index('--repo') + 1])\n"
+            "run = Path(argv[argv.index('--run') + 1])\n"
+            "assert repo.stat().st_mode & 0o777 == 0o700\n"
+            "assert run.stat().st_mode & 0o777 == 0o700\n"
+            "assert not any(p.name == '.git' for p in repo.rglob('*'))\n"
+            f"with open({str(seen)!r}, 'a') as stream:\n"
+            "    stream.write(json.dumps({'argv': argv, 'env': dict(os.environ)}) + '\\n')\n" + body
+        )
+        command.chmod(0o755)
+        return seen
+
+    return install
+
+
+def cli_arguments(repo, tmp_path, **overrides):
+    return reviewing(
+        repo,
+        tmp_path,
+        cli_model="example-model",
+        cli_effort="high",
+        cli_name="ticket-7-1",
+        **overrides,
+    )
+
+
+def test_cli_turn_reaches_the_existing_check_review_and_commit(
+    repo, tmp_path, monkeypatch, fake_factory
+):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [PASS]
+    seen = fake_factory(
+        "(repo / 'app.py').write_text('VALUE = 2\\n')\n"
+        "(repo / '.task-commit-message').write_text('Change value\\n')\n"
+    )
+    assert runner.run(cli_arguments(repo, tmp_path)) == 0
+    _, record = only_run(steps)
+    assert list(steps.calls) == ["prepare", "check", "review", "commit"]
+    assert (repo / "app.py").read_text() == "VALUE = 2\n"
+    assert record["ended"] == "committed"
+    assert record["steps"] == 0 and not any(record["tokens"].values())
+    assert "cost_usd" not in record
+    assert record["reviews"][0]["tokens"]["fresh"] == 200
+    invocation = json.loads(seen.read_text())
+    argv = invocation["argv"]
+    assert argv[:4] == ["run", "--tool", "codex", "--repo"]
+    assert argv[8:] == [
+        "codex",
+        "exec",
+        "-m",
+        "example-model",
+        "-c",
+        'model_reasoning_effort="high"',
+        "--skip-git-repo-check",
+        "--",
+        "Make VALUE two.\n",
+    ]
+    assert set(invocation["env"]) <= {"PATH", "LC_CTYPE"}
+    assert not list(runner.CLI_WORK.iterdir()) and not list(runner.CLI_RUNS.iterdir())
+
+
+def test_cli_import_ignores_unallowed_pinned_links_and_escape_paths(
+    repo, tmp_path, monkeypatch, fake_factory, caplog
+):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [PASS]
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("unchanged")
+    (repo / "initial-link").symlink_to(outside, target_is_directory=True)
+    (repo / "nested").mkdir()
+    (repo / "nested/.git").mkdir()
+    (repo / "nested/.git/config").write_text("private git data")
+    fake_factory(
+        "assert not (repo / 'initial-link').exists()\n"
+        "(repo / 'app.py').unlink()\n"
+        f"(repo / 'app.py').symlink_to({str(outside / 'secret')!r})\n"
+        "(repo / 'tests/test_app.py').write_text('weakened')\n"
+        "(repo / 'extra.py').write_text('not allowed')\n"
+        "(repo / '.git').mkdir()\n"
+        "(repo / '.git/config').write_text('hostile')\n"
+        f"(repo / 'escape').symlink_to({str(outside)!r}, target_is_directory=True)\n"
+        "(repo / 'new.py').write_text('allowed')\n"
+    )
+    git_config = (repo / ".git/config").read_bytes()
+    args = cli_arguments(repo, tmp_path, allow=["app.py", "tests", "escape", "new.py", "nested"])
+    assert runner.run(args) == 0
+    assert (repo / "app.py").read_text() == "VALUE = 1\n"
+    assert (repo / "tests/test_app.py").read_text() == "expected = 2\n"
+    assert not (repo / "extra.py").exists() and not (repo / "escape").exists()
+    assert (repo / "new.py").is_file() and not (repo / "new.py").is_symlink()
+    assert (outside / "secret").read_text() == "unchanged"
+    assert (repo / ".git/config").read_bytes() == git_config
+    assert "ignored_changes=5" in caplog.text
+    assert "hostile" not in caplog.text and "secret" not in caplog.text
+
+
+def test_cli_import_refuses_a_linked_destination_parent(repo, tmp_path, monkeypatch, fake_factory):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [PASS]
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (repo / "output").symlink_to(outside, target_is_directory=True)
+    fake_factory("(repo / 'output').mkdir()\n(repo / 'output/new').write_text('escape')\n")
+    assert runner.run(cli_arguments(repo, tmp_path, allow=["output"])) == 0
+    assert not (outside / "new").exists()
+
+
+@pytest.mark.parametrize(
+    "body,reason",
+    [
+        ("sys.exit(9)\n", "cli_failed"),
+        ("time.sleep(60)\n", "cli_timeout"),
+    ],
+)
+def test_cli_failures_end_as_named_without_a_check(
+    repo, tmp_path, monkeypatch, fake_factory, body, reason
+):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    fake_factory(body)
+    monkeypatch.setattr(runner, "CLI_SECONDS", 1)
+    assert runner.run(cli_arguments(repo, tmp_path)) == 1
+    _, record = only_run(steps)
+    assert record["ended"] == reason and list(steps.calls) == ["prepare"]
+    assert not any(record["tokens"].values()) and "cost_usd" not in record
+    assert not list(runner.CLI_WORK.iterdir()) and not list(runner.CLI_RUNS.iterdir())
+
+
+def test_cli_fix_turn_gets_review_notes_and_keeps_review_on_litellm(
+    repo, tmp_path, monkeypatch, fake_factory
+):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [FIX, PASS]
+    seen = fake_factory("(repo / 'app.py').write_text('VALUE = 2\\n')\n")
+    assert runner.run(cli_arguments(repo, tmp_path)) == 0
+    prompts = [json.loads(line)["argv"][-1] for line in seen.read_text().splitlines()]
+    assert prompts[0] == "Make VALUE two.\n"
+    assert "Review notes" in prompts[1] and "> The skip hides the failure." in prompts[1]
+    assert list(steps.calls) == ["prepare", "check", "review", "check2", "review2", "commit"]
+    assert steps.calls["review"]["env"]["HOMELAB_TASK_PURPOSE"] == "task-review"
+    _, record = only_run(steps)
+    assert len(record["reviews"]) == 2 and not any(record["tokens"].values())
+
+
+def test_cli_queue_attempt_reaches_push_with_unmeasured_worker_usage(
+    repo, tmp_path, monkeypatch, fake_factory, caplog
+):
+    import contextlib
+    import io
+
+    from tests.test_task_runner import CODEX, REVIEWER, task
+    from tests.test_task_runner import runner as service
+
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [PASS]
+    seen = fake_factory(
+        "(repo / 'app.py').write_text('VALUE = 2\\n')\n"
+        "(repo / '.task-commit-message').write_text('Change value\\n')\n"
+        "(repo / 'ignored').write_text('do not log content')\n"
+    )
+
+    def capture(*args, **kwargs):
+        result = steps.capture(*args, **kwargs)
+        if args[1].endswith("-commit"):
+            committed = commit_step(
+                repo, allowed=("app.py", ".task-commit-message"), base=steps.base
+            )
+            args[2].write_text(committed.stdout)
+            args[3].write_text(committed.stderr)
+            return committed.returncode, "exited"
+        return result
+
+    monkeypatch.setattr(runner, "capture", capture)
+    original_run = subprocess.run
+
+    def invoke(command, **kwargs):
+        if command[0] != service.RUN:
+            return original_run(command, **kwargs)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = runner.run(runner.parse(command[1:]))
+        return subprocess.CompletedProcess(command, status, output.getvalue().encode())
+
+    events, pushes = [], []
+    monkeypatch.setattr(service.subprocess, "run", invoke)
+    monkeypatch.setattr(service, "record", events.append)
+    monkeypatch.setattr(service, "fresh_copy", lambda item: repo)
+    monkeypatch.setattr(service, "remove_copy", lambda item: None)
+    monkeypatch.setattr(service, "refuse_branch", lambda item: None)
+    monkeypatch.setattr(service, "push", lambda *args: pushes.append(args) or "pushed")
+    monkeypatch.setenv("HOMELAB_TASK_AUTHOR_NAME", "Fixture")
+    monkeypatch.setenv("HOMELAB_TASK_AUTHOR_EMAIL", "fixture@example.invalid")
+    caplog.set_level("INFO", logger="homelab-task-runner")
+    item = task(routes=[CODEX], allowed_files=["app.py", ".task-commit-message"])
+    service.run_task(item)
+    assert list(steps.calls) == ["prepare", "check", "review", "commit"]
+    assert len(pushes) == 1 and pushes[0][:2] == (item, repo)
+    assert git(repo, "show", f"{pushes[0][2]}:app.py") == "VALUE = 2\n"
+    assert git(repo, "log", "-1", "--format=%s").strip() == "Change value"
+    assert (repo / ".task-commit-message").read_text() == "Change value\n"
+    assert events[-1]["status"] == "done"
+    end = next(event for event in events if event["event"] == "end_attempt")
+    assert end["route"] == CODEX and end["review_route"] == REVIEWER
+    assert end["fresh_tokens"] == end["cached_tokens"] == end["output_tokens"] == 0
+    assert "cost_usd" not in end
+    assert "ignored_changes=1" in caplog.text and "do not log content" not in caplog.text
+    assert json.loads(seen.read_text())["argv"][-1] == service.ticket(item, None)
+
+
+def test_cli_message_is_data_and_must_be_explicitly_allowed(
+    repo, tmp_path, monkeypatch, fake_factory
+):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [PASS]
+    fake_factory("(repo / '.task-commit-message').write_text('not allowed')\n")
+    assert runner.run(cli_arguments(repo, tmp_path)) == 0
+    assert not (repo / ".task-commit-message").exists()
+
+
+def test_cli_input_directory_owners_are_the_factory_user(repo, tmp_path, monkeypatch, fake_factory):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.reviews = [PASS]
+    owners = []
+    monkeypatch.setattr(runner.os, "chown", lambda *args, **kwargs: owners.append(args))
+    fake_factory("")
+    assert runner.run(cli_arguments(repo, tmp_path)) == 0
+    assert (runner.CLI_WORK / "ticket-7-1", 21000, 21000) in owners
+    assert (runner.CLI_RUNS / "ticket-7-1", 21000, 21000) in owners
+    assert runner.CLI_SECONDS == 1200
