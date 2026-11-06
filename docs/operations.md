@@ -1589,6 +1589,39 @@ attempt. A `review_rejected` attempt gets one more try on the same route from a 
 the reviewer's notes in the ticket; `review_failed` and `review_diff_too_large` go to the next route.
 Each review is a `review` trace of role `ticket-reviewer`.
 
+The worker also accepts `{"kind":"cli","tool":"codex","model":"<model>","effort":"high"}`.
+The model and effort come from the role table; supported effort values are `none`, `minimal`,
+`low`, `medium`, `high` and `xhigh`. Unsupported tools or malformed routes are skipped. A CLI
+route is always refused for the reviewer. The seeded worker route stays on LiteLLM: selecting
+CLI execution is an operator update of `homelab_roles`, not a deployment default.
+
+A CLI route replaces only the worker turn, through the installed `factory-cli run --tool codex`.
+Prepare, the done check, LiteLLM ticket review, the commit, push and retry rules stay the same.
+The CLI gets the same ticket text, including earlier check or review feedback; a review Fix
+runs another CLI turn with the notes against the current task tree. Each CLI turn has a fixed
+20-minute timeout, independent of `--time-limit`. A timeout ends the attempt as `cli_timeout`,
+a nonzero exit or a failed CLI invocation as `cli_failed`; both advance to the next route
+without a retry on that route. A failed check still retries once from a fresh clone.
+
+The CLI sees a plain copy at `/srv/factory/work/ticket-<task id>-<attempt>`, with no `.git`
+anywhere in it and no prepared `.venv`. Its run folder is the same name under
+`/srv/factory/runs`. Both folders are `21000:21000`, mode `0700`; the existing factory fence
+owns the sealed container, tool login and allow-list proxy. The runner passes only those two
+host folders, the configured model and effort, and the ticket. It passes no gateway token,
+key or inherited credentials. It discards CLI stdout and stderr.
+
+After a successful turn, only regular files within `allowed_files` return to the task copy.
+Pins never return, even when also allowed. Neither source nor destination links are followed;
+Git metadata and `.venv` never return. Other file changes (including deletions) are ignored,
+with only their count in the journal and `run.json`'s `cli_ignored_changes`. Returning bytes
+creates new regular files owned by the task user; executable bits are preserved. The plain
+copy and CLI run folder are removed after each turn, including failure or timeout.
+**Include `.task-commit-message` in a CLI ticket's `allowed_files`** if it is to commit: this
+metadata follows the same import rule, and the existing commit step still requires it and
+excludes it from the commit. A missing message ends `commit_refused_no_message`.
+CLI worker steps and tokens stay zero and `cost_usd` is absent: subscription usage was not
+measured. Review usage and cost remain separate and measured through LiteLLM.
+
 ```bash
 sudo systemctl status homelab-task-runner.service
 sudo journalctl -u homelab-task-runner.service -n 50
@@ -1828,8 +1861,11 @@ SSH accounts work through Tailscale.
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-run /usr/local/sbin/homelab-task-run
    sudo install -m 0644 -o root -g root node/opt/homelab-task/Dockerfile /opt/homelab-task/Dockerfile
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-runner /usr/local/sbin/homelab-task-runner
-   (Both scripts review a change before it is committed. Nothing else is installed for that: the
-   `ticket-reviewer` role and its route are seeded by the store, and the image is unchanged.)
+   # Both scripts must be updated together for CLI worker routes. The task image is unchanged.
+   # CLI routes need the separately installed factory-cli fence and its Codex login; do not
+   # copy that login or credentials into this tree or the task image. Its existing work/runs
+   # parents must be available under /srv/factory; turn folders are created 21000:21000, 0700.
+   # The worker default remains LiteLLM; a reviewer route must remain LiteLLM too.
    sudo install -m 0644 -o root -g root node/etc/homelab-task/github_known_hosts /etc/homelab-task/github_known_hosts
    sudo install -m 0644 -o root -g root node/opt/homelab-package-proxy/* /opt/homelab-package-proxy/
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-queue-notice /usr/local/sbin/homelab-queue-notice

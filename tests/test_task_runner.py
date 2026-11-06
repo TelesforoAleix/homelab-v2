@@ -23,6 +23,7 @@ CHEAP = {"kind": "litellm", "purpose": "task-worker"}
 REVIEWER = {"kind": "litellm", "purpose": "task-reviewer"}
 BETTER = {"kind": "litellm", "purpose": "task-better"}
 CLI = {"kind": "cli", "tool": "tool", "model": "model"}
+CODEX = {"kind": "cli", "tool": "codex", "model": "example-model", "effort": "high"}
 ENV = {
     "GIT_AUTHOR_NAME": "Fixture",
     "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
@@ -69,8 +70,8 @@ class Script:
         monkeypatch.setattr(runner, "run_ticket", self.run_ticket)
         monkeypatch.setattr(runner, "push", self.push)
 
-    def run_ticket(self, item, copy, purpose, review_purpose, feedback):
-        self.runs.append((purpose, feedback))
+    def run_ticket(self, item, copy, purpose, review_purpose, feedback, **kwargs):
+        self.runs.append((kwargs.get("cli") or purpose, feedback))
         self.review_purposes.append(review_purpose)
         ended = self.outcomes.pop(0)
         extra = {}
@@ -177,7 +178,7 @@ def test_a_cli_route_is_skipped_with_a_logged_reason(monkeypatch, tmp_path, capl
     script = Script(monkeypatch, tmp_path, "committed", pushes=["pushed"])
     runner.run_task(task(routes=[CLI, CHEAP]))
     assert script.runs == [("task-worker", None)]
-    assert "reason=cli_routes_do_not_run_yet" in caplog.text
+    assert "reason=unusable_route" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -907,3 +908,40 @@ def test_a_failed_notice_changes_nothing(monkeypatch, tmp_path, caplog, result, 
     assert script.ending() == ("escalated", "check_failed")
     assert caplog.text.count("notice failed task=7") == 1
     assert "SECRET" not in caplog.text
+
+
+@pytest.mark.parametrize("reason", ["cli_failed", "cli_timeout"])
+def test_cli_turn_failures_advance_routes_without_retry(monkeypatch, tmp_path, reason):
+    script = Script(monkeypatch, tmp_path, reason, "committed", pushes=["pushed"])
+    runner.run_task(task(routes=[CODEX, CHEAP]))
+    assert script.runs == [(CODEX, None), ("task-worker", None)]
+    assert script.named("end_attempt")[0]["reason"] == reason
+    assert script.ending() == ("done", None)
+
+
+def test_cli_failed_check_retries_with_the_same_ticket_feedback(monkeypatch, tmp_path):
+    script = Script(monkeypatch, tmp_path, "check_failed", "committed", pushes=["pushed"])
+    runner.run_task(task(routes=[CODEX]))
+    assert script.runs == [(CODEX, None), (CODEX, ("check", "output of 1"))]
+    assert script.ending() == ("done", None)
+
+
+def test_a_valid_cli_reviewer_is_refused_before_any_attempt(monkeypatch, tmp_path):
+    script = Script(monkeypatch, tmp_path)
+    runner.run_task(task(review_routes=[CODEX]))
+    assert script.runs == [] and script.named("begin_attempt") == []
+    assert script.ending() == ("escalated", "no_usable_review_route")
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        {**CODEX, "tool": "other"},
+        {**CODEX, "model": None},
+        {**CODEX, "model": "--option"},
+        {**CODEX, "effort": []},
+        {**CODEX, "effort": "unknown"},
+    ],
+)
+def test_invalid_cli_routes_are_refused(route):
+    assert runner.usable_routes(task(routes=[route])) == []

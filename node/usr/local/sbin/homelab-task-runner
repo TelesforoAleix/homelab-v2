@@ -9,6 +9,7 @@ Git runs here only where no hostile file can reach it. A clone is an unprivilege
 template. A push reads a `.git` nothing but the commit step's own git could write, by explicit
 URL and refspec, with hooks off. Nothing logged here carries task content.
 """
+
 import fcntl
 import itertools
 import json
@@ -205,14 +206,32 @@ def ticket(task, feedback):
     return text
 
 
-def run_ticket(task, copy, purpose, review_purpose, feedback):
+def run_ticket(task, copy, purpose, review_purpose, feedback, *, cli=None, number=None):
     """One homelab-task-run; returns its record, whose `ended` says how it went."""
     command = [
-        RUN, "--working-copy", str(copy), "--check", task["check_command"], "--purpose", purpose,
-        "--review-purpose", review_purpose,
-        "--author-name", os.environ["HOMELAB_TASK_AUTHOR_NAME"],
-        "--author-email", os.environ["HOMELAB_TASK_AUTHOR_EMAIL"],
+        RUN,
+        "--working-copy",
+        str(copy),
+        "--check",
+        task["check_command"],
+        "--purpose",
+        purpose,
+        "--review-purpose",
+        review_purpose,
+        "--author-name",
+        os.environ["HOMELAB_TASK_AUTHOR_NAME"],
+        "--author-email",
+        os.environ["HOMELAB_TASK_AUTHOR_EMAIL"],
     ]
+    if cli is not None:
+        command += [
+            "--cli-model",
+            cli["model"],
+            "--cli-effort",
+            cli["effort"],
+            "--cli-name",
+            f"ticket-{task['id']}-{number}",
+        ]
     for path in task["pinned_paths"]:
         command += ["--pin", path]
     for path in task["allowed_files"]:
@@ -227,7 +246,13 @@ def run_ticket(task, copy, purpose, review_purpose, feedback):
             check=False,
         )
     try:
-        return json.loads(result.stdout.splitlines()[-1])
+        run = json.loads(result.stdout.splitlines()[-1])
+        if cli is not None:
+            logger.info(
+                "cli task=%d number=%d ignored_changes=%d",
+                task["id"], number, run.get("cli_ignored_changes", 0),
+            )
+        return run
     except (IndexError, ValueError):
         return {"ended": "run_refused"}
 
@@ -292,6 +317,10 @@ def attempt(task, route, review_route, number, feedback):
     copy = fresh_copy(task)
     if copy is None:
         run = {"ended": "clone_failed"}
+    elif route["kind"] == "cli":
+        run = run_ticket(
+            task, copy, "task-worker", review_route["purpose"], feedback, cli=route, number=number
+        )
     else:
         run = run_ticket(task, copy, route["purpose"], review_route["purpose"], feedback)
     ended = run["ended"]
@@ -319,7 +348,11 @@ def attempt(task, route, review_route, number, feedback):
         }
     )
     logger.info(
-        "attempt task=%d number=%d purpose=%s ended=%s", task["id"], number, route["purpose"], ended
+        "attempt task=%d number=%d purpose=%s ended=%s",
+        task["id"],
+        number,
+        route.get("purpose", route["kind"]),
+        ended,
     )
     if ended == "review_rejected":
         return ended, ("review", run.get("review_notes") or "")
@@ -350,10 +383,17 @@ def usable_routes(task, key="routes"):
         kind = route.get("kind") if isinstance(route, dict) else None
         if kind == "litellm" and PURPOSE.fullmatch(str(route.get("purpose"))):
             routes.append(route)
-        elif kind == "cli":
-            logger.info("route skipped task=%d reason=cli_routes_do_not_run_yet", task["id"])
+        elif (
+            kind == "cli"
+            and key == "routes"
+            and route.get("tool") == "codex"
+            and isinstance(route.get("model"), str)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", route["model"])
+            and route.get("effort") in ("none", "minimal", "low", "medium", "high", "xhigh")
+        ):
+            routes.append(route)
         else:
-            logger.warning("route skipped task=%d reason=not_a_litellm_route", task["id"])
+            logger.warning("route skipped task=%d reason=unusable_route", task["id"])
     return routes
 
 

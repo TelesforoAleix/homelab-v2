@@ -14,13 +14,16 @@ write `.git`. The review is not a boundary: the commit step's rules alone enforc
 """
 
 import argparse
+import errno
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
 import selectors
+import shutil
 import signal
 import stat
 import subprocess
@@ -55,6 +58,11 @@ BUDGET_SPENT = "request budget is spent"
 REVIEW_MAX_REQUESTS = 20
 REVIEW_DIFF_LIMIT = 256 * 1024
 REVIEW_NOTES_LIMIT = 8 * 1024
+CLI_WORK = Path("/srv/factory/work")
+CLI_RUNS = Path("/srv/factory/runs")
+CLI_UID = CLI_GID = 21000
+CLI_SECONDS = 20 * 60
+logger = logging.getLogger("homelab-task-run")
 VERDICTS = {"VERDICT: PASS": "pass", "VERDICT: FIX": "fix"}
 
 # Reports the base commit on stdout: the only thing this step says to the host.
@@ -602,8 +610,209 @@ def add_usage(record, summary):
     record["tokens"] = {key: total[key] + value for key, value in summary["tokens"].items()}
 
 
+def tree_files(root, prefix=""):
+    """Open regular files through directory descriptors; never traverse a link, even in a race.
+
+    Yield other entries without a descriptor so ignored changes can still be counted. Git and
+    the prepared environment are machinery, never inputs to the CLI or results from it.
+    """
+    for name in os.listdir(root):
+        path = prefix + name
+        info = os.stat(name, dir_fd=root, follow_symlinks=False)
+        if name in {".git", ".venv"}:
+            yield path, None, info
+            continue
+        if stat.S_ISDIR(info.st_mode):
+            try:
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+            except OSError:
+                yield path, None, info
+                continue
+            try:
+                yield from tree_files(child, path + "/")
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(info.st_mode):
+            try:
+                source = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root)
+            except OSError:
+                yield path, None, info
+                continue
+            try:
+                current = os.fstat(source)
+                yield path, source if stat.S_ISREG(current.st_mode) else None, current
+            finally:
+                os.close(source)
+        else:
+            yield path, None, info
+
+
+def data_file(root, path, source, info, owner):
+    """Install bytes as a new regular inode, without following destination links or hardlinks."""
+    parent = os.dup(root)
+    temporary = ".cli-copy-" + secrets.token_hex(8)
+    try:
+        *folders, name = path.split("/")
+        for folder in folders:
+            try:
+                os.mkdir(folder, 0o700, dir_fd=parent)
+                os.chown(folder, *owner, dir_fd=parent, follow_symlinks=False)
+            except FileExistsError:
+                pass
+            child = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        target = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+        with os.fdopen(target, "wb") as output, os.fdopen(os.dup(source), "rb") as stream:
+            stream.seek(0)
+            shutil.copyfileobj(stream, output)
+            os.fchown(output.fileno(), *owner)
+            os.fchmod(output.fileno(), 0o700 if info.st_mode & 0o111 else 0o600)
+        os.rename(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=parent)
+        except FileNotFoundError:
+            pass
+        os.close(parent)
+
+
+def fingerprint(source, info):
+    if source is None:
+        return (stat.S_IFMT(info.st_mode),)
+    with os.fdopen(os.dup(source), "rb") as stream:
+        stream.seek(0)
+        digest = hashlib.file_digest(stream, "sha256").digest()
+    os.lseek(source, 0, os.SEEK_SET)
+    return bool(info.st_mode & 0o111), digest
+
+
+def covers(entry, path):
+    return path == entry or path.startswith(entry + "/")
+
+
+def cli_worker(args, context, pins, ticket, record):
+    """Run one sealed CLI turn on plain data, then import only permitted regular files."""
+    plain = CLI_WORK / args.cli_name
+    run_folder = CLI_RUNS / args.cli_name
+    # A review fix reuses the attempt's name, after the preceding turn's copy was removed.
+    created = []
+    before = {}
+    try:
+        for folder in (plain, run_folder):
+            folder.mkdir(mode=0o700)
+            created.append(folder)
+            os.chown(folder, CLI_UID, CLI_GID)
+        with_directory = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        original = os.open(context.owner[0], with_directory)
+        try:
+            destination = os.open(plain, with_directory)
+            try:
+                for path, source, info in tree_files(original):
+                    if source is not None:
+                        data_file(destination, path, source, info, (CLI_UID, CLI_GID))
+                        before[path] = fingerprint(source, info)
+            finally:
+                os.close(destination)
+        finally:
+            os.close(original)
+        command = [
+            "factory-cli",
+            "run",
+            "--tool",
+            "codex",
+            "--repo",
+            str(plain),
+            "--run",
+            str(run_folder),
+            "--",
+            "codex",
+            "exec",
+            "-m",
+            args.cli_model,
+            "-c",
+            f'model_reasoning_effort="{args.cli_effort}"',
+            "--skip-git-repo-check",
+            "--",
+            Path(ticket).read_text(),
+        ]
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": os.environ["PATH"]},
+            start_new_session=True,
+        )
+        try:
+            try:
+                code = process.wait(timeout=CLI_SECONDS)
+            except subprocess.TimeoutExpired:
+                return "cli_timeout"
+            if code != 0:
+                return "cli_failed"
+        finally:
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+        after, imported = {}, set()
+        origin = os.open(plain, with_directory)
+        destination = os.open(context.owner[0], with_directory)
+        try:
+            for path, source, info in tree_files(origin):
+                after[path] = fingerprint(source, info)
+                permitted = (
+                    any(covers(entry, path) for entry in args.allow)
+                    and not any(covers(pin, path) for pin in pins)
+                    and not any(part in {".git", ".venv"} for part in path.split("/"))
+                )
+                if source is not None and permitted:
+                    try:
+                        data_file(destination, path, source, info, context.owner[1:])
+                    except OSError as error:
+                        if error.errno not in {errno.ELOOP, errno.ENOTDIR, errno.EISDIR}:
+                            raise
+                        continue  # A destination link or directory is not a regular result file.
+                    imported.add(path)
+        finally:
+            os.close(origin)
+            os.close(destination)
+        ignored = sum(
+            before.get(path) != after.get(path)
+            for path in before.keys() | after.keys()
+            if path not in imported
+        )
+        record["cli_ignored_changes"] = record.get("cli_ignored_changes", 0) + ignored
+        logger.warning("cli turn name=%s ignored_changes=%d", args.cli_name, ignored)
+        return None
+    except OSError:
+        return "cli_failed"
+    finally:
+        for folder in created:
+            shutil.rmtree(folder)
+
+
 def run(args):
     copy, uid, gid = working_copy(args.working_copy)
+    if args.cli_model is not None:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", args.cli_model):
+            raise Refused("invalid CLI model")
+        if not args.cli_name or not re.fullmatch(r"ticket-[0-9]+-[0-9]+", args.cli_name):
+            raise Refused("invalid CLI attempt name")
+        if not args.allow:
+            raise Refused("a CLI worker needs --allow")
+    elif args.cli_name is not None:
+        raise Refused("a CLI attempt name needs --cli-model")
     pins = [pinned_path(value) for value in args.pin]
     if not PURPOSE.fullmatch(args.purpose):
         raise Refused("invalid purpose")
@@ -655,6 +864,9 @@ def run(args):
     context = Context(
         f"homelab-task-{run_id.lower()}", folder, (copy, uid, gid), args.time_limit * 60
     )
+    if args.cli_model is not None:
+        record["tokens"] = dict.fromkeys(("fresh", "output", "cached", "cache_write"), 0)
+        record.pop("cost_usd")
     try:
         ended = execute(args, record, context, pins)
         if ended == "check_passed" and args.review_purpose is not None:
@@ -663,7 +875,8 @@ def run(args):
             ended = commit(args, record, folder, context.owner, pins, allowed)
         record["ended"] = ended
     finally:
-        record["cost_usd"] = total_cost(context.worker_costs)
+        if args.cli_model is None:
+            record["cost_usd"] = total_cost(context.worker_costs)
         for token in context.issued:
             scrub(sorted(folder.iterdir()), token)
         record["ended_at"] = datetime.now(UTC).isoformat(timespec="seconds")
@@ -704,24 +917,29 @@ def work_round(args, record, context, pins, number, ticket, budget):
     """One agent run and the check on what it left; returns why the round ended."""
     folder, tail = context.folder, suffix(number)
     step = "" if number == 1 else str(number)
-    code, stopped = ask_model(
-        context,
-        f"agent{step}",
-        args.purpose,
-        budget,
-        AGENT,
-        ticket,
-        (f"events{tail}.jsonl", f"agent{tail}.log"),
-    )
-    summary = summarize_events(folder / f"events{tail}.jsonl")
-    add_usage(record, summary)
     agent_ended = None
-    if stopped != "exited":
-        agent_ended = f"agent_{stopped}"
-    elif summary["budget_spent"]:
-        agent_ended = "agent_budget_spent"
-    elif code != 0 or summary["last_stop"] != "stop":
-        agent_ended = "agent_failed"
+    if args.cli_model is not None:
+        agent_ended = cli_worker(args, context, pins, ticket, record)
+        if agent_ended is not None:
+            return agent_ended
+    else:
+        code, stopped = ask_model(
+            context,
+            f"agent{step}",
+            args.purpose,
+            budget,
+            AGENT,
+            ticket,
+            (f"events{tail}.jsonl", f"agent{tail}.log"),
+        )
+        summary = summarize_events(folder / f"events{tail}.jsonl")
+        add_usage(record, summary)
+        if stopped != "exited":
+            agent_ended = f"agent_{stopped}"
+        elif summary["budget_spent"]:
+            agent_ended = "agent_budget_spent"
+        elif code != 0 or summary["last_stop"] != "stop":
+            agent_ended = "agent_failed"
 
     # This container also writes the diff, so it runs however the agent ended.
     name = f"{context.name}-check{step}"
@@ -921,6 +1139,13 @@ def parse(argv):
     parser.add_argument("--check", required=True, help="done-check shell command")
     parser.add_argument("--pin", action="append", default=[], help="path restored before the check")
     parser.add_argument("--purpose", default="task-worker")
+    parser.add_argument("--cli-model", help="replace the Pi worker with a factory-cli Codex turn")
+    parser.add_argument(
+        "--cli-effort",
+        choices=["none", "minimal", "low", "medium", "high", "xhigh"],
+        default="medium",
+    )
+    parser.add_argument("--cli-name", help="assigned ticket-<task id>-<attempt> directory name")
     parser.add_argument(
         "--review-purpose", help="purpose of a review before the commit; needs --allow"
     )
