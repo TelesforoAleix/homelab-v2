@@ -18,7 +18,7 @@ from contextlib import suppress
 import executors
 from conversation import Conversation
 from order_listener import Listener
-from orders import status_text, valid_id
+from orders import SchedulerUnavailable, status_text, valid_id
 from planning import Planning, load_config
 from router import Router, load_ids
 from telegram import Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -326,6 +326,9 @@ def build_application(
                 read_timeout=30,
             )
             await asyncio.to_thread(orders.attach, order["id"], sent.message_id, sent.text)
+        except SchedulerUnavailable:
+            log("WARNING: order confirmation unavailable")
+            await send_message(bot, owner[0], "Scheduler data is unavailable; try again shortly.")
         except Exception:
             log("WARNING: order confirmation unavailable")
             await send_message(bot, owner[0], "Could not confirm that order. Please try again.")

@@ -20,6 +20,10 @@ OUTCOMES = {"done", "dropped", "failed"}
 PUBLIC = ("id", "created", "action", "slice", "argument", "expect")
 
 
+class SchedulerUnavailable(ValueError):
+    """The scheduler state cannot be read or used."""
+
+
 def snapshot(item):
     attention = item.get("attention")
     return {
@@ -150,7 +154,15 @@ class Orders:
         )
 
     def slices(self):
-        return json.loads(self.planning.read_file(self.planning.config.state_path))["slices"]
+        try:
+            slices = json.loads(self.planning.read_scheduler(self.planning.config.state_path))[
+                "slices"
+            ]
+            if not isinstance(slices, list):
+                raise ValueError("invalid slices")
+            return slices
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise SchedulerUnavailable from exc
 
     def propose(self, proposal, owner_text, owner):
         with self.planning.lock:
@@ -214,6 +226,11 @@ class Orders:
                 return "already " + order["status"], order["owner"]
             if yes and self.planning.refresh():
                 return "Planning sync failed; try again shortly.", None
+            if yes:
+                try:
+                    self.reconcile()
+                except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                    return "Scheduler data is unavailable; try again shortly.", None
             data = self.load()
             order = data[order_id]
             if order["status"] != "proposed":
