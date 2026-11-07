@@ -2629,3 +2629,38 @@ def test_inbox_link_trickled_headers_deadline(bot_modules):
 def test_inbox_new_keeps_save_overrides(bot_modules):
     assert bot_modules.keeping.forced("new save Private idea")
     assert bot_modules.keeping.just_save("new just save it")
+
+
+@pytest.mark.parametrize(
+    "filename,accepted",
+    [
+        ("homelab-originals-2026-10-08.tar.age", True),
+        ("homelab-originals-2026-10-08-0000.tar.age", True),
+        ("homelab-originals-2026-10-08-2307.tar.age", True),
+        ("homelab-originals-2026-10-08-123.tar.age", False),
+        ("homelab-originals-2026-10-08-12345.tar.age", False),
+        ("homelab-originals-2026-10-08-12ab.tar.age", False),
+        ("homelab-originals-2026-10-08-.tar.age", False),
+        ("homelab-originals-2026-10-08-12:34.tar.age", False),
+        ("homelab-originals-2026-10-08-1234.tar.age.extra", False),
+        ("other-2026-10-08-1234.tar.age", False),
+        ("../homelab-originals-2026-10-08-1234.tar.age", False),
+        ("/Volumes/SD Card/homelab-originals-2026-10-08-1234.tar.age", False),
+    ],
+)
+def test_bot_copy_name_compatibility(bot_modules, backup_listener, filename, accepted):
+    backup_listener.reply = {"status": "done", "file": filename, "bytes": 307200}
+    logs = []
+    executor = bot_modules.executors.make_backup(logs.append)
+    expected = (
+        f"Copy done: 300 KB, {filename}."
+        if accepted
+        else "Copy failed: invalid listener response or configuration."
+    )
+    assert executor.handler([], 0) == expected
+    assert backup_listener.calls == [("/backup", b"")]
+    assert logs == [
+        "backup requester=0 result=done bytes=307200"
+        if accepted
+        else "backup requester=0 result=failed bytes=0"
+    ]

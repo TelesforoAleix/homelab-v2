@@ -265,3 +265,314 @@ def test_stop_terminates_active_copy_and_refuses_new_copy(monkeypatch):
     action.stop()
     assert killed == [(42, listener.signal.SIGKILL)]
     assert action.dispatch("/backup")[1] == {"status": "failed", "reason": "copy stopped"}
+
+
+@pytest.fixture
+def minute_copy(monkeypatch):
+    """Load the CLI without invoking main, and freeze its local wall clock."""
+    import datetime
+    from types import SimpleNamespace
+
+    copy_loader = importlib.machinery.SourceFileLoader(
+        "minute_copy", str(SCRIPT.with_name("homelab-copy"))
+    )
+    copy_spec = importlib.util.spec_from_loader(copy_loader.name, copy_loader)
+    module = importlib.util.module_from_spec(copy_spec)
+    copy_loader.exec_module(module)
+    clock = SimpleNamespace(value=datetime.datetime(2026, 10, 8, 23, 7, 59))
+
+    class LocalDatetime(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is None, "copy names use local wall time"
+            return clock.value
+
+        @classmethod
+        def utcnow(cls):
+            pytest.fail("copy names must not use UTC")
+
+    class LocalDate(datetime.date):
+        @classmethod
+        def today(cls):
+            return clock.value.date()
+
+    monkeypatch.setattr(module, "datetime", SimpleNamespace(datetime=LocalDatetime, date=LocalDate))
+    return module, clock
+
+
+def _minute_stream(monkeypatch, module, payload=b"encrypted", reported=9, code=0):
+    calls = []
+    real_fsync = module.os.fsync
+
+    class Process:
+        returncode = code
+
+        def __init__(self, args, stdout, stderr):
+            assert args == ["ssh", "homelab-agent", "sudo", "homelab-copy", "stream"]
+            assert stderr == subprocess.PIPE
+            calls.append("stream")
+            stdout.write(payload)
+
+        def communicate(self):
+            report = {
+                "bytes": reported,
+                "manifest": [{"folder": "alpha-data/originals", "bytes": 8}],
+            }
+            return None, b"SSH warning\n" + json.dumps(report).encode()
+
+        def poll(self):
+            return self.returncode
+
+    def fsync(fd):
+        real_fsync(fd)
+        calls.append("fsync")
+
+    def confirm(args, **kwargs):
+        assert args == [
+            "ssh",
+            "homelab-agent",
+            "sudo",
+            "homelab-copy",
+            "confirm",
+            str(len(payload)),
+        ]
+        assert kwargs == {"check": True}
+        assert calls[-1] == "fsync"
+        calls.append("confirm")
+
+    monkeypatch.setattr(module.subprocess, "Popen", Process)
+    monkeypatch.setattr(module.subprocess, "run", confirm)
+    monkeypatch.setattr(module.os, "fsync", fsync)
+    return calls
+
+
+def test_minute_copy_local_name_and_multiple_same_day(tmp_path, monkeypatch, minute_copy, capsys):
+    module, clock = minute_copy
+    calls = _minute_stream(monkeypatch, module)
+    legacy = tmp_path / "homelab-originals-2026-10-08.tar.age"
+    legacy.write_bytes(b"legacy")
+    first = module.copy(tmp_path)
+    assert first == tmp_path / "homelab-originals-2026-10-08-2307.tar.age"
+    assert first.read_bytes() == b"encrypted"
+    assert capsys.readouterr().out == (
+        f"alpha-data/originals: 8 bytes\n{first}: 9 encrypted bytes; confirmed on node\n"
+    )
+    clock.value = clock.value.replace(minute=8, second=0)
+    second = module.copy(tmp_path)
+    assert second == tmp_path / "homelab-originals-2026-10-08-2308.tar.age"
+    assert second.read_bytes() == first.read_bytes() == b"encrypted"
+    assert legacy.read_bytes() == b"legacy"
+    assert calls == ["stream", "fsync", "confirm"] * 2
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+def test_minute_copy_exclusive_collision(tmp_path, monkeypatch, minute_copy, symlink):
+    module, _ = minute_copy
+    calls = _minute_stream(monkeypatch, module)
+    destination = tmp_path / "homelab-originals-2026-10-08-2307.tar.age"
+    retained = tmp_path / "retained"
+    retained.write_bytes(b"keep")
+    if symlink:
+        destination.symlink_to(retained)
+    else:
+        destination.write_bytes(b"keep")
+    with pytest.raises(FileExistsError):
+        module.copy(tmp_path)
+    assert destination.read_bytes() == retained.read_bytes() == b"keep"
+    assert destination.is_symlink() is symlink
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "payload,reported,code",
+    [(b"encrypted", 10, 0), (b"encrypted", True, 0), (b"", 0, 0), (b"encrypted", 9, 1)],
+)
+def test_minute_copy_failure_keeps_partial_without_confirm(
+    tmp_path, monkeypatch, minute_copy, payload, reported, code, capsys
+):
+    module, _ = minute_copy
+    calls = _minute_stream(monkeypatch, module, payload, reported, code)
+    with pytest.raises(ValueError):
+        module.copy(tmp_path)
+    assert (tmp_path / "homelab-originals-2026-10-08-2307.tar.age").read_bytes() == payload
+    assert calls == ["stream", "fsync"]
+    assert capsys.readouterr().out == ""
+
+
+def test_minute_copy_runbook_names_and_collision_guidance():
+    text = (SCRIPT.parents[1] / "docs/operations.md").read_text()
+    weekly = text.split("## Weekly originals copy\n", 1)[1].split("## Restoring originals", 1)[0]
+    restore = text.split("## Restoring originals from a copy\n", 1)[1].split("\n## ", 1)[0]
+    assert "homelab-originals-YYYY-MM-DD-HHMM.tar.age" in weekly
+    assert "local time" in weekly
+    assert "same minute" in weekly
+    assert "before another copy that day" not in weekly
+    assert "'/Volumes/<COPY-VOLUME>/homelab-originals-YYYY-MM-DD-HHMM.tar.age'" in restore
+    assert "tar -xpf - -C '/Volumes/<RESTORE-VOLUME>/restored-originals'" in restore
+    assert "read -r -s -p 'age private identity: ' COPY_IDENTITY" in restore
+
+
+@pytest.mark.parametrize(
+    "filename,accepted",
+    [
+        ("homelab-originals-2026-10-08.tar.age", True),
+        ("homelab-originals-2026-10-08-0000.tar.age", True),
+        ("homelab-originals-2026-10-08-2307.tar.age", True),
+        ("homelab-originals-2026-10-08-123.tar.age", False),
+        ("homelab-originals-2026-10-08-12345.tar.age", False),
+        ("homelab-originals-2026-10-08-12ab.tar.age", False),
+        ("homelab-originals-2026-10-08-.tar.age", False),
+        ("homelab-originals-2026-10-08-12:34.tar.age", False),
+        ("homelab-originals-2026-10-08-1234.tar.age.extra", False),
+        ("other-2026-10-08-1234.tar.age", False),
+        ("../homelab-originals-2026-10-08-1234.tar.age", False),
+    ],
+)
+def test_listener_copy_name_compatibility(monkeypatch, filename, accepted):
+    monkeypatch.setattr(listener.os.path, "ismount", lambda path: True)
+
+    class Process:
+        returncode = 0
+
+        def communicate(self, timeout):
+            return (
+                f"folder: 8 bytes\n/Volumes/SD Card/{filename}: "
+                "307200 encrypted bytes; confirmed on node\n"
+            ).encode(), None
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(listener.subprocess, "Popen", lambda *a, **kw: Process())
+    expected = (
+        {"status": "done", "file": filename, "bytes": 307200}
+        if accepted
+        else {"status": "failed", "reason": "invalid copy report"}
+    )
+    assert listener.Actions().dispatch("/backup") == (200, expected)
+
+
+def test_minute_copy_preserves_encryption_and_workflow_files():
+    import hashlib
+
+    root = SCRIPT.parents[1]
+    expected = {
+        "node/usr/local/sbin/homelab-copy": (
+            "5d3a6478dc1ceb4023db6aabf89db1c760548bbcd3af9407091167b1943e4929"
+        ),
+        ".github/workflows/ci.yml": (
+            "bef16d9df8bff04c4fbc210997fc7f69f29028244cef9104bcfe3b09f2a4b268"
+        ),
+    }
+    assert sorted(
+        p.relative_to(root).as_posix() for p in (root / ".github/workflows").iterdir()
+    ) == [".github/workflows/ci.yml"]
+    for path, digest in expected.items():
+        assert hashlib.sha256((root / path).read_bytes()).hexdigest() == digest, path
+
+
+def test_dockerfile_removes_only_unused_routes_variable():
+    expected = (
+        (
+            "# Two stages: resolve and install dependencies with uv, "
+            "then copy the ready venv into a slim\n"
+        )
+        + """\
+# runtime image that runs as an unprivileged user. Rebuilds reuse uv's cache.
+
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0
+WORKDIR /app
+COPY pyproject.toml uv.lock README.md ./
+RUN --mount=type=cache,target=/root/.cache/uv \\
+    uv sync --locked --no-dev --no-install-project
+COPY src ./src
+COPY config ./config
+RUN --mount=type=cache,target=/root/.cache/uv \\
+    uv sync --locked --no-dev
+
+FROM python:3.13-slim-bookworm
+RUN apt-get update \\
+    && apt-get install -y --no-install-recommends libpq5 \\
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin homelab
+WORKDIR /app
+COPY --from=builder --chown=homelab:homelab /app /app
+ENV PATH="/app/.venv/bin:$PATH" \\
+    PYTHONUNBUFFERED=1
+USER homelab
+EXPOSE 8000
+CMD ["uvicorn", "homelab.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+"""
+    )
+    assert (SCRIPT.parents[1] / "Dockerfile").read_text() == expected
+
+
+@pytest.mark.parametrize(
+    "state,health,expected_code",
+    [
+        ("running", "healthy", 0),
+        ("running", "none", 0),
+        ("running", "unhealthy", 1),
+        ("running", "starting", 1),
+        ("restarting", "healthy", 1),
+    ],
+)
+def test_runbook_health_loop_running_containers(tmp_path, state, health, expected_code):
+    import os
+    import re
+    import sys
+
+    text = (SCRIPT.parents[1] / "docs/operations.md").read_text()
+    loops = re.findall(r"^for container in \$\(docker ps [^\n]+\n.*?^done$", text, re.M | re.S)
+    assert len(loops) == 1, "retain the documented container status/health loop"
+    docker = tmp_path / "docker"
+    docker.write_text(
+        f"#!{sys.executable}\n"
+        + """import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["HEALTH_TEST_CALLS"], "a") as handle:
+    handle.write(json.dumps(args) + "\\n")
+if args == ["ps", "-q"]:
+    print("service")
+elif args == ["ps", "-aq"]:
+    print("service\\nexited-one-off")
+elif args[:2] == ["inspect", "-f"]:
+    if args[-1] == "exited-one-off":
+        print("exited" if args[2] == "{{.State.Status}}" else "healthy")
+    elif args[2] == "{{.State.Status}}":
+        print(os.environ["HEALTH_TEST_STATE"])
+    elif args[2] == "{{if .State.Health}}{{.State.Health.Status}}{{else}}healthy{{end}}":
+        health = os.environ["HEALTH_TEST_HEALTH"]
+        print("healthy" if health == "none" else health)
+    else:
+        sys.exit(2)
+else:
+    sys.exit(2)
+"""
+    )
+    docker.chmod(0o755)
+    calls_file = tmp_path / "calls.jsonl"
+    env = dict(
+        os.environ,
+        PATH=f"{tmp_path}:{os.environ['PATH']}",
+        HEALTH_TEST_CALLS=str(calls_file),
+        HEALTH_TEST_STATE=state,
+        HEALTH_TEST_HEALTH=health,
+    )
+    result = subprocess.run(["bash", "-e", "-c", loops[0]], env=env, capture_output=True, text=True)
+    assert result.returncode == expected_code, result.stderr
+    calls = [json.loads(line) for line in calls_file.read_text().splitlines()]
+    assert calls[0] == ["ps", "-q"]
+    assert all("exited-one-off" not in call for call in calls)
+    assert ["inspect", "-f", "{{.State.Status}}", "service"] in calls
+    if state == "running":
+        assert [
+            "inspect",
+            "-f",
+            "{{if .State.Health}}{{.State.Health.Status}}{{else}}healthy{{end}}",
+            "service",
+        ] in calls

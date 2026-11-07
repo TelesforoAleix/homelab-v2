@@ -266,7 +266,9 @@ def make_backup(log) -> Executor:
                     type(count) is int
                     and count > 0
                     and isinstance(filename, str)
-                    and re.fullmatch(r"homelab-originals-\d{4}-\d{2}-\d{2}\.tar\.age", filename)
+                    and re.fullmatch(
+                        r"homelab-originals-\d{4}-\d{2}-\d{2}(?:-\d{4})?\.tar\.age", filename
+                    )
                 ):
                     return finish(
                         "done", f"Copy done: {(count + 512) // 1024} KB, {filename}.", count

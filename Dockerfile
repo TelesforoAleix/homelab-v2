@@ -20,8 +20,7 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin homelab
 WORKDIR /app
 COPY --from=builder --chown=homelab:homelab /app /app
 ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1 \
-    HOMELAB_ROUTES_FILE=/app/config/routes.yaml
+    PYTHONUNBUFFERED=1
 USER homelab
 EXPOSE 8000
 CMD ["uvicorn", "homelab.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
