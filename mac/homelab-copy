@@ -49,7 +49,9 @@ def volume_path(value):
 
 
 def copy(volume):
-    destination = volume / f"homelab-originals-{datetime.date.today().isoformat()}.tar.age"
+    destination = (
+        volume / f"homelab-originals-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M')}.tar.age"
+    )
     # Exclusive creation also prevents following an existing symlink.
     with destination.open("xb") as handle:
         process = subprocess.Popen([*SSH, "stream"], stdout=handle, stderr=subprocess.PIPE)

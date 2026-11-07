@@ -2585,8 +2585,9 @@ The manual command remains `mac/homelab-copy '<VOLUME-NAME>'` from this checkout
 `/Volumes/<NAME>`). Python 3 is required on the Mac. The command
 accepts mounted removable or ejectable volumes, including cards in a built-in SD reader.
 It refuses the startup volume, every APFS volume in its boot container, fixed internal disks,
-and existing `homelab-originals-YYYY-MM-DD.tar.age`
-files. Use a different card or explicitly move an existing file before another copy that day.
+and existing `homelab-originals-YYYY-MM-DD-HHMM.tar.age`
+files. Names use **local time** to the minute. A collision in the **same minute** requires
+waiting for another minute, choosing another card or explicitly moving the existing file.
 It prints every `*-data/originals` folder and the inbox when present, with each size, and streams one tar archive through
 age on the node directly onto the card, flushes the card, compares encrypted byte counts,
 then records the successful copy on the node. Folder sizes are allocated bytes (`du -sk`
@@ -2619,7 +2620,7 @@ set -o pipefail
 mkdir '/Volumes/<RESTORE-VOLUME>/restored-originals'
 read -r -s -p 'age private identity: ' COPY_IDENTITY; printf '\n'
 age --decrypt --identity <(printf '%s\n' "$COPY_IDENTITY") \
-  '/Volumes/<COPY-VOLUME>/homelab-originals-YYYY-MM-DD.tar.age' | \
+  '/Volumes/<COPY-VOLUME>/homelab-originals-YYYY-MM-DD-HHMM.tar.age' | \
   tar -xpf - -C '/Volumes/<RESTORE-VOLUME>/restored-originals'
 COPY_RESTORE_STATUS=$?
 unset COPY_IDENTITY
