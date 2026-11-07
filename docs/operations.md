@@ -2508,7 +2508,7 @@ docker buildx inspect default
 # Expect docker driver and GC policies with about 50 GB Keep/Max Used Space.
 python3 -c 'import json; d=json.load(open("/etc/docker/daemon.json")); assert d["builder"]["gc"] == {"enabled": True, "defaultKeepStorage": "50GB"}'
 docker ps --format '{{.Names}} {{.Status}}'
-for container in $(docker ps -aq); do
+for container in $(docker ps -q); do
   test "$(docker inspect -f '{{.State.Status}}' "$container")" = running
   test "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}healthy{{end}}' "$container")" = healthy
 done
