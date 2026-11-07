@@ -2664,3 +2664,52 @@ def test_bot_copy_name_compatibility(bot_modules, backup_listener, filename, acc
         if accepted
         else "backup requester=0 result=failed bytes=0"
     ]
+
+
+def test_scheduler_export_directory(planning_repo, tmp_path):
+    from dataclasses import replace
+
+    mirror = planning_repo.mirror
+    export = tmp_path / "export"
+    export.mkdir()
+    (export / "state.json").write_text(json.dumps({"slices": [planning_slice()]}))
+    (export / "outbox.jsonl").write_text(
+        json.dumps(
+            {
+                "at": "2026-01-01T00:00:00+00:00",
+                "id": "fixture/item",
+                "event": "updated",
+                "text": "fixture",
+            }
+        )
+        + "\n"
+    )
+    assert "Planned: 0" in mirror.command("pending", [])
+    mirror.config = replace(mirror.config, export_dir=str(export))
+    assert "fixture/item" in mirror.command("slice", ["fixture/item"])
+    assert mirror.events()[0]["event"] == "updated"
+    (export / "escape").symlink_to(planning_repo.source / "state.json")
+    with pytest.raises(ValueError):
+        mirror.read_scheduler("escape")
+    with pytest.raises(ValueError):
+        mirror.read_scheduler("../outside")
+
+
+async def test_missing_scheduler_state_keeps_idea(conversation_repo, bot_modules, tmp_path):
+    from dataclasses import replace
+
+    fixture = conversation_repo
+    export = tmp_path / "export"
+    export.mkdir()
+    (export / "outbox.jsonl").write_text("")
+    fixture.mirror.config = replace(fixture.mirror.config, export_dir=str(export))
+    requests = []
+    conversation = fake_frontline(bot_modules, fixture, [{"keep": True}, keep_result()], requests)
+    async with conversation.client:
+        reply, _ = await conversation.answer((10, 0), "Private idea")
+    assert reply.startswith("Kept")
+    assert kept_items(conversation)[0]["text"] == "Private idea"
+    assert "Scheduler data is unavailable" in fixture.mirror.command("pending", [])
+    assert fixture.mirror.command("recap", []) == "No events in that period."
+    (export / "state.json").write_text("not JSON")
+    assert "Scheduler data is unavailable" in fixture.mirror.command("slice", ["fixture/item"])

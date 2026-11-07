@@ -2135,13 +2135,18 @@ SSH accounts work through Tailscale.
       "branch": "<BRANCH>",
       "state_path": "<RELATIVE-STATE-PATH>",
       "outbox_path": "<RELATIVE-OUTBOX-PATH>",
+      "export_dir": "<ABSOLUTE-EXPORT-DIRECTORY>",
       "poll_seconds": 60,
       "context_files": ["<RELATIVE-SUMMARY-PATH>"]
     }
     ```
 
     The four string keys are required. `repo_url` uses GitHub's SCP-style SSH syntax;
-    paths are relative to the clone and cannot escape it. `poll_seconds` is optional,
+    `state_path` and `outbox_path` are relative to the optional absolute `export_dir`;
+    without it they are relative to the clone. Reads cannot escape their root. Context files
+    remain relative to the clone. The bot user needs read access to the export directory and
+    its files. Missing or invalid state leaves inbox items and outbox notices available; slice
+    status and orders report that scheduler data is unavailable. `poll_seconds` is optional,
     defaults to 60 and accepts integer values from 10 through 3600. `context_files` is an
     optional list of up to 16 relative text-file paths (default `[]`); the orchestrator adds
     the owner’s two summary files privately. Each must fit the 128 KiB file cap and together

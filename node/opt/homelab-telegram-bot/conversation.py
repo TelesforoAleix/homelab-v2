@@ -51,6 +51,8 @@ Classify each owner message as a question, order, or something to keep.
 For an idea, link to keep, or message left for an orchestrator, return
 "keep": true, "answer": "", "order": null, "read_file": null.
 Keeping only clarifies; never solve an idea or propose its design or plan.
+When pending is null, scheduler data is unavailable. For slice status questions, answer
+"Scheduler data is unavailable; try again shortly." Do not propose orders.
 Questions and explicit requests to act use the existing answer/order fields.
 A message to retain for an orchestrator is keeping; asking it to act is an order.
 """
@@ -182,25 +184,33 @@ class Conversation:
             files = {
                 name: read_text(planning.clone, name) for name in planning.config.context_files
             }
-            state = json.loads(
-                read_text(planning.clone, planning.config.state_path, 2 * 1024 * 1024)
-            )
-            slices = []
-            for item in state["slices"]:
-                context_item = {key: value for key, value in item.items() if key != "log"}
-                attention = context_item.get("attention")
-                if isinstance(attention, dict) and isinstance(attention.get("body"), str):
-                    body = attention["body"]
-                    if len(body) > ATTENTION_BODY_LIMIT:
-                        attention = dict(attention)
-                        attention["body"] = (
-                            body[: ATTENTION_BODY_LIMIT - len(ATTENTION_BODY_MARKER)]
-                            + ATTENTION_BODY_MARKER
-                        )
-                        context_item["attention"] = attention
-                slices.append(context_item)
+            try:
+                root = (
+                    Path(planning.config.export_dir)
+                    if planning.config.export_dir is not None
+                    else planning.clone
+                )
+                state = json.loads(read_text(root, planning.config.state_path, 2 * 1024 * 1024))
+                pending = pending_summary(state["slices"])
+                slices = []
+                for item in state["slices"]:
+                    context_item = {key: value for key, value in item.items() if key != "log"}
+                    attention = context_item.get("attention")
+                    if isinstance(attention, dict) and isinstance(attention.get("body"), str):
+                        body = attention["body"]
+                        if len(body) > ATTENTION_BODY_LIMIT:
+                            attention = dict(attention)
+                            attention["body"] = (
+                                body[: ATTENTION_BODY_LIMIT - len(ATTENTION_BODY_MARKER)]
+                                + ATTENTION_BODY_MARKER
+                            )
+                            context_item["attention"] = attention
+                    slices.append(context_item)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                slices = []
+                pending = None
             data = {
-                "pending": pending_summary(state["slices"]),
+                "pending": pending,
                 "slices": slices,
                 "files": files,
             }
@@ -273,6 +283,8 @@ class Conversation:
                 if result.get("order") is not None or result.get("read_file") is not None:
                     raise ValueError("keep and action combined")
                 return await self.keeper.begin(owner, key, episode, question, data)
+            if data["pending"] is None and result.get("order") is not None:
+                return "Scheduler data is unavailable; try again shortly.", None
             if result.get("read_file") is not None:
                 if result.get("order") is not None:
                     raise ValueError("read and proposal combined")

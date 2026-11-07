@@ -33,6 +33,7 @@ class Config:
     poll_seconds: int = 60
     context_files: list[str] = field(default_factory=list)
     github_owner: str | None = None
+    export_dir: str | None = None
 
 
 def load_config(log, path=CONFIG):
@@ -51,6 +52,10 @@ def load_config(log, path=CONFIG):
             path_value = Path(name)
             if path_value.is_absolute() or ".." in path_value.parts or not path_value.parts:
                 raise ValueError("relative path required")
+        if config.export_dir is not None and (
+            not isinstance(config.export_dir, str) or not Path(config.export_dir).is_absolute()
+        ):
+            raise ValueError("absolute export directory required")
         if type(config.poll_seconds) is not int or not 10 <= config.poll_seconds <= 3600:
             raise ValueError("invalid interval")
         if config.github_owner is not None and (
@@ -221,7 +226,10 @@ class Planning:
                     self.config.branch,
                 )
                 self.log("planning pull succeeded")
-            self.orders.reconcile()
+            try:
+                self.orders.reconcile()
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                self.log("WARNING: scheduler data unavailable; order reconciliation deferred")
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
             self.log("WARNING: planning sync failed")
             return "Planning sync failed; try again shortly."
@@ -233,8 +241,15 @@ class Planning:
             raise ValueError("path outside clone")
         return path.read_text()
 
+    def read_scheduler(self, relative):
+        root = Path(self.config.export_dir) if self.config.export_dir is not None else self.clone
+        path = (root / relative).resolve()
+        if not path.is_relative_to(root.resolve()):
+            raise ValueError("path outside scheduler directory")
+        return path.read_text()
+
     def events(self):
-        raw = self.read_file(self.config.outbox_path)
+        raw = self.read_scheduler(self.config.outbox_path)
         # Split only on JSONL newlines, preserving Unicode separators inside text.
         # A final newline is optional; malformed lines fail closed without advancing.
         lines = raw.split("\n")
@@ -281,14 +296,18 @@ class Planning:
                         )
                         or "No events in that period."
                     )
-                state = json.loads(self.read_file(self.config.state_path))
+                state = json.loads(self.read_scheduler(self.config.state_path))
                 if name == "slice":
                     item = next((s for s in state["slices"] if s["id"] == args[0]), None)
                     return slice_text(item) if item else "Slice not found."
                 return pending_summary(state["slices"])
-            except (OSError, ValueError, KeyError, TypeError):
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 self.log("WARNING: planning data invalid or unavailable")
-                return "Planning data is unavailable; try again shortly."
+                return (
+                    "Scheduler data is unavailable; try again shortly."
+                    if name != "recap"
+                    else "Planning data is unavailable; try again shortly."
+                )
 
     def save_marker(self, marker):
         # Replace atomically, and flush both data and rename before acknowledging.
