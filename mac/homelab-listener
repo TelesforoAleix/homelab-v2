@@ -24,7 +24,7 @@ STATE = Path.home() / ".local/state/homelab-listener"
 PLIST = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
 CARD = Path("/Volumes/SD Card")
 REPORT = re.compile(
-    r"/Volumes/SD Card/(homelab-originals-\d{4}-\d{2}-\d{2}\.tar\.age): "
+    r"/Volumes/SD Card/(homelab-originals-\d{4}-\d{2}-\d{2}(?:-\d{4})?\.tar\.age): "
     r"([1-9]\d*) encrypted bytes; confirmed on node"
 )
 
