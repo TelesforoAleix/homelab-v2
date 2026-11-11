@@ -30,8 +30,9 @@ rebuild section in the same PR. The base files preserve their installed bytes, i
 historical v1 comments; those references do not require v1 scripts or a node GitHub key.
 
 The agent uses `ssh homelab-agent`, which has root through sudo. Proceed within the owner's
-approved task; the exceptions requiring approval are in `AGENTS.md`. Deploy with
-`sudo systemctl restart homelab.service`; it pulls public `main` over HTTPS and builds images.
+approved task; the exceptions requiring approval are in `AGENTS.md`. Deploy by running
+`git pull --ff-only` by hand in `/srv/homelab/homelab-v2`, then
+`sudo systemctl restart homelab.service` to build images.
 Host-file installation is explicit; restarting the stack does not install those files.
 
 The Telegram bot is a host service using python-telegram-bot, running as `homelab-bot`.
@@ -1660,7 +1661,8 @@ repository through the owner's Mac clone. Brain is copied from the Mac; original
 also be copied from the owner’s Mac;
 Postgres is derived by re-ingesting, models are fetched upstream, and secrets are re-issued.
 The rebuilt node never clones Brain. Optional planning reads use a separate read-only GitHub
-deploy key; the public application checkout needs no GitHub credential.
+deploy key; the public application checkout needs no GitHub credential. The stack unit builds
+the checked-out code at start; it does not pull updates.
 
 The weekly archive also carries `/srv/homelab/frontline/inbox` at `frontline/inbox` when that
 directory exists. Restore it using the ownership and modes in the restore procedure; the
