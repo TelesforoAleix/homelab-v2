@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Create a durable daily custom-format database dump."""
+import datetime
+import fcntl
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+DIRECTORY = Path('/srv/homelab/homelab-v2-data/originals/postgres')
+FAILURE = 'homelab-dump: failed'
+
+
+def dump():
+    with (DIRECTORY / '.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        name = 'homelab-' + datetime.date.today().isoformat() + '.dump'
+        fd, temporary = tempfile.mkstemp(prefix='.homelab-', dir=DIRECTORY)
+        try:
+            with os.fdopen(fd, 'wb') as output:
+                os.fchmod(output.fileno(), 0o640)
+                subprocess.run(['docker', 'exec', 'homelab-postgres-1', 'pg_dump',
+                                '-U', 'homelab', '-Fc', 'homelab'], stdout=output,
+                               stderr=subprocess.DEVNULL, check=True)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, DIRECTORY / name)
+            directory_fd = os.open(DIRECTORY, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            for old in sorted(DIRECTORY.glob('homelab-????-??-??.dump'), reverse=True)[7:]:
+                old.unlink()
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+
+def main():
+    try:
+        dump()
+    except (OSError, subprocess.SubprocessError):
+        print(FAILURE, file=sys.stderr)
+        return 1
+    print('ok')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

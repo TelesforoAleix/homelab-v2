@@ -1651,6 +1651,17 @@ Dependents need neither: they are released as their dependencies finish.
 asked for, and what it refused. To allow another host, add a line to
 `node/opt/homelab-package-proxy/package-hosts`.
 
+## Database dumps and restore checks
+
+The daily `homelab-dump.timer` writes a custom-format dump to
+`/srv/homelab/homelab-v2-data/originals/postgres/`, retaining seven dated dumps.
+The weekly encrypted originals copy includes them. Run `sudo homelab-dump` for an
+immediate dump, or `sudo homelab-restore-check [dump-path]` to restore into a
+network-isolated temporary container and compare table names and row counts. Without a
+path the check takes a new dump first. Both print `ok` on success. Changes to the live
+database while the check runs can cause a count difference; repeat during a quiet period.
+A dump is not a substitute for testing a full application recovery.
+
 ## Rebuilding the node
 
 Recovery is a rebuild from sources. No node backup exists or will be made. Host files come
@@ -1854,6 +1865,7 @@ SSH accounts work through Tailscale.
    sudo visudo -cf node/etc/sudoers.d/homelab-agent-v2
    sudo install -m 0440 -o root -g root node/etc/sudoers.d/homelab-agent-v2 /etc/sudoers.d/homelab-agent-v2
    sudo install -m 0644 -o root -g root node/etc/homelab-copy.recipient /etc/homelab-copy.recipient
+   sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-dump node/usr/local/sbin/homelab-restore-check /usr/local/sbin/
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-copy /usr/local/sbin/homelab-copy
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-inbox /usr/local/sbin/homelab-inbox
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-context /usr/local/sbin/homelab-context
@@ -1972,7 +1984,7 @@ SSH accounts work through Tailscale.
    sudo systemctl reload ssh.service
    sudo systemctl disable docker.service docker.socket containerd.service
    sudo systemctl enable --now tailscaled.service chrony.service wifi-powersave-off.service
-   sudo systemctl enable homelab-telegram-bot.service homelab-bot-data-ready.service homelab-watchdog.timer homelab-copy-reminder.timer homelab-context-refresh.service homelab-context-refresh.timer homelab-image-cost-notice.timer homelab-task-runner.service
+   sudo systemctl enable homelab-telegram-bot.service homelab-bot-data-ready.service homelab-watchdog.timer homelab-copy-reminder.timer homelab-context-refresh.service homelab-context-refresh.timer homelab-image-cost-notice.timer homelab-dump.timer homelab-task-runner.service
    sudo ufw default deny incoming
    sudo ufw default allow outgoing
    sudo ufw default deny routed
@@ -2197,6 +2209,7 @@ SSH accounts work through Tailscale.
     sudo mkdir -p /srv/homelab/homelab-v2-data/originals
     sudo chown 0:0 /srv/homelab/homelab-v2-data /srv/homelab/homelab-v2-data/originals
     sudo chmod 0755 /srv/homelab/homelab-v2-data /srv/homelab/homelab-v2-data/originals
+    sudo install -d -m 0750 -o root -g root /srv/homelab/homelab-v2-data/originals/postgres
     sudo install -d -m 0755 -o root -g root /srv/homelab/homelab-v2-data/originals/corpus
     sudo install -d -m 0755 -o aleix -g aleix /srv/homelab/homelab-v2-data/originals/corpus/about-aleix
     ```

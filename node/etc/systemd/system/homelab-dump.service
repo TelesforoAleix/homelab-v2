@@ -1,0 +1,10 @@
+[Unit]
+Description=Dump Home Lab database
+ConditionPathIsMountPoint=/srv/homelab
+After=homelab.service
+OnFailure=homelab-notify@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homelab-dump
+UMask=0027
