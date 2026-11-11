@@ -1328,3 +1328,207 @@ def test_night_window_records_a_refused_entry(night, world, monkeypatch):
         p.schedule_tick(night, MONDAY)
     assert night_state()["result"] == "failed"
     assert not p.load(p.STATE / "session.json", {}).get("return_pending")
+
+
+@pytest.fixture
+def offer_world(world, monkeypatch, tmp_path):
+    offer = module("mac_offer", "offer.py")
+    cfg = world[0]
+    public_root = tmp_path / "router"
+    monkeypatch.setattr(p, "router", lambda: {"STATE": public_root})
+    monkeypatch.setattr(p, "REGISTRY", tmp_path / "missing-registry.json")
+    monkeypatch.setattr(p.queue, "memory", lambda pid=None: (None, 1234.5))
+    monkeypatch.setattr(offer, "watts", lambda: None)
+    return offer, cfg, public_root
+
+
+def test_offer_exact_fields_legacy_and_no_private_data(offer_world):
+    offer, cfg, root = offer_world
+    value = offer.build(vars(p), cfg)
+    assert set(value) == {
+        "at",
+        "profile",
+        "power",
+        "paused",
+        "models",
+        "memory_free_mb",
+        "queue",
+        "night_window",
+    }
+    assert p.datetime.fromisoformat(value["at"]).utcoffset().total_seconds() == 0
+    assert value == {
+        "at": value["at"],
+        "profile": "working",
+        "power": "ac",
+        "paused": False,
+        "models": [
+            {"id": "vision", "kind": "vision", "state": "off", "context": 16384},
+            {
+                "id": "Qwen3-Embedding-4B",
+                "kind": "embedding",
+                "state": "on request",
+                "context": 8192,
+            },
+        ],
+        "memory_free_mb": 1234.5,
+        "queue": {"playing": 0, "running": 0, "waiting": 0},
+        "night_window": None,
+    }
+    offer.publish(vars(p), cfg)
+    path = root / "public/homelab-offer.json"
+    assert json.loads(path.read_text())["models"] == value["models"]
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert not path.with_suffix(".tmp").exists()
+    assert not (root / "public/homelab-profile.json").exists()
+
+
+def test_offer_modern_models_power_queue_and_window(offer_world, monkeypatch):
+    offer, cfg, root = offer_world
+    registry = {
+        "version": 1,
+        "services": {
+            "vision": {
+                "look": {
+                    "model": "/private/model",
+                    "flags": {"mmproj": "/private/projector", "c": "4096"},
+                    "memory_mb": None,
+                }
+            },
+            "embed-large-bulk": {
+                "embed": {
+                    "model": "/private/embed",
+                    "flags": {"embeddings": "true", "c": "2048"},
+                    "memory_mb": None,
+                }
+            },
+        },
+    }
+    p.save(p.REGISTRY, registry)
+    services = p.model_policy["legacy_services"](["vision", "embed-large-bulk"])
+    for svc, name in (("vision", "look"), ("embed-large-bulk", "embed")):
+        services[svc].update(allowed=[name], default=name)
+    p.save(root / "allowed.json", {"version": 2, "services": services})
+    p.save(p.STATE / "session.json", {"return_pending": True})
+    p.save(
+        p.STATE / "queue.json",
+        {
+            "play": True,
+            "paused_on_battery": False,
+            "jobs": [{"state": "running"}, {"state": "waiting"}],
+        },
+    )
+    monkeypatch.setattr(
+        p, "router_models", lambda: {"vision-look": "loaded", "embed-large-bulk-embed": "sleeping"}
+    )
+    monkeypatch.setattr(p, "on_ac_power", lambda: False)
+    monkeypatch.setattr(p, "schedule", lambda: {"enabled": True, "start": "22:00", "end": "06:00"})
+    monkeypatch.setattr(offer, "watts", lambda: 27.25)
+    value = offer.build(vars(p), cfg)
+    assert set(value) == {
+        "at",
+        "profile",
+        "power",
+        "watts",
+        "paused",
+        "models",
+        "memory_free_mb",
+        "queue",
+        "night_window",
+    }
+    assert value["power"] == "battery" and value["watts"] == 27.25
+    assert value["profile"] == "inference" and not value["paused"]
+    assert value["queue"] == {"playing": 1, "running": 1, "waiting": 1}
+    assert value["night_window"] == {"start": "22:00", "end": "06:00"}
+    assert value["models"] == [
+        {"id": "vision-look", "kind": "vision", "state": "loaded", "context": 4096},
+        {
+            "id": "embed-large-bulk-embed",
+            "kind": "embedding",
+            "state": "on request",
+            "context": 2048,
+        },
+    ]
+    assert "/private" not in json.dumps(value)
+    p.save(p.STATE / "session.json", {"return_pending": True, "paused": True})
+    value = offer.build(vars(p), cfg)
+    assert value["paused"] and all(m["state"] == "off" for m in value["models"])
+
+
+def test_offer_unknown_memory_and_observation_failure(offer_world, monkeypatch):
+    offer, cfg, root = offer_world
+    monkeypatch.setattr(p.queue, "memory", lambda pid=None: (None, None))
+    offer.publish(vars(p), cfg)
+    path = root / "public/homelab-offer.json"
+    previous = path.read_bytes()
+    assert json.loads(previous)["memory_free_mb"] is None
+    monkeypatch.setattr(p, "on_ac_power", lambda: (_ for _ in ()).throw(ValueError("private")))
+    offer.publish(vars(p), cfg)
+    assert path.read_bytes() == previous
+
+
+def test_offer_watts_only_measured_system_input(monkeypatch):
+    import plistlib
+
+    offer = module("watts_offer", "offer.py")
+    for sample, expected in [
+        ({"PowerTelemetryData": {"SystemPowerIn": 15300}}, 15.3),
+        ({"AdapterDetails": {"Watts": 140}}, None),
+        ({"PowerTelemetryData": {"SystemPowerIn": -1}}, None),
+        ({}, None),
+    ]:
+
+        def read(args, timeout, sample=sample):
+            assert args == ["/usr/sbin/ioreg", "-a", "-r", "-c", "AppleSmartBattery"]
+            assert timeout == 2
+            return plistlib.dumps([sample])
+
+        monkeypatch.setattr(offer.subprocess, "check_output", read)
+        assert offer.watts() == expected
+
+
+def test_offer_called_on_switch_tick_and_paused_tick(world, monkeypatch):
+    cfg = world[0]
+    calls = []
+    monkeypatch.setattr(p, "write_offer", lambda cfg: calls.append(True))
+    p.switch("inference", cfg, skip=True)
+    assert len(calls) == 1
+    p.tick(cfg)
+    assert len(calls) == 2
+    record = p.load(p.STATE / "session.json", {})
+    record.update(paused=True, battery_since=0)
+    p.save(p.STATE / "session.json", record)
+    monkeypatch.setattr(p, "on_ac_power", lambda: False)
+    p.tick(cfg)
+    assert len(calls) == 3
+
+
+def test_offer_chat_and_unknown_context(offer_world):
+    offer, cfg, root = offer_world
+    services = p.model_policy["legacy_services"](["vision"])
+    services["vision"].update(allowed=["plain"], default="plain")
+    p.save(root / "allowed.json", {"version": 2, "services": services})
+    p.save(
+        p.REGISTRY,
+        {
+            "version": 1,
+            "services": {
+                "vision": {
+                    "plain": {"model": "/private/chat", "flags": {"c": "0"}, "memory_mb": None}
+                },
+                "embed-large-bulk": {
+                    "embed": {
+                        "model": "/private/embed",
+                        "flags": {"embeddings": "true"},
+                        "memory_mb": None,
+                    }
+                },
+            },
+        },
+    )
+    value = offer.build(vars(p), cfg)
+    assert value["models"][0] == {
+        "id": "vision-plain",
+        "kind": "chat",
+        "state": "off",
+        "context": None,
+    }

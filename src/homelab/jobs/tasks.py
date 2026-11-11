@@ -55,3 +55,11 @@ def ingest_brain() -> dict[str, int]:
         monotonic() - started,
     )
     return values
+
+
+@app.periodic(cron="* * * * *")
+@app.task(queue="default", name="read_provider_offer", retry=0, queueing_lock="provider-offer")
+async def read_provider_offer(timestamp: int) -> None:
+    from homelab.jobs.providers import poll
+
+    await poll()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -41,12 +42,24 @@ def _ingest(brain_dir: Path | None, dry_run: bool) -> int:
     return 0
 
 
+def _providers() -> int:
+    import psycopg
+
+    from homelab.jobs.providers import provider_rows
+
+    with psycopg.connect(get_settings().database_url) as connection:
+        rows = provider_rows(connection)
+    print(json.dumps(rows, default=str))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="homelab")
     subparsers = parser.add_subparsers(dest="command", required=True)
     ingest_parser = subparsers.add_parser("ingest")
     ingest_parser.add_argument("--brain-dir", type=Path)
     ingest_parser.add_argument("--dry-run", action="store_true")
+    subparsers.add_parser("providers")
     subparsers.add_parser("routes")
     subparsers.add_parser("eval")
     return parser
@@ -54,6 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "providers":
+        return _providers()
     if args.command == "routes":
         return _routes()
     if args.command == "eval":

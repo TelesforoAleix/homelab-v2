@@ -40,6 +40,15 @@ class Queue:
         self.call("save", path, state)
         with path.open("rb") as handle:
             os.fsync(handle.fileno())
+        self.call("write_offer", self.call("config"))
+
+    def counts(self, state=None):
+        state = state if state is not None else self.read()
+        return {
+            "playing": int(state["play"]),
+            "running": sum(job["state"] == "running" for job in state["jobs"]),
+            "waiting": sum(job["state"] == "waiting" for job in state["jobs"]),
+        }
 
     def running(self, state=None):
         return next((j for j in (state or self.read())["jobs"] if j["state"] == "running"), None)
