@@ -104,6 +104,9 @@ services:
 
   postgres:
     image: pgvector/pgvector:pg17
+    networks:
+      default:
+        ipv4_address: 172.18.0.2
     environment:
       POSTGRES_USER: homelab
       POSTGRES_PASSWORD: ${HOMELAB_DB_PASSWORD}
@@ -179,6 +182,11 @@ secrets:
     file: ./secrets/image_gateway_api_key
 
 networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
+          gateway: 172.18.0.1
   models:
     name: homelab-models
   # LiteLLM and one task container at a time; nothing else, and no route out.
