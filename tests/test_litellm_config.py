@@ -188,14 +188,22 @@ def test_image_profiles_and_key_isolation():
             assert info["price_per_reference"] == 0.0122
 
 
-def test_private_mac_url_only_reaches_proxy_and_has_safe_unset_default():
+def test_private_mac_url_reaches_proxy_and_worker_with_safe_unset_default():
     compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
     assert compose["services"]["litellm"]["environment"]["HOMELAB_MAC_VISION_URL"] == (
         "${HOMELAB_MAC_VISION_URL:-http://127.0.0.1:9/v1}"
     )
+    assert (
+        compose["services"]["worker"]["environment"]["HOMELAB_MAC_VISION_URL"]
+        == (compose["services"]["litellm"]["environment"]["HOMELAB_MAC_VISION_URL"])
+    )
+    assert (
+        compose["services"]["worker"]["environment"]["HOMELAB_DATABASE_URL"]
+        == (compose["services"]["api"]["environment"]["HOMELAB_DATABASE_URL"])
+    )
     assert "HOMELAB_MAC_VISION_URL=\n" in (ROOT / ".env.example").read_text()
     for name, service in compose["services"].items():
-        if name != "litellm":
+        if name not in {"litellm", "worker"}:
             assert "HOMELAB_MAC_VISION_URL" not in service.get("environment", {})
     assert compose["services"]["litellm"]["environment"]["HOMELAB_MAC_EMBED_URL"] == (
         "${HOMELAB_MAC_EMBED_URL:-http://127.0.0.1:9/v1}"

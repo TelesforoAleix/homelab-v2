@@ -90,6 +90,9 @@ services:
 
   worker:
     <<: *app
+    environment:
+      <<: *app-env
+      HOMELAB_MAC_VISION_URL: ${HOMELAB_MAC_VISION_URL:-http://127.0.0.1:9/v1}
     # One local-model job at a time: the `local` queue is served with concurrency 1.
     command:
       - /bin/sh

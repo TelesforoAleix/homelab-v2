@@ -35,6 +35,11 @@ def installer(monkeypatch, tmp_path):
     return result
 
 
+def test_offer_is_installed_and_refreshes_its_agents(installer):
+    assert installer.contents("/fixed/python3")["offer.py"] == (ROOT / "mac/offer.py").read_bytes()
+    assert all("offer.py" in installer.DEPENDENCIES[kind] for kind in ("profile", "router"))
+
+
 @pytest.fixture
 def repository(tmp_path, monkeypatch, installer):
     remote = tmp_path / "remote.git"
