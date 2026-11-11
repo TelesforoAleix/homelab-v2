@@ -597,6 +597,7 @@ def remote(tmp_path, monkeypatch):
     git(seed, "add", ".")
     git(seed, "commit", "-qm", "base")
     git(seed, "push", "-q", str(bare), "trunk", "trunk:slice-branch")
+    monkeypatch.setattr(runner, "repository_is_private", lambda repository: True)
     monkeypatch.setattr(runner, "clone_url", lambda repository: str(bare))
     monkeypatch.setattr(runner, "push_url", lambda repository: str(bare))
     monkeypatch.setattr(runner, "as_task_user", dict)
@@ -742,6 +743,7 @@ def test_a_push_names_its_key_refspec_and_host_keys_and_never_forces(monkeypatch
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(runner, "refuse_branch", lambda item: None)
+    monkeypatch.setattr(runner, "repository_is_private", lambda repository: True)
     monkeypatch.setattr(runner, "KEYS", tmp_path)
     (tmp_path / "task-push-repo").write_text("key")
     monkeypatch.setattr(runner.subprocess, "run", fake)
@@ -977,3 +979,74 @@ def test_configuration_is_archived_from_fetched_main(tmp_path, monkeypatch):
     configuration, fetched = runner.configuration_snapshot(folder)
     assert fetched == commit
     assert (configuration / "configuration.json").read_text() == "main content"
+
+
+@pytest.fixture
+def public(remote, monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "repository_is_private", lambda repository: False)
+    deny = tmp_path / "deny-list"
+    deny.write_text("# comment\n\nPrivate-Value\n")
+    monkeypatch.setattr(runner, "DENY_LIST", deny)
+    return remote
+
+
+def test_public_push_rejects_added_line_without_disclosing_match(public):
+    copy = runner.fresh_copy(task())
+    commit = committed(copy, "safe\nPRIVATE-value in text\n")
+    result = runner.push(task(), copy, commit)
+    assert result == "push_private_content: app.py:2"
+    assert "private-value" not in result.casefold()
+    assert tip(public) != commit
+
+
+def test_public_push_rejects_commit_message(public):
+    copy = runner.fresh_copy(task())
+    committed(copy)
+    git(copy, "commit", "--amend", "-qm", "private-VALUE")
+    result = runner.push(task(), copy, git(copy, "rev-parse", "HEAD").strip())
+    assert result == "push_private_content: commit message"
+    assert "private-value" not in result.casefold()
+
+
+def test_public_push_checks_earlier_removed_content(public):
+    copy = runner.fresh_copy(task())
+    committed(copy, "private-value\n")
+    commit = committed(copy, "clean\n")
+    assert runner.push(task(), copy, commit) == "push_private_content: app.py:1"
+    assert tip(public) != commit
+
+
+def test_public_push_checks_branch_and_canary(public):
+    copy = runner.fresh_copy(task())
+    commit = committed(copy, runner.DENY_CANARY + "\n")
+    assert runner.push(task(), copy, commit) == "push_private_content: app.py:1"
+    assert runner.private_content_check(task(branch="private-value"), copy, commit) == (
+        "push_private_content: branch name"
+    )
+
+
+def test_public_push_requires_list(public):
+    copy = runner.fresh_copy(task())
+    commit = committed(copy)
+    runner.DENY_LIST.unlink()
+    assert runner.push(task(), copy, commit) == "push_deny_list_unreadable"
+    assert tip(public) != commit
+
+
+def test_private_push_does_not_read_list(remote, monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "DENY_LIST", tmp_path / "missing")
+    copy = runner.fresh_copy(task())
+    commit = committed(copy, runner.DENY_CANARY + "\n")
+    assert runner.push(task(), copy, commit) == "pushed"
+
+
+def test_unknown_visibility_is_public(monkeypatch):
+    def fail(*args, **kwargs):
+        raise OSError()
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", fail)
+    assert not runner.repository_is_private("example/repo")
+
+
+def test_private_content_location_is_not_logged_or_notified():
+    assert runner.log_reason("push_private_content: private-file:2") == "push_private_content"
