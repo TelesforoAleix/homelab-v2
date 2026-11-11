@@ -57,7 +57,7 @@ Only the agent reaches LiteLLM, on `homelab-tasks`, with a one-run token for its
 request budget; prepare reaches only the package indexes, through a proxy.
 Tasks are [submitted](ARCHITECTURE.md#task-store) as a file to a durable store and queue in
 Postgres. The [task runner](ARCHITECTURE.md#task-runner), a host service, runs them with retries
-across routes, and pushes each one's commit to its slice branch.
+across routes, and pushes each one's commit to its slice branch. Pi worker setups live in public `configurations/pi/`; each run records the configuration file hashes, image digest and source commit. The runner fetches configurations from merged `origin/main` in its own clone.
 
 A [read-only code context server](docs/operations.md#code-context-server) gives Mac coding agents
 symbol navigation over SSH. It runs Serena without network access against separate,

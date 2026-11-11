@@ -612,6 +612,16 @@ claim ── fresh clone ── homelab-task-run (prepare, agent, check, review,
               └───────────── a new attempt, from a new clone ◄───────────────┘
 ```
 
+**Configurations.** Pi worker setups are public text under `configurations/pi/`. A run validates
+its folder before starting containers, records each file's SHA-256 and the SHA-256 of the compact
+JSON encoding of the sorted `(path, sha256)` pairs, the declared Pi version and the inspected
+image ID. The image ID pins all containers in that run. The runner clones this repository's
+`origin/main` independently of the stack and task checkouts and archives `configurations/` from
+its fetched commit; that commit is recorded with the run. Manual runs default to `pi/base` in
+the stack checkout and can select another folder with `--configuration`. Explicit purpose and
+limit options override configuration defaults; the review keeps its own restricted tools and route.
+Prompt files are public and their content is never logged by the host scripts.
+
 **The store.** Postgres has no host port, so the runner uses `docker exec homelab-worker-1 python -m
 homelab.tasks.claim` and `homelab.tasks.finish`, as the image-cost timer does. Claiming calls
 Procrastinate's own `fetch_job` in the same transaction as the task's `running`, so a job goes to

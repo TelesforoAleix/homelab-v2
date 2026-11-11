@@ -861,3 +861,9 @@ rotation fails closed, as a failed push.
 **2026-11-06 — A request that did not finish cleanly still writes a null cost line.** A stream cut
 short or a middleware fault could have billed something, and a missing line would let the run sum
 the lines that did arrive. The null makes the container's cost unknown, never a partial sum.
+
+**2026-11-11 — Configuration hashes use compact JSON pairs.** Hashing the sorted file names and
+SHA-256 values needs an unambiguous byte encoding; compact ASCII-escaped JSON pairs give it one
+portable encoding. The manifest includes notes as well as files Pi reads, so a change to the
+recorded hypothesis also changes the setup's identity. Explicit command-line purpose and budget
+options remain available for the task runner's route and retry policy.
