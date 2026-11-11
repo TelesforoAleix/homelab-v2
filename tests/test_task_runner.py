@@ -404,6 +404,9 @@ def test_notes_are_never_logged(monkeypatch, tmp_path, caplog):
 
 
 def test_a_run_gets_the_task_and_the_configured_author(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        runner, "configuration_snapshot", lambda folder: (folder / "base", "a" * 40)
+    )
     seen = {}
 
     def fake(command, **kwargs):
@@ -435,6 +438,9 @@ def test_a_run_gets_the_task_and_the_configured_author(monkeypatch, tmp_path):
 
 
 def test_a_refused_run_is_an_ending_not_a_crash(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        runner, "configuration_snapshot", lambda folder: (folder / "base", "a" * 40)
+    )
     monkeypatch.setattr(
         runner.subprocess, "run", lambda c, **k: subprocess.CompletedProcess(c, 2, b"")
     )
@@ -949,3 +955,25 @@ def test_a_valid_cli_reviewer_is_refused_before_any_attempt(monkeypatch, tmp_pat
 )
 def test_invalid_cli_routes_are_refused(route):
     assert runner.usable_routes(task(routes=[route])) == []
+
+
+def test_configuration_is_archived_from_fetched_main(tmp_path, monkeypatch):
+    bare = tmp_path / "remote.git"
+    bare.mkdir()
+    git(bare, "init", "-q", "--bare", "-b", "main")
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "init", "-q", "-b", "main")
+    (seed / "configurations/pi/base").mkdir(parents=True)
+    (seed / "configurations/pi/base/configuration.json").write_text("main content")
+    git(seed, "add", ".")
+    git(seed, "commit", "-qm", "configuration")
+    commit = git(seed, "rev-parse", "HEAD").strip()
+    git(seed, "push", "-q", str(bare), "main")
+    (seed / "configurations/pi/base/configuration.json").write_text("uncommitted content")
+    monkeypatch.setattr(runner, "CONFIG_REPOSITORY", str(bare))
+    folder = tmp_path / "separate"
+    folder.mkdir()
+    configuration, fetched = runner.configuration_snapshot(folder)
+    assert fetched == commit
+    assert (configuration / "configuration.json").read_text() == "main content"

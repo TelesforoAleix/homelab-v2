@@ -1670,6 +1670,12 @@ A dump is not a substitute for testing a full application recovery.
 
 ## Rebuilding the node
 
+The installed task scripts use configurations from merged `origin/main` for queued runs; no
+configuration installation is needed. After changing either script, compare it with the installed
+file before installing it using the commands below. After a configuration change, run a task with
+`base` and check its `run.json` for the configuration hash and source commit.
+
+
 Recovery is a rebuild from sources. No node backup exists or will be made. Host files come
 from `node/`, code from this public GitHub repository, and Brain notes from their own GitHub
 repository through the owner's Mac clone. Brain is copied from the Mac; originals can be restored from the encrypted weekly copy

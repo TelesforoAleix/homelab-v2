@@ -23,6 +23,7 @@ import os
 import re
 import secrets
 import selectors
+import shlex
 import shutil
 import signal
 import stat
@@ -39,6 +40,7 @@ TOKENS = VOLUME / "task-tokens"
 COSTS = VOLUME / "task-costs"
 LOCK = Path("/run/lock/homelab-task-run.lock")
 IMAGE = "homelab-task:2"
+DEFAULT_CONFIGURATION = Path("/srv/homelab/homelab-v2/configurations/pi/base")
 TASK_NETWORK = "homelab-tasks"
 PACKAGE_NETWORK = "homelab-packages"
 PACKAGE_PROXY = "http://package-proxy:8888"
@@ -67,6 +69,10 @@ VERDICTS = {"VERDICT: PASS": "pass", "VERDICT: FIX": "fix"}
 
 # Reports the base commit on stdout: the only thing this step says to the host.
 PREPARE = """set -eu
+if [ -n "${HOMELAB_PI_VERSION:-}" ] && [ "$(pi --version)" != "$HOMELAB_PI_VERSION" ]; then
+  echo "Pi version mismatch" >&2
+  exit 3
+fi
 if [ -n "$(git --no-optional-locks status --porcelain)" ]; then
   echo 'working copy is not clean' >&2
   exit 3
@@ -464,7 +470,7 @@ def issue_token(token, purpose, seconds, max_requests):
     return path
 
 
-def pi_models(purpose):
+def pi_models(purpose, context_window=128000, max_tokens=16384):
     return json.dumps(
         {
             "providers": {
@@ -485,8 +491,8 @@ def pi_models(purpose):
                             "name": purpose,
                             "reasoning": False,
                             "input": ["text"],
-                            "contextWindow": 128000,
-                            "maxTokens": 16384,
+                            "contextWindow": context_window,
+                            "maxTokens": max_tokens,
                             "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                         }
                     ],
@@ -551,6 +557,7 @@ class Context:
     issued: list = field(default_factory=list)
     worker_costs: list = field(default_factory=list)
     last_cost: object = None
+    configuration: object = None
 
 
 def suffix(number):
@@ -564,6 +571,9 @@ def ask_model(context, step, purpose, max_requests, script, prompt, files, *, re
     context.issued.append(token)
     grant = issue_token(token, purpose, context.seconds + TOKEN_GRACE_SECONDS, max_requests)
     name = f"{context.name}-{step}"
+    config = context.configuration
+    if config is not None and not reviewing:
+        script = pi_script(config)
     try:
         with open(prompt, "rb") as stdin:
             return capture(
@@ -590,7 +600,12 @@ def ask_model(context, step, purpose, max_requests, script, prompt, files, *, re
                 env={
                     "HOMELAB_TASK_TOKEN": token,
                     "HOMELAB_TASK_PURPOSE": purpose,
-                    "HOMELAB_PI_MODELS": pi_models(purpose),
+                    "HOMELAB_PI_MODELS": pi_models(
+                        purpose,
+                        *(config["context_window"], config["max_tokens"])
+                        if config is not None
+                        else (128000, 16384),
+                    ),
                     "HOMELAB_PI_SETTINGS": pi_settings(shell=not reviewing),
                 },
             )
@@ -802,7 +817,184 @@ def cli_worker(args, context, pins, ticket, record):
             shutil.rmtree(folder)
 
 
+CONFIG_FIELDS = {
+    "pi_version",
+    "image",
+    "flags",
+    "tools",
+    "purpose",
+    "context_window",
+    "max_tokens",
+    "thinking",
+    "limits",
+    "system_prompt",
+    "append",
+}
+SAFE_FLAGS = {
+    "--no-session",
+    "--no-approve",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-themes",
+    "--no-mcp",
+    "--offline",
+}
+SAFE_TOOLS = {"read", "bash", "edit", "write", "grep", "find", "ls"}
+
+
+def load_configuration(folder):
+    """Read public regular files once, refusing links and unexpected entries."""
+    try:
+        files = {}
+
+        def read_file(directory, name, relative):
+            descriptor = os.open(
+                name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+            )
+            with os.fdopen(descriptor, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError()
+                files[relative] = stream.read()
+
+        root = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for name in os.listdir(root):
+                if name == "append":
+                    directory = os.open(
+                        name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root
+                    )
+                    try:
+                        for child in os.listdir(directory):
+                            if not re.fullmatch(r"[A-Za-z0-9_.-]+\.md", child):
+                                raise ValueError()
+                            read_file(directory, child, "append/" + child)
+                    finally:
+                        os.close(directory)
+                elif name in {"configuration.json", "notes.md", "system-prompt.md"}:
+                    read_file(root, name, name)
+                else:
+                    raise ValueError()
+        finally:
+            os.close(root)
+        config = json.loads(files["configuration.json"])
+        if not isinstance(config, dict) or set(config) != CONFIG_FIELDS:
+            raise ValueError()
+        flags = config["flags"]
+        if (
+            not isinstance(flags, list)
+            or flags[:2] != ["--mode", "json"]
+            or any(not isinstance(flag, str) or flag not in SAFE_FLAGS for flag in flags[2:])
+            or len(set(flags[2:])) != len(flags[2:])
+        ):
+            raise ValueError()
+        if (
+            not isinstance(config["tools"], list)
+            or not config["tools"]
+            or any(not isinstance(tool, str) or tool not in SAFE_TOOLS for tool in config["tools"])
+            or len(set(config["tools"])) != len(config["tools"])
+        ):
+            raise ValueError()
+        if not isinstance(config["purpose"], str) or not PURPOSE.fullmatch(config["purpose"]):
+            raise ValueError()
+        if not isinstance(config["pi_version"], str) or not re.fullmatch(
+            r"[0-9]+\.[0-9]+\.[0-9]+", config["pi_version"]
+        ):
+            raise ValueError()
+        if not isinstance(config["image"], str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9._/:@-]{0,200}", config["image"]
+        ):
+            raise ValueError()
+        if config["thinking"] not in ("off", "minimal", "low", "medium", "high", "xhigh"):
+            raise ValueError()
+        if not isinstance(config["limits"], dict) or set(config["limits"]) != {
+            "requests",
+            "minutes",
+        }:
+            raise ValueError()
+        for value in (config["context_window"], config["max_tokens"], *config["limits"].values()):
+            if type(value) is not int or value <= 0:
+                raise ValueError()
+        if config["max_tokens"] > config["context_window"]:
+            raise ValueError()
+        system = config["system_prompt"]
+        if system != "default" and (system != "system-prompt.md" or system not in files):
+            raise ValueError()
+        append = config["append"]
+        if not isinstance(append, list) or any(
+            not isinstance(x, str) or x not in files or not x.startswith("append/") for x in append
+        ):
+            raise ValueError()
+        for content in files.values():
+            if "\0" in content.decode("utf-8"):
+                raise ValueError()
+        manifest = {
+            path: hashlib.sha256(content).hexdigest() for path, content in sorted(files.items())
+        }
+        digest = hashlib.sha256(
+            json.dumps(list(manifest.items()), separators=(",", ":"), ensure_ascii=True).encode()
+        ).hexdigest()
+        config["_files"] = files
+        return config, manifest, digest
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        raise Refused("invalid configuration") from None
+
+
+def pi_script(config):
+    # Prompt bytes are shell-quoted literals, never evaluated as shell code.
+    args = [
+        *config["flags"],
+        "--tools",
+        ",".join(config["tools"]),
+        "--provider",
+        "homelab",
+        "--model",
+    ]
+    command = "exec pi " + " ".join(shlex.quote(x) for x in args)
+    command = command.replace(
+        "--no-skills --no-prompt-templates", "--no-skills   --no-prompt-templates"
+    )
+    command = command.replace(" --provider homelab", "   --provider homelab")
+    command += ' "$HOMELAB_TASK_PURPOSE" --thinking ' + shlex.quote(config["thinking"])
+    if config["system_prompt"] != "default":
+        command += " --system-prompt " + shlex.quote(
+            config["_files"][config["system_prompt"]].decode()
+        )
+    if config["append"]:
+        appended = "\n\n".join(config["_files"][path].decode() for path in config["append"])
+        command += " --append-system-prompt " + shlex.quote(appended)
+    return PI[: PI.index("exec pi")] + command + "\n"
+
+
+def image_digest(image):
+    result = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", image],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    digest = result.stdout.strip()
+    if result.returncode or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise Refused("configuration image unavailable")
+    return digest
+
+
 def run(args):
+    global IMAGE
+    config, manifest, config_hash = load_configuration(
+        getattr(args, "configuration", DEFAULT_CONFIGURATION)
+    )
+    explicit = getattr(args, "_explicit", set())
+    if "--purpose" not in explicit and hasattr(args, "_explicit"):
+        args.purpose = config["purpose"]
+    if "--time-limit" not in explicit and hasattr(args, "_explicit"):
+        args.time_limit = config["limits"]["minutes"]
+    if "--max-requests" not in explicit and hasattr(args, "_explicit"):
+        args.max_requests = config["limits"]["requests"]
+    IMAGE = config["image"]
+    digest = image_digest(IMAGE)
+    IMAGE = digest
     copy, uid, gid = working_copy(args.working_copy)
     if args.cli_model is not None:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", args.cli_model):
@@ -833,6 +1025,10 @@ def run(args):
     if not Path(args.ticket).read_bytes().strip():
         raise Refused("ticket is empty")
 
+    if getattr(args, "configuration_commit", None) is not None and not re.fullmatch(
+        r"[0-9a-f]{40,64}", args.configuration_commit
+    ):
+        raise Refused("invalid configuration commit")
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ-") + secrets.token_hex(3)
     RUNS.mkdir(mode=0o700, parents=True, exist_ok=True)
     folder = RUNS / run_id
@@ -841,6 +1037,13 @@ def run(args):
     clear_costs()
     started = time.monotonic()
     record = {
+        "configuration_hash": config_hash,
+        "configuration_manifest": {
+            "files": manifest,
+            "pi_version": config["pi_version"],
+            "image_digest": digest,
+        },
+        "configuration_commit": getattr(args, "configuration_commit", None),
         "run_id": run_id,
         "working_copy": str(copy),
         "purpose": args.purpose,
@@ -864,6 +1067,7 @@ def run(args):
     context = Context(
         f"homelab-task-{run_id.lower()}", folder, (copy, uid, gid), args.time_limit * 60
     )
+    context.configuration = config
     if args.cli_model is not None:
         record["tokens"] = dict.fromkeys(("fresh", "output", "cached", "cache_write"), 0)
         record.pop("cost_usd")
@@ -895,13 +1099,14 @@ def execute(args, record, context, pins):
             *context.owner,
             PACKAGE_NETWORK,
             venv_read_only=False,
-            env=[f"HTTPS_PROXY={PACKAGE_PROXY}", "UV_HTTP_TIMEOUT=120"],
+            env=[f"HTTPS_PROXY={PACKAGE_PROXY}", "UV_HTTP_TIMEOUT=120", "HOMELAB_PI_VERSION"],
         )
         + [PREPARE, "prepare", *pins],
         f"{context.name}-prepare",
         folder / "base-commit",
         folder / "prepare.log",
         context.seconds,
+        env={"HOMELAB_PI_VERSION": context.configuration["pi_version"]},
     )
     base = (folder / "base-commit").read_text().strip()
     (folder / "base-commit").unlink()
@@ -1134,6 +1339,8 @@ def commit(args, record, folder, owner, pins, allowed):
 
 def parse(argv):
     parser = argparse.ArgumentParser(prog="homelab-task-run", description=__doc__.splitlines()[0])
+    parser.add_argument("--configuration", type=Path, default=DEFAULT_CONFIGURATION)
+    parser.add_argument("--configuration-commit", help=argparse.SUPPRESS)
     parser.add_argument("--working-copy", required=True)
     parser.add_argument("--ticket", required=True, help="file holding the ticket")
     parser.add_argument("--check", required=True, help="done-check shell command")
@@ -1158,7 +1365,9 @@ def parse(argv):
     )
     parser.add_argument("--author-name", help="commit author, with --allow")
     parser.add_argument("--author-email", help="commit author, with --allow")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args._explicit = {item.split("=", 1)[0] for item in (sys.argv[1:] if argv is None else argv)}
+    return args
 
 
 def main(argv=None):

@@ -24,6 +24,14 @@ spec = importlib.util.spec_from_loader("homelab_task_run", loader)
 runner = importlib.util.module_from_spec(spec)
 loader.exec_module(runner)
 
+
+@pytest.fixture(autouse=True)
+def configuration_environment(monkeypatch):
+    monkeypatch.setattr(runner, "DEFAULT_CONFIGURATION", ROOT / "configurations/pi/base")
+    monkeypatch.setattr(runner, "IMAGE", "homelab-task:2")
+    monkeypatch.setattr(runner, "image_digest", lambda image: "sha256:" + "a" * 64)
+
+
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "Fixture",
     "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
@@ -586,6 +594,7 @@ def test_only_the_agent_has_a_token_and_only_while_it_runs(repo, tmp_path, monke
     assert values(steps.calls["prepare"]["command"], "--env") == [
         "HTTPS_PROXY=http://package-proxy:8888",
         "UV_HTTP_TIMEOUT=120",
+        "HOMELAB_PI_VERSION",
     ]
     assert values(steps.calls["agent"]["command"], "--network") == ["homelab-tasks"]
     assert values(steps.calls["check"]["command"], "--network") == ["none"]
@@ -1686,6 +1695,11 @@ def test_cli_queue_attempt_reaches_push_with_unmeasured_worker_usage(
 
     events, pushes = [], []
     monkeypatch.setattr(service.subprocess, "run", invoke)
+    monkeypatch.setattr(
+        service,
+        "configuration_snapshot",
+        lambda folder: (ROOT / "configurations/pi/base", "a" * 40),
+    )
     monkeypatch.setattr(service, "record", events.append)
     monkeypatch.setattr(service, "fresh_copy", lambda item: repo)
     monkeypatch.setattr(service, "remove_copy", lambda item: None)
@@ -1734,3 +1748,102 @@ def test_cli_input_directory_owners_are_the_factory_user(repo, tmp_path, monkeyp
     assert (runner.CLI_WORK / "ticket-7-1", 21000, 21000) in owners
     assert (runner.CLI_RUNS / "ticket-7-1", 21000, 21000) in owners
     assert runner.CLI_SECONDS == 1200
+
+
+def test_base_reproduces_original_pi_inputs():
+    config, _, _ = runner.load_configuration(ROOT / "configurations/pi/base")
+    assert runner.pi_script(config) == runner.AGENT
+    expected_models = {
+        "providers": {
+            "homelab": {
+                "baseUrl": "http://litellm:4000/v1",
+                "api": "openai-completions",
+                "apiKey": "$HOMELAB_TASK_TOKEN",
+                "compat": {
+                    "supportsStore": False,
+                    "supportsDeveloperRole": False,
+                    "supportsReasoningEffort": False,
+                    "maxTokensField": "max_tokens",
+                },
+                "models": [
+                    {
+                        "id": "task-worker",
+                        "name": "task-worker",
+                        "reasoning": False,
+                        "input": ["text"],
+                        "contextWindow": 128000,
+                        "maxTokens": 16384,
+                        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                    }
+                ],
+            }
+        }
+    }
+    assert runner.pi_models(
+        config["purpose"], config["context_window"], config["max_tokens"]
+    ) == json.dumps(expected_models)
+    assert (
+        runner.pi_settings()
+        == '{"enableInstallTelemetry": false, "shellCommandPrefix": "unset HOMELAB_TASK_TOKEN"}'
+    )
+
+
+def test_configuration_hash_covers_every_file(tmp_path):
+    import shutil
+
+    folder = tmp_path / "base"
+    shutil.copytree(ROOT / "configurations/pi/base", folder)
+    _, files, before = runner.load_configuration(folder)
+    assert files["notes.md"] == hashlib.sha256((folder / "notes.md").read_bytes()).hexdigest()
+    (folder / "notes.md").write_text("changed\n")
+    assert runner.load_configuration(folder)[2] != before
+
+
+def test_invalid_configuration_is_refused_before_image_or_container(tmp_path, monkeypatch):
+    folder = tmp_path / "bad"
+    folder.mkdir()
+    (folder / "configuration.json").write_text("{}")
+    monkeypatch.setattr(runner, "image_digest", lambda image: pytest.fail("inspected image"))
+    with pytest.raises(runner.Refused, match="invalid configuration"):
+        runner.run(argparse.Namespace(configuration=folder))
+
+
+def test_configuration_controls_model_limits_and_records_provenance(repo, tmp_path, monkeypatch):
+    import shutil
+
+    folder = tmp_path / "configuration"
+    shutil.copytree(ROOT / "configurations/pi/base", folder)
+    data = json.loads((folder / "configuration.json").read_text())
+    data["context_window"], data["max_tokens"] = 64000, 4096
+    (folder / "configuration.json").write_text(json.dumps(data))
+    steps = Steps(tmp_path, monkeypatch, repo)
+    assert (
+        runner.run(arguments(repo, tmp_path, configuration=folder, configuration_commit="b" * 40))
+        == 0
+    )
+    _, record = only_run(steps)
+    model = json.loads(steps.calls["agent"]["env"]["HOMELAB_PI_MODELS"])["providers"]["homelab"][
+        "models"
+    ][0]
+    assert (model["contextWindow"], model["maxTokens"]) == (64000, 4096)
+    assert record["configuration_hash"] == runner.load_configuration(folder)[2]
+    assert record["configuration_commit"] == "b" * 40
+    assert record["configuration_manifest"]["image_digest"] == "sha256:" + "a" * 64
+
+
+def test_configuration_refuses_links_and_unsafe_flags(tmp_path):
+    import shutil
+
+    folder = tmp_path / "config"
+    shutil.copytree(ROOT / "configurations/pi/base", folder)
+    (folder / "notes.md").unlink()
+    (folder / "notes.md").symlink_to(ROOT / "README.md")
+    with pytest.raises(runner.Refused):
+        runner.load_configuration(folder)
+    (folder / "notes.md").unlink()
+    path = folder / "configuration.json"
+    data = json.loads(path.read_text())
+    data["flags"].append("--extension")
+    path.write_text(json.dumps(data))
+    with pytest.raises(runner.Refused):
+        runner.load_configuration(folder)

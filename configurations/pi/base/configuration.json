@@ -1,0 +1,16 @@
+{
+  "pi_version": "1.4.0",
+  "image": "homelab-task:2",
+  "flags": [
+    "--mode", "json", "--no-session", "--no-approve", "--no-extensions",
+    "--no-skills", "--no-prompt-templates", "--no-themes", "--no-mcp", "--offline"
+  ],
+  "tools": ["read", "bash", "edit", "write"],
+  "purpose": "task-worker",
+  "context_window": 128000,
+  "max_tokens": 16384,
+  "thinking": "off",
+  "limits": {"requests": 100, "minutes": 30},
+  "system_prompt": "default",
+  "append": []
+}

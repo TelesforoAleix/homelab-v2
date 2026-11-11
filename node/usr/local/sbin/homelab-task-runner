@@ -10,8 +10,10 @@ template. A push reads a `.git` nothing but the commit step's own git could writ
 URL and refspec, with hooks off. Nothing logged here carries task content.
 """
 
+import argparse
 import fcntl
 import itertools
+import io
 import json
 import logging
 import os
@@ -21,6 +23,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from pathlib import Path
@@ -28,6 +31,8 @@ from pathlib import Path
 VOLUME = Path("/srv/homelab")
 WORK = VOLUME / "task-work"
 RUN = "/usr/local/sbin/homelab-task-run"
+CONFIG_REPOSITORY = "https://github.com/TelesforoAleix/homelab-v2.git"
+CONFIGURATION = "pi/base"
 NOTICE = "/usr/local/sbin/homelab-queue-notice"
 RUN_LOCK = Path("/run/lock/homelab-task-run.lock")
 WORKER = "homelab-worker-1"
@@ -165,8 +170,17 @@ def fresh_copy(task):
     try:
         result = subprocess.run(
             [
-                "git", "clone", "--quiet", "--template=", "--no-tags", "--single-branch",
-                "--branch", task["branch"], "--", clone_url(task["repository"]), str(copy),
+                "git",
+                "clone",
+                "--quiet",
+                "--template=",
+                "--no-tags",
+                "--single-branch",
+                "--branch",
+                task["branch"],
+                "--",
+                clone_url(task["repository"]),
+                str(copy),
             ],
             env=git_env(),
             cwd="/",
@@ -206,6 +220,59 @@ def ticket(task, feedback):
     return text
 
 
+def configuration_snapshot(folder):
+    """Fetch main independently of both the stack and task working copies."""
+    clone = folder / "clone"
+    env = git_env()
+    commands = [
+        [
+            "git",
+            "clone",
+            "--quiet",
+            "--no-checkout",
+            "--template=",
+            "--no-tags",
+            "--single-branch",
+            "--branch",
+            "main",
+            "--",
+            CONFIG_REPOSITORY,
+            str(clone),
+        ],
+        ["git", "-C", str(clone), "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"],
+    ]
+    try:
+        for command in commands:
+            result = subprocess.run(
+                command,
+                env=env,
+                cwd="/",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=GIT_SECONDS,
+                check=True,
+            )
+        commit = result.stdout.decode("ascii").strip()
+        if not COMMIT.fullmatch(commit):
+            raise ValueError()
+        result = subprocess.run(
+            ["git", "-C", str(clone), "archive", commit, "configurations/"],
+            env=env,
+            cwd="/",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=GIT_SECONDS,
+            check=True,
+        )
+        snapshot = folder / "snapshot"
+        snapshot.mkdir()
+        with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
+            archive.extractall(snapshot, filter="data")
+        return snapshot / "configurations" / CONFIGURATION, commit
+    except (OSError, ValueError, UnicodeError, tarfile.TarError, subprocess.SubprocessError):
+        raise Refused("configuration_snapshot_failed") from None
+
+
 def run_ticket(task, copy, purpose, review_purpose, feedback, *, cli=None, number=None):
     """One homelab-task-run; returns its record, whose `ended` says how it went."""
     command = [
@@ -236,6 +303,18 @@ def run_ticket(task, copy, purpose, review_purpose, feedback, *, cli=None, numbe
         command += ["--pin", path]
     for path in task["allowed_files"]:
         command += ["--allow", path]
+    with tempfile.TemporaryDirectory(prefix="homelab-config-") as temporary:
+        configuration, configuration_commit = configuration_snapshot(Path(temporary))
+        command += [
+            "--configuration",
+            str(configuration),
+            "--configuration-commit",
+            configuration_commit,
+        ]
+        return invoke_ticket(task, feedback, command, cli, number)
+
+
+def invoke_ticket(task, feedback, command, cli, number):
     with tempfile.NamedTemporaryFile("w", encoding="utf-8") as stream:
         stream.write(ticket(task, feedback))
         stream.flush()
@@ -250,7 +329,9 @@ def run_ticket(task, copy, purpose, review_purpose, feedback, *, cli=None, numbe
         if cli is not None:
             logger.info(
                 "cli task=%d number=%d ignored_changes=%d",
-                task["id"], number, run.get("cli_ignored_changes", 0),
+                task["id"],
+                number,
+                run.get("cli_ignored_changes", 0),
             )
         return run
     except (IndexError, ValueError):
@@ -281,18 +362,40 @@ def push(task, copy, commit):
         return "push_bad_commit"
     ssh = shlex.join(
         [
-            "ssh", "-F", "/dev/null", "-i", str(key),
-            "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={KNOWN_HOSTS}",
+            "ssh",
+            "-F",
+            "/dev/null",
+            "-i",
+            str(key),
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "IdentityAgent=none",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            f"UserKnownHostsFile={KNOWN_HOSTS}",
         ]
     )
     try:
         result = subprocess.run(
             [
-                "git", "--git-dir", f"{copy}/.git",
-                "-c", "core.hooksPath=/dev/null", "-c", "safe.directory=*",
-                "push", "--porcelain", "--no-verify", "--no-follow-tags",
-                "--", push_url(task["repository"]), f"{commit}:refs/heads/{task['branch']}",
+                "git",
+                "--git-dir",
+                f"{copy}/.git",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "safe.directory=*",
+                "push",
+                "--porcelain",
+                "--no-verify",
+                "--no-follow-tags",
+                "--",
+                push_url(task["repository"]),
+                f"{commit}:refs/heads/{task['branch']}",
             ],
             env=git_env(GIT_SSH_COMMAND=ssh),
             cwd="/",
@@ -527,6 +630,13 @@ def turn(state):
 
 
 def main():
+    global CONFIGURATION
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--configuration", default="pi/base", help="path below configurations/")
+    args = parser.parse_args()
+    if not re.fullmatch(r"pi/[A-Za-z0-9][A-Za-z0-9._-]*", args.configuration):
+        parser.error("invalid configuration path")
+    CONFIGURATION = args.configuration
     if os.geteuid() != 0:
         print("homelab-task-runner: run as the service", file=sys.stderr)
         return 2
