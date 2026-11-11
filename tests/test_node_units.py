@@ -19,6 +19,7 @@ ALERT_UNITS = {
     "bot": "homelab-telegram-bot.service",
     "watchdog": "homelab-watchdog.service",
     "homelab": "homelab.service",
+    "dump": "homelab-dump.service",
 }
 
 
@@ -168,7 +169,7 @@ def test_notifier_accepts_only_current_alert_aliases(alias: str, tmp_path: Path)
         assert "unknown alert alias" not in result.stderr
     else:
         assert not journal_unit.exists()
-        expected = f"unknown alert alias: '{alias}' (expected bot, watchdog or homelab)"
+        expected = f"unknown alert alias: '{alias}' (expected bot, watchdog, homelab or dump)"
         assert expected in result.stderr
 
 
@@ -196,3 +197,15 @@ def test_units_wanted_by_data_target_follow_volume_contract(path: Path):
             directory = value.lstrip("-+").split(":", 1)[0].rstrip("/")
             assert directory != "/srv/homelab"
             assert not directory.startswith("/srv/homelab/")
+
+
+def test_database_dump_units():
+    service = ConfigParser(interpolation=None)
+    service.read(UNITS / "homelab-dump.service")
+    assert service.get("Unit", "OnFailure") == "homelab-notify@dump.service"
+    assert service.get("Service", "ExecStart") == "/usr/local/sbin/homelab-dump"
+    timer = ConfigParser(interpolation=None)
+    timer.read(UNITS / "homelab-dump.timer")
+    assert timer.get("Timer", "OnCalendar") == "daily"
+    assert timer.getboolean("Timer", "Persistent")
+    assert timer.get("Timer", "Unit") == "homelab-dump.service"
