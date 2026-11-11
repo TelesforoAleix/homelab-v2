@@ -791,7 +791,11 @@ def test_the_service_is_a_host_service_on_the_volume():
 def test_only_the_proxy_has_a_way_out_of_the_package_network():
     compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
     networks = compose["networks"]
-    assert networks["packages"] == {"name": "homelab-packages", "internal": True}
+    assert networks["packages"] == {
+        "name": "homelab-packages",
+        "internal": True,
+        "ipam": {"config": [{"subnet": "172.26.0.0/16"}]},
+    }
     assert "internal" not in networks["package-egress"]
     members = {
         name: service.get("networks", [])
