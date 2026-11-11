@@ -1,0 +1,8 @@
+{"type":"message_end","message":{"role":"assistant","stopReason":"toolUse","usage":{"input":1,"output":1,"cacheRead":1,"cacheWrite":1}}}
+{"type":"turn_end"}
+{"type":"agent_end","messages":[],"willRetry":false}
+{"type":"compaction_start","reason":"threshold"}
+{"type":"compaction_end","reason":"threshold","result":{},"aborted":false,"willRetry":false}
+{"type":"message_end","message":{"role":"assistant","stopReason":"stop","usage":{"input":3,"output":3,"cacheRead":3,"cacheWrite":3}}}
+{"type":"turn_end"}
+{"type":"agent_settled","aborted":false}

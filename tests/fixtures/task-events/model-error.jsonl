@@ -1,0 +1,4 @@
+{"type":"message_end","message":{"role":"assistant","stopReason":"error","usage":{"input":2,"output":2,"cacheRead":2,"cacheWrite":2}}}
+{"type":"turn_end"}
+{"type":"agent_end","messages":[],"willRetry":false}
+{"type":"agent_settled","aborted":false}

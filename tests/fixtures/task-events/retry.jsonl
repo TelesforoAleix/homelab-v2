@@ -1,0 +1,7 @@
+{"type":"message_end","message":{"role":"assistant","stopReason":"error","usage":{"input":2,"output":2,"cacheRead":2,"cacheWrite":2}}}
+{"type":"agent_end","messages":[],"willRetry":true}
+{"type":"auto_retry_start","attempt":1,"maxAttempts":2,"delayMs":10,"errorMessage":"unavailable"}
+{"type":"auto_retry_end","success":true,"attempt":1}
+{"type":"message_end","message":{"role":"assistant","stopReason":"stop","usage":{"input":4,"output":4,"cacheRead":4,"cacheWrite":4}}}
+{"type":"turn_end"}
+{"type":"agent_settled","aborted":false}

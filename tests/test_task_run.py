@@ -363,6 +363,7 @@ def events(path, *stops):
         message = {**ASSISTANT, "stopReason": stop}
         lines.append(json.dumps({"type": "message_end", "message": message}))
         lines.append(json.dumps({"type": "turn_end", "message": message, "toolResults": []}))
+    lines.append(json.dumps({"type": "agent_settled", "aborted": False}))
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -373,6 +374,9 @@ def test_events_give_steps_tokens_and_the_last_stop(tmp_path):
         "tokens": {"fresh": 200, "output": 14, "cached": 80, "cache_write": 0},
         "last_stop": "stop",
         "budget_spent": False,
+        "compactions": 0,
+        "retries": 0,
+        "end_event": {"type": "agent_settled", "aborted": False},
     }
 
 
@@ -444,6 +448,7 @@ def reply(text, stop="stop", blocks=None):
         {"type": "turn_end", "message": first},
         {"type": "message_end", "message": last},
         {"type": "turn_end", "message": last},
+        {"type": "agent_settled", "aborted": False},
     ]
 
 
@@ -619,7 +624,7 @@ def test_a_token_the_agent_printed_is_scrubbed(repo, tmp_path, monkeypatch, leak
         ((0, "exited"), ("stop",), (1, "exited"), "check_failed", 1),
         ((0, "exited"), ("stop",), (None, "timeout"), "check_timeout", 1),
         # Pi exits 0 after exhausting its retries; the stop reason is what says it failed.
-        ((0, "exited"), ("error", "error"), (0, "exited"), "agent_failed", 1),
+        ((0, "exited"), ("error", "error"), (0, "exited"), "model_error", 1),
         ((1, "exited"), ("stop",), (0, "exited"), "agent_failed", 1),
         ((None, "timeout"), ("toolUse",), (0, "exited"), "agent_timeout", 1),
         ((None, "output_limit"), ("toolUse",), (0, "exited"), "agent_output_limit", 1),
@@ -764,7 +769,7 @@ def test_a_spent_budget_is_its_own_ending(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "capture", spent)
     assert runner.run(arguments(repo, tmp_path)) == 1
     _, record = only_run(steps)
-    assert record["ended"] == "agent_budget_spent"
+    assert record["ended"] == "model_error"
     assert "commit" not in steps.calls
 
 
@@ -1167,7 +1172,7 @@ def test_a_verdict_may_sit_in_a_later_text_block(repo, tmp_path, monkeypatch):
         {"type": "text", "text": "Fine."},
         {"type": "text", "text": "VERDICT: PASS  "},
     ]
-    steps.reviews = [bad(assistant(blocks))]
+    steps.reviews = [bad(assistant(blocks), {"type": "agent_settled", "aborted": False})]
     assert runner.run(reviewing(repo, tmp_path)) == 0
 
 
@@ -1288,7 +1293,7 @@ def test_a_fix_with_no_budget_left_ends_without_another_agent(repo, tmp_path, mo
 @pytest.mark.parametrize(
     "agent2,stops,check2,ended,log",
     [
-        ((0, "exited"), ("error",), (0, "exited"), "agent_failed", "check-2.log"),
+        ((0, "exited"), ("error",), (0, "exited"), "model_error", "check-2.log"),
         ((None, "timeout"), ("toolUse",), (0, "exited"), "agent_timeout", "check-2.log"),
         ((0, "exited"), ("stop",), (1, "exited"), "check_failed", "check-2.log"),
         ((0, "exited"), ("stop",), (None, "timeout"), "check_timeout", "check-2.log"),
@@ -1847,3 +1852,44 @@ def test_configuration_refuses_links_and_unsafe_flags(tmp_path):
     path.write_text(json.dumps(data))
     with pytest.raises(runner.Refused):
         runner.load_configuration(folder)
+
+
+@pytest.mark.parametrize(
+    "name,compactions,retries,last_stop,total",
+    [
+        ("clean", 0, 0, "stop", 1),
+        ("model-error", 0, 0, "error", 2),
+        ("compaction", 1, 0, "stop", 4),
+        ("retry", 0, 1, "stop", 6),
+    ],
+)
+def test_recorded_event_streams(name, compactions, retries, last_stop, total):
+    summary = runner.summarize_events(ROOT / "tests/fixtures/task-events" / f"{name}.jsonl")
+    assert summary["compactions"] == compactions
+    assert summary["retries"] == retries
+    assert summary["last_stop"] == last_stop
+    assert summary["end_event"] == {"type": "agent_settled", "aborted": False}
+    assert summary["tokens"] == dict.fromkeys(("fresh", "output", "cached", "cache_write"), total)
+
+
+def test_end_event_is_invalidated_by_continuation(tmp_path):
+    path = tmp_path / "events"
+    path.write_text(
+        "\n".join(
+            json.dumps(e)
+            for e in [
+                {"type": "agent_settled", "aborted": False},
+                {"type": "summarization_retry_scheduled"},
+                {"type": "summarization_retry_attempt_start"},
+            ]
+        )
+    )
+    summary = runner.summarize_events(path)
+    assert summary["end_event"] is None
+    assert summary["retries"] == 1
+
+
+def test_compaction_result_usage_is_added_to_assistant_usage():
+    summary = runner.summarize_events(ROOT / "tests/fixtures/task-events/compaction-usage.jsonl")
+    assert summary["compactions"] == 1
+    assert summary["tokens"] == {"fresh": 14, "output": 24, "cached": 34, "cache_write": 44}
