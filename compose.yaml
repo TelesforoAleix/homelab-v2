@@ -190,9 +190,6 @@ networks:
           ip_range: 172.18.1.0/24
   models:
     name: homelab-models
-    ipam:
-      config:
-        - subnet: 172.19.0.0/16
   # LiteLLM and one task container at a time; nothing else, and no route out.
   tasks:
     name: homelab-tasks

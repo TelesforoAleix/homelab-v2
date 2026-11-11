@@ -113,13 +113,15 @@ def test_postgres_has_the_only_fixed_network_address():
     ]
     expected_subnets = {
         "default": "172.18.0.0/16",
-        "models": "172.19.0.0/16",
         "tasks": "10.253.87.0/24",
         "packages": "172.26.0.0/16",
         "package-egress": "172.25.0.0/16",
     }
-    subnets = []
+    assert compose["networks"]["models"] == {"name": "homelab-models"}
+    subnets = [ip_network("172.19.0.0/16")]
     for name, network in compose["networks"].items():
+        if name == "models":
+            continue
         configs = network["ipam"]["config"]
         assert configs
         assert [config["subnet"] for config in configs] == [expected_subnets[name]]
@@ -153,10 +155,7 @@ def test_proxy_is_the_only_network_member_and_gateway_secret_holder():
     assert proxy["logging"] == {"driver": "journald"}
     assert proxy["ports"] == ["127.0.0.1:4000:4000"]
     assert proxy["networks"] == ["default", "models", "tasks"]
-    assert compose["networks"]["models"] == {
-        "name": "homelab-models",
-        "ipam": {"config": [{"subnet": "172.19.0.0/16"}]},
-    }
+    assert compose["networks"]["models"] == {"name": "homelab-models"}
     assert proxy["secrets"] == ["gateway_api_key", "image_gateway_api_key"]
     assert compose["secrets"]["image_gateway_api_key"] == {
         "file": "./secrets/image_gateway_api_key"

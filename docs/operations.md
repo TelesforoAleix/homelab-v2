@@ -34,7 +34,9 @@ approved task; the exceptions requiring approval are in `AGENTS.md`. Deploy by r
 `git pull --ff-only` by hand in `/srv/homelab/homelab-v2`, then
 `sudo systemctl restart homelab.service` to build images.
 Host-file installation is explicit; restarting the stack does not install those files.
-Postgres has the fixed address `172.18.0.2` on the default network; host services may rely on it, and the stack's networks have fixed subnets.
+Postgres has the fixed address `172.18.0.2` on the default network; host services may rely on it,
+and the stack's networks have fixed subnets except the shared `homelab-models` network,
+which retains its existing `172.19.0.0/16` subnet.
 
 The Telegram bot is a host service using python-telegram-bot, running as `homelab-bot`.
 It uses `/opt/homelab-telegram-bot/.venv/bin/python` with hash-pinned requirements, keeps
