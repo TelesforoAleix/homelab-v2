@@ -17,7 +17,6 @@ OnFailure=homelab-notify@homelab.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStartPre=-/usr/bin/git -C /srv/homelab/homelab-v2 pull --ff-only
 ExecStart=/usr/bin/docker compose -f /srv/homelab/homelab-v2/compose.yaml up -d --build --remove-orphans
 ExecStop=/usr/bin/docker compose -f /srv/homelab/homelab-v2/compose.yaml down
 TimeoutStartSec=0

@@ -98,6 +98,14 @@ def test_rebuild_enables_every_installable_recorded_unit_and_no_trigger_only_uni
             assert path.name not in enabled
 
 
+def test_no_unit_runs_git():
+    for path in sorted(path for path in UNITS.rglob("*") if path.is_file()):
+        active_lines = (
+            line for line in path.read_text().splitlines() if not line.lstrip().startswith("#")
+        )
+        assert not re.search(r"\bgit\b", "\n".join(active_lines)), path.relative_to(ROOT)
+
+
 def test_firewall_restricts_both_physical_interfaces_for_ipv4_and_ipv6():
     for name in ["after.rules", "after6.rules"]:
         rules = (ROOT / "node/etc/ufw" / name).read_text()

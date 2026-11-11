@@ -14,8 +14,8 @@ Read `README.md` and `ARCHITECTURE.md` first; `DECISIONS.md` when a choice looks
   images; loopback only; do not log content by default.
 - `uv run pytest` before every commit.
 - The node is reached as `ssh homelab-agent`, which has root through sudo; `ssh homelab` is the
-  owner's session. Deployment is `sudo systemctl restart homelab.service`; the unit pulls
-  `main` and builds images.
+  owner's session. Deploy by running `git pull --ff-only` by hand in `/srv/homelab/homelab-v2`, then
+  `sudo systemctl restart homelab.service` to build images.
 - Proceed without asking unless your plan includes a step that cannot be undone or carries a
   real security risk: deleting data or volumes, wiping or repartitioning a disk, touching a
   secret or the volume's encryption, a change that could leave the node unreachable, rewriting
