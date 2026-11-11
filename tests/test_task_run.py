@@ -1511,7 +1511,7 @@ def fake_factory(tmp_path, monkeypatch):
     seen = tmp_path / "cli-seen.jsonl"
 
     def install(body):
-        command = binary / "factory-cli"
+        command = binary / "homelab-fence"
         command.write_text(
             f"#!{sys.executable}\n"
             "import json, os, sys, time\nfrom pathlib import Path\n"

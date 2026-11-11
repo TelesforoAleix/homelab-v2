@@ -764,7 +764,7 @@ def cli_worker(args, context, pins, ticket, record):
         finally:
             os.close(original)
         command = [
-            "factory-cli",
+            "homelab-fence",
             "run",
             "--tool",
             "codex",
@@ -1392,7 +1392,7 @@ def parse(argv):
     parser.add_argument("--check", required=True, help="done-check shell command")
     parser.add_argument("--pin", action="append", default=[], help="path restored before the check")
     parser.add_argument("--purpose", default="task-worker")
-    parser.add_argument("--cli-model", help="replace the Pi worker with a factory-cli Codex turn")
+    parser.add_argument("--cli-model", help="replace the Pi worker with a homelab-fence Codex turn")
     parser.add_argument(
         "--cli-effort",
         choices=["none", "minimal", "low", "medium", "high", "xhigh"],

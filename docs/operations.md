@@ -1601,7 +1601,7 @@ The model and effort come from the role table; supported effort values are `none
 route is always refused for the reviewer. The seeded worker route stays on LiteLLM: selecting
 CLI execution is an operator update of `homelab_roles`, not a deployment default.
 
-A CLI route replaces only the worker turn, through the installed `factory-cli run --tool codex`.
+A CLI route replaces only the worker turn, through the installed `homelab-fence run --tool codex`.
 Prepare, the done check, LiteLLM ticket review, the commit, push and retry rules stay the same.
 The CLI gets the same ticket text, including earlier check or review feedback; a review Fix
 runs another CLI turn with the notes against the current task tree. Each CLI turn has a fixed
@@ -1611,7 +1611,7 @@ without a retry on that route. A failed check still retries once from a fresh cl
 
 The CLI sees a plain copy at `/srv/factory/work/ticket-<task id>-<attempt>`, with no `.git`
 anywhere in it and no prepared `.venv`. Its run folder is the same name under
-`/srv/factory/runs`. Both folders are `21000:21000`, mode `0700`; the existing factory fence
+`/srv/factory/runs`. Both folders are `21000:21000`, mode `0700`; the platform fence
 owns the sealed container, tool login and allow-list proxy. The runner passes only those two
 host folders, the configured model and effort, and the ticket. It passes no gateway token,
 key or inherited credentials. It discards CLI stdout and stderr.
@@ -1862,6 +1862,9 @@ SSH accounts work through Tailscale.
 | `node/opt/homelab-context/` | `0755` | `0644` |
 | `node/opt/homelab-task/` | `0755` | `0644` |
 | `node/opt/homelab-package-proxy/` | `0755` | `0644` |
+| `node/opt/homelab-fence/` | `0755` | `0644` |
+| `node/opt/homelab-fence/cli/` | `0755` | `0644` |
+| `node/opt/homelab-fence/proxy/` | `0755` | `0644` |
 | `node/etc/homelab-task/` | `0755` | `0644` |
 
    ```bash
@@ -1887,7 +1890,7 @@ SSH accounts work through Tailscale.
    sudo install -m 0644 -o root -g root node/opt/homelab-task/Dockerfile /opt/homelab-task/Dockerfile
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-runner /usr/local/sbin/homelab-task-runner
    # Both scripts must be updated together for CLI worker routes. The task image is unchanged.
-   # CLI routes need the separately installed factory-cli fence and its Codex login; do not
+   # CLI routes need the installed homelab-fence command and its Codex login; do not
    # copy that login or credentials into this tree or the task image. Its existing work/runs
    # parents must be available under /srv/factory; turn folders are created 21000:21000, 0700.
    # The worker default remains LiteLLM; a reviewer route must remain LiteLLM too.
@@ -2313,6 +2316,41 @@ SSH accounts work through Tailscale.
     sudo data-volume.sh unlock
     curl -fsS http://127.0.0.1:8000/health
     ```
+
+### Install the CLI fence
+
+After merge and the owner's go, install from the committed tree on the node. Keep the old
+`factory-cli` command, images, proxy and networks installed for rollback. The new fence keeps
+uid/gid 21000 (proxy 21001), the existing `/srv/factory/{work,runs,logins}` roots and logins;
+no credentials are copied or changed. Its internal and egress networks use `172.29.0.0/16`
+and `172.30.0.0/16`, with no published ports.
+
+Show the installed-file diffs before copying (a missing destination is a new file), then install
+root:root directories at 0755, configuration/Dockerfiles at 0644 and scripts at 0755.
+Also install `homelab-task-run` with its install command above after reviewing its diff:
+
+```bash
+sudo diff -ruN /opt/homelab-fence node/opt/homelab-fence
+sudo diff -uN /usr/local/sbin/homelab-fence node/usr/local/sbin/homelab-fence
+sudo diff -uN /usr/local/sbin/homelab-check-fence node/usr/local/sbin/homelab-check-fence
+sudo diff -u /usr/local/sbin/homelab-task-run node/usr/local/sbin/homelab-task-run
+# Review the diffs above before continuing; diff exits 1 when files differ.
+sudo install -d -m 0755 -o root -g root /opt/homelab-fence /opt/homelab-fence/cli /opt/homelab-fence/proxy
+sudo install -m 0644 -o root -g root node/opt/homelab-fence/compose.yaml /opt/homelab-fence/
+sudo install -m 0644 -o root -g root node/opt/homelab-fence/cli/Dockerfile /opt/homelab-fence/cli/
+sudo install -m 0644 -o root -g root node/opt/homelab-fence/proxy/* /opt/homelab-fence/proxy/
+sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-fence node/usr/local/sbin/homelab-check-fence /usr/local/sbin/
+sudo docker compose -f /opt/homelab-fence/compose.yaml config --quiet
+sudo docker build -t homelab-fence:1 /opt/homelab-fence/cli
+sudo docker compose -f /opt/homelab-fence/compose.yaml build cli-proxy
+sudo docker compose -f /opt/homelab-fence/compose.yaml up -d cli-proxy
+sudo homelab-check-fence
+```
+
+Require all four PASS lines, then run one CLI-route task through `homelab-fence` using the
+existing route and login, and check its done check, review and commit. The worker default
+remains LiteLLM. For rollback, restore the previous `homelab-task-run` command from its
+commit so it calls the still-installed `factory-cli`; leave the existing roots and logins alone.
 
 ### Bulk disk and storage migration
 
