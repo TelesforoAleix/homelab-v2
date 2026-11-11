@@ -100,6 +100,20 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
     assert not (ROOT / "config/routes.yaml").exists()
 
 
+def test_postgres_has_the_only_fixed_network_address():
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
+    assert compose["networks"]["default"]["ipam"]["config"] == [
+        {"subnet": "172.18.0.0/16", "gateway": "172.18.0.1"}
+    ]
+    services = compose["services"]
+    assert services["postgres"]["networks"] == {"default": {"ipv4_address": "172.18.0.2"}}
+    for name, service in services.items():
+        networks = service.get("networks", {})
+        if name != "postgres" and isinstance(networks, dict):
+            for settings in networks.values():
+                assert not settings or not {"ipv4_address", "ipv6_address"} & settings.keys()
+
+
 def test_proxy_is_the_only_network_member_and_gateway_secret_holder():
     compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
     services = compose["services"]
