@@ -765,6 +765,8 @@ Never put the address or tailnet name in git, logs or PRs. Empty or unset values
 Compose's closed loopback default, so LiteLLM starts independently of the Mac. Both purposes
 keep the 3-second connect limit and 300-second request limit, without retries, fallback or
 stopped-Mac alerts. Cold model loading is included in the request limit.
+The Mac profile agent publishes its offer through the router; the worker reads it every minute.
+Run `homelab providers` to see the offer and its freshness.
 
 ## Mac bulk embedding serving
 
