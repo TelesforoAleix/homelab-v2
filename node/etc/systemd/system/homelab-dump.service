@@ -2,7 +2,7 @@
 Description=Dump Home Lab database
 ConditionPathIsMountPoint=/srv/homelab
 After=homelab.service
-OnFailure=homelab-notify@%n.service
+OnFailure=homelab-notify@dump.service
 
 [Service]
 Type=oneshot

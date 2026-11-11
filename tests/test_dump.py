@@ -1,8 +1,8 @@
 import importlib.machinery
 import importlib.util
 import os
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -98,6 +98,8 @@ def test_restore_reports_first_count_difference(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(check, 'query', lambda *args: next(values))
     path = tmp_path / 'dump'
     path.write_bytes(b'dump')
-    monkeypatch.setattr(check.subprocess, 'run', lambda *args, **kwargs: subprocess.CompletedProcess(args, 0))
+    monkeypatch.setattr(
+        check.subprocess, 'run', lambda *args, **kwargs: subprocess.CompletedProcess(args, 0)
+    )
     assert check.check(path) == 1
     assert capsys.readouterr().out == 'count differs: "public"."items" live=4 restored=3\n'
