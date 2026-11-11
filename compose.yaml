@@ -187,8 +187,12 @@ networks:
       config:
         - subnet: 172.18.0.0/16
           gateway: 172.18.0.1
+          ip_range: 172.18.1.0/24
   models:
     name: homelab-models
+    ipam:
+      config:
+        - subnet: 172.19.0.0/16
   # LiteLLM and one task container at a time; nothing else, and no route out.
   tasks:
     name: homelab-tasks
@@ -200,6 +204,12 @@ networks:
   packages:
     name: homelab-packages
     internal: true
+    ipam:
+      config:
+        - subnet: 172.26.0.0/16
   # The proxy's own way out, kept apart from the stack's default network.
   package-egress:
     name: homelab-package-egress
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16

@@ -1,3 +1,5 @@
+from ipaddress import ip_address, ip_network
+from itertools import combinations
 from pathlib import Path
 
 import yaml
@@ -103,8 +105,32 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
 def test_postgres_has_the_only_fixed_network_address():
     compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
     assert compose["networks"]["default"]["ipam"]["config"] == [
-        {"subnet": "172.18.0.0/16", "gateway": "172.18.0.1"}
+        {
+            "subnet": "172.18.0.0/16",
+            "gateway": "172.18.0.1",
+            "ip_range": "172.18.1.0/24",
+        }
     ]
+    expected_subnets = {
+        "default": "172.18.0.0/16",
+        "models": "172.19.0.0/16",
+        "tasks": "10.253.87.0/24",
+        "packages": "172.26.0.0/16",
+        "package-egress": "172.25.0.0/16",
+    }
+    subnets = []
+    for name, network in compose["networks"].items():
+        configs = network["ipam"]["config"]
+        assert configs
+        assert [config["subnet"] for config in configs] == [expected_subnets[name]]
+        subnets.extend(ip_network(config["subnet"]) for config in configs)
+    for first, second in combinations(subnets, 2):
+        assert not first.overlaps(second)
+
+    default = compose["networks"]["default"]["ipam"]["config"][0]
+    dynamic_range = ip_network(default["ip_range"])
+    assert dynamic_range.subnet_of(ip_network(default["subnet"]))
+    assert ip_address("172.18.0.2") not in dynamic_range
     services = compose["services"]
     assert services["postgres"]["networks"] == {"default": {"ipv4_address": "172.18.0.2"}}
     for name, service in services.items():
@@ -127,7 +153,10 @@ def test_proxy_is_the_only_network_member_and_gateway_secret_holder():
     assert proxy["logging"] == {"driver": "journald"}
     assert proxy["ports"] == ["127.0.0.1:4000:4000"]
     assert proxy["networks"] == ["default", "models", "tasks"]
-    assert compose["networks"]["models"] == {"name": "homelab-models"}
+    assert compose["networks"]["models"] == {
+        "name": "homelab-models",
+        "ipam": {"config": [{"subnet": "172.19.0.0/16"}]},
+    }
     assert proxy["secrets"] == ["gateway_api_key", "image_gateway_api_key"]
     assert compose["secrets"]["image_gateway_api_key"] == {
         "file": "./secrets/image_gateway_api_key"
