@@ -516,6 +516,8 @@ def summarize_events(path):
     steps = 0
     last_stop = None
     budget_spent = False
+    compactions = retries = 0
+    end_event = None
     tokens = {"fresh": 0, "output": 0, "cached": 0, "cache_write": 0}
     with open(path, "rb") as stream:
         for line in stream:
@@ -525,6 +527,22 @@ def summarize_events(path):
                 message = event.get("message") or {}
             except (ValueError, KeyError, TypeError, AttributeError):
                 continue
+            if kind in {
+                "agent_start",
+                "compaction_start",
+                "auto_retry_start",
+                "summarization_retry_scheduled",
+                "summarization_retry_attempt_start",
+            }:
+                end_event = None
+            if kind == "agent_end":
+                end_event = {"type": kind, "willRetry": event.get("willRetry")}
+            elif kind == "agent_settled":
+                end_event = {"type": kind, "aborted": event.get("aborted")}
+            if kind == "compaction_start":
+                compactions += 1
+            if kind in {"auto_retry_start", "summarization_retry_attempt_start"}:
+                retries += 1
             if kind == "turn_end":
                 steps += 1
             if kind == "message_end" and message.get("role") == "assistant":
@@ -535,7 +553,15 @@ def summarize_events(path):
                 tokens["output"] += usage.get("output", 0)
                 tokens["cached"] += usage.get("cacheRead", 0)
                 tokens["cache_write"] += usage.get("cacheWrite", 0)
-    return {"steps": steps, "tokens": tokens, "last_stop": last_stop, "budget_spent": budget_spent}
+    return {
+        "steps": steps,
+        "tokens": tokens,
+        "last_stop": last_stop,
+        "budget_spent": budget_spent,
+        "compactions": compactions,
+        "retries": retries,
+        "end_event": end_event,
+    }
 
 
 def scrub(paths, token):
@@ -619,6 +645,9 @@ def ask_model(context, step, purpose, max_requests, script, prompt, files, *, re
 def add_usage(record, summary):
     """The worker's totals over all its runs; the last reply's stop is the last run's."""
     record["steps"] += summary["steps"]
+    record["compactions"] += summary["compactions"]
+    record["retries"] += summary["retries"]
+    record["end_event"] = summary["end_event"]
     record["last_stop"] = summary["last_stop"]
     record["budget_spent"] = summary["budget_spent"]
     total = record["tokens"] or dict.fromkeys(summary["tokens"], 0)
@@ -1057,6 +1086,9 @@ def run(args):
         "tokens": None,
         "cost_usd": None,
         "last_stop": None,
+        "compactions": 0,
+        "retries": 0,
+        "end_event": None,
         "check_exit_code": None,
         "check_log": "check.log",
         "reviews": [],
@@ -1141,9 +1173,15 @@ def work_round(args, record, context, pins, number, ticket, budget):
         add_usage(record, summary)
         if stopped != "exited":
             agent_ended = f"agent_{stopped}"
+        elif summary["last_stop"] == "error":
+            agent_ended = "model_error"
         elif summary["budget_spent"]:
             agent_ended = "agent_budget_spent"
-        elif code != 0 or summary["last_stop"] != "stop":
+        elif (
+            code != 0
+            or summary["last_stop"] != "stop"
+            or summary["end_event"] != {"type": "agent_settled", "aborted": False}
+        ):
             agent_ended = "agent_failed"
 
     # This container also writes the diff, so it runs however the agent ended.
@@ -1280,7 +1318,12 @@ def review(args, record, context, pins, allowed, number):
         prompt.unlink(missing_ok=True)
     summary = summarize_events(folder / f"review{tail}.jsonl")
     verdict = None
-    if stopped == "exited" and code == 0:
+    if (
+        stopped == "exited"
+        and code == 0
+        and summary["last_stop"] == "stop"
+        and summary["end_event"] == {"type": "agent_settled", "aborted": False}
+    ):
         verdict = read_verdict(folder / f"review{tail}.jsonl")
     record["reviews"].append(
         {

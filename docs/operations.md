@@ -1548,7 +1548,7 @@ agent's changes, with the pins restored, so use a fresh copy for the next run.
 
 | File | Holds |
 |---|---|
-| `run.json` | Base commit, purpose, pins, Pi turns as `steps`, `tokens` (`fresh`, `output`, `cached`, `cache_write`, as Pi reports them; both sum the worker's runs), seconds, `check_exit_code`, `check_log` (the last check's log), `ended`; with a review also `reviews` (per review: `result` `pass`, `fix` or `failed`, `steps`, `tokens`, `seconds`) and `review_notes` (the last Fix's) |
+| `run.json` | Base commit, purpose, pins, Pi turns as `steps`, `tokens` (`fresh`, `output`, `cached`, `cache_write`, as Pi reports them; both sum the worker's runs), `compactions` (starts), `retries` (automatic retry starts and summarization retry attempts), `end_event` (the last Pi end event and its retry or abort flag), `last_stop` (the last assistant stop reason), seconds, `check_exit_code`, `check_log` (the last check's log), `ended` (`model_error` for an assistant error); with a review also `reviews` (per review: `result` `pass`, `fix` or `failed`, `steps`, `tokens`, `seconds`) and `review_notes` (the last Fix's) |
 | `diff.patch` | Everything changed from the base commit except `.venv`, before pins were restored |
 | `check.log` | Output of the check |
 | `events.jsonl`, `agent.log` | Pi's JSON event log and its stderr |
