@@ -12,8 +12,8 @@ URL and refspec, with hooks off. Nothing logged here carries task content.
 
 import argparse
 import fcntl
-import itertools
 import io
+import itertools
 import json
 import logging
 import os
@@ -26,6 +26,8 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 VOLUME = Path("/srv/homelab")
@@ -38,6 +40,8 @@ RUN_LOCK = Path("/run/lock/homelab-task-run.lock")
 WORKER = "homelab-worker-1"
 TASK_USER = "homelab-task"
 KEYS = Path("/root/.ssh")
+DENY_LIST = Path("/etc/homelab/deny-list")
+DENY_CANARY = "homelab-deny-canary-7f3e"
 KNOWN_HOSTS = "/etc/homelab-task/github_known_hosts"
 POLL_SECONDS = 30
 STORE_SECONDS = 120
@@ -349,6 +353,110 @@ def check_output_of(run):
         return stream.read().decode(errors="replace")
 
 
+def repository_is_private(repository):
+    """Only an explicit GitHub private response permits skipping the check."""
+    try:
+        request = urllib.request.Request(
+            f"https://api.github.com/repos/{repository}",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "homelab-task-runner"},
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.load(response)
+        return isinstance(data, dict) and data.get("private") is True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def private_content_check(task, copy, commit):
+    """Inspect each outgoing commit without emitting the inspected content."""
+    if repository_is_private(task["repository"]):
+        return None
+    try:
+        lines = DENY_LIST.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return "push_deny_list_unreadable"
+    denied = [
+        line.casefold() for line in lines if line.strip() and not line.lstrip().startswith("#")
+    ]
+    denied.append(DENY_CANARY)
+
+    def hit(value):
+        return any(item in value.casefold() for item in denied)
+
+    if hit(task["branch"]):
+        return "push_private_content: branch name"
+
+    def git(*args):
+        result = subprocess.run(
+            ["git", "--git-dir", str(copy / ".git"), "-c", "safe.directory=*", *args],
+            cwd="/",
+            env=git_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=GIT_SECONDS,
+            check=True,
+        )
+        return result.stdout
+
+    try:
+        base = f"refs/remotes/origin/{task['branch']}"
+        git("merge-base", "--is-ancestor", base, commit)
+        commits = git("rev-list", f"{base}..{commit}").decode("ascii").splitlines()
+        for revision in commits:
+            message = git("show", "-s", "--format=%B", revision).decode("utf-8", "replace")
+            if hit(message):
+                return "push_private_content: commit message"
+            parents = git("rev-list", "--parents", "-n", "1", revision).decode("ascii").split()[1:]
+            for parent in parents:
+                names = git(
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--no-renames",
+                    "--name-only",
+                    "-z",
+                    parent,
+                    revision,
+                    "--",
+                ).split(b"\0")
+                for name in filter(None, names):
+                    path = os.fsdecode(name)
+                    patch = git(
+                        "diff",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--no-renames",
+                        "--text",
+                        "--unified=0",
+                        parent,
+                        revision,
+                        "--",
+                        ":(literal)" + path,
+                    ).decode("utf-8", "replace")
+                    number = None
+                    for line in patch.split("\n"):
+                        match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+                        if match:
+                            number = int(match[1])
+                        elif number is not None and line.startswith("+"):
+                            if hit(line[1:]):
+                                safe_path = "[redacted]" if hit(path) else path
+                                safe_path = safe_path.encode("unicode_escape").decode("ascii")
+                                return f"push_private_content: {safe_path}:{number}"
+                            number += 1
+                        elif number is not None and line.startswith(" "):
+                            number += 1
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError):
+        return "push_content_check_failed"
+    return None
+
+
+def log_reason(reason):
+    return (
+        "push_private_content" if reason and reason.startswith("push_private_content:") else reason
+    )
+
+
 def push(task, copy, commit):
     """Send one commit to the task's branch; returns `pushed` or why not. Never forces."""
     try:
@@ -360,6 +468,9 @@ def push(task, copy, commit):
         return "push_key_missing"
     if not COMMIT.fullmatch(commit):
         return "push_bad_commit"
+    refusal = private_content_check(task, copy, commit)
+    if refusal:
+        return refusal
     ssh = shlex.join(
         [
             "ssh",
@@ -455,7 +566,7 @@ def attempt(task, route, review_route, number, feedback):
         task["id"],
         number,
         route.get("purpose", route["kind"]),
-        ended,
+        log_reason(ended),
     )
     if ended == "review_rejected":
         return ended, ("review", run.get("review_notes") or "")
@@ -553,9 +664,9 @@ def run_task(task):
             "reason": reason,
         }
     )
-    logger.info("task ended id=%d status=%s reason=%s", task["id"], status, reason)
+    logger.info("task ended id=%d status=%s reason=%s", task["id"], status, log_reason(reason))
     if status in {"escalated", "failed"}:
-        notify(task, status, reason)
+        notify(task, status, log_reason(reason))
 
 
 def notify(task, status, reason):
