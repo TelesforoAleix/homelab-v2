@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily Home Lab database dump
+ConditionPathIsMountPoint=/srv/homelab
+After=homelab-data.target
+PartOf=homelab-data.target
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+Unit=homelab-dump.service
+
+[Install]
+WantedBy=homelab-data.target

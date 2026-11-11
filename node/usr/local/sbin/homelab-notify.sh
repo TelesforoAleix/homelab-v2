@@ -18,7 +18,7 @@
 #
 # USAGE
 #   homelab-notify.sh "message text"
-#   homelab-notify.sh --alert <bot|watchdog|homelab>
+#   homelab-notify.sh --alert <bot|watchdog|homelab|dump>
 #
 set -euo pipefail
 
@@ -86,7 +86,8 @@ compose_alert() {
         bot)          unit="homelab-telegram-bot.service" ;;
         watchdog)     unit="homelab-watchdog.service" ;;
         homelab)      unit="homelab.service" ;;
-        *) die "unknown alert alias: '${alias}' (expected bot, watchdog or homelab)" ;;
+        dump)         unit="homelab-dump.service" ;;
+        *) die "unknown alert alias: '${alias}' (expected bot, watchdog, homelab or dump)" ;;
     esac
 
     # Add aliases alongside their OnFailure= drop-ins so failures can alert.
@@ -98,7 +99,7 @@ compose_alert() {
 
 case "${1:-}" in
     --alert)
-        [ $# -eq 2 ] || die "usage: homelab-notify.sh --alert <bot|watchdog|homelab>"
+        [ $# -eq 2 ] || die "usage: homelab-notify.sh --alert <bot|watchdog|homelab|dump>"
         compose_alert "$2"
         ;;
     -* )
