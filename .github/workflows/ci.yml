@@ -53,3 +53,19 @@ jobs:
       - uses: actions/checkout@v6
       - name: Build the menu bar app as the installer does
         run: swift build --package-path mac/MenuBar -c release
+  fence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build the fence images without pushing
+        run: |
+          docker build -t homelab-fence:1 node/opt/homelab-fence/cli
+          docker build -t homelab-fence-proxy:1 node/opt/homelab-fence/proxy
+      - name: Check the pinned CLI versions inside the fence image
+        run: |
+          docker run --rm --network none homelab-fence:1 sh -ec '
+            claude --version | tee /tmp/claude-version
+            codex --version | tee /tmp/codex-version
+            grep -Fx "2.1.318 (Claude Code)" /tmp/claude-version
+            grep -Fx "codex-cli 0.162.1" /tmp/codex-version
+          '

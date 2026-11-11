@@ -1,0 +1,30 @@
+name: homelab-fence
+services:
+  cli-proxy:
+    image: homelab-fence-proxy:1
+    build: ./proxy
+    networks:
+      cli:
+        aliases: [cli-proxy]
+      egress: {}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    restart: unless-stopped
+    logging:
+      driver: none
+networks:
+  cli:
+    name: homelab-fence
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16
+  egress:
+    name: homelab-fence-egress
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16

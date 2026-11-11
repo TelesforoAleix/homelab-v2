@@ -464,7 +464,7 @@ def test_minute_copy_preserves_encryption_and_workflow_files():
             "5d3a6478dc1ceb4023db6aabf89db1c760548bbcd3af9407091167b1943e4929"
         ),
         ".github/workflows/ci.yml": (
-            "bef16d9df8bff04c4fbc210997fc7f69f29028244cef9104bcfe3b09f2a4b268"
+            "caea700399131263c27fd4f2c6af1c363a3ede4707198ab063c4367de015cd8e"
         ),
     }
     assert sorted(
