@@ -1887,3 +1887,9 @@ def test_end_event_is_invalidated_by_continuation(tmp_path):
     summary = runner.summarize_events(path)
     assert summary["end_event"] is None
     assert summary["retries"] == 1
+
+
+def test_compaction_result_usage_is_added_to_assistant_usage():
+    summary = runner.summarize_events(ROOT / "tests/fixtures/task-events/compaction-usage.jsonl")
+    assert summary["compactions"] == 1
+    assert summary["tokens"] == {"fresh": 14, "output": 24, "cached": 34, "cache_write": 44}

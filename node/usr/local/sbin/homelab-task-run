@@ -545,14 +545,17 @@ def summarize_events(path):
                 retries += 1
             if kind == "turn_end":
                 steps += 1
+            usage = {}
             if kind == "message_end" and message.get("role") == "assistant":
                 last_stop = message.get("stopReason")
                 budget_spent = BUDGET_SPENT in str(message.get("errorMessage"))
                 usage = message.get("usage") or {}
-                tokens["fresh"] += usage.get("input", 0)
-                tokens["output"] += usage.get("output", 0)
-                tokens["cached"] += usage.get("cacheRead", 0)
-                tokens["cache_write"] += usage.get("cacheWrite", 0)
+            elif kind == "compaction_end":
+                usage = (event.get("result") or {}).get("usage") or {}
+            tokens["fresh"] += usage.get("input", 0)
+            tokens["output"] += usage.get("output", 0)
+            tokens["cached"] += usage.get("cacheRead", 0)
+            tokens["cache_write"] += usage.get("cacheWrite", 0)
     return {
         "steps": steps,
         "tokens": tokens,
