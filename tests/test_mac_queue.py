@@ -693,3 +693,20 @@ def test_completion_persisted_before_notice_and_not_replayed(notices, monkeypatc
     q.command("remove", "two")
     q.tick()
     assert len(sent) == 1
+
+
+def test_public_counts_and_offer_on_queue_changes(queue, monkeypatch):
+    q, _ = queue
+    calls = []
+    monkeypatch.setattr(p, "write_offer", lambda cfg: calls.append(q.counts()))
+    add(q, "one")
+    add(q, "two")
+    assert calls[-1] == {"playing": 0, "running": 0, "waiting": 2}
+    q.command("play")
+    q.step()
+    assert calls[-1] == {"playing": 1, "running": 1, "waiting": 1}
+    q.children[42].code = 0
+    q.step()
+    assert calls[-1] == {"playing": 1, "running": 1, "waiting": 0}
+    q.command("stop")
+    assert calls[-1] == {"playing": 0, "running": 0, "waiting": 1}

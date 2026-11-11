@@ -579,6 +579,10 @@ def job_live(record):
 queue = runpy.run_path(str(SCRIPT.with_name("profile_queue.py")))["Queue"](globals())
 
 
+def write_offer(cfg):
+    runpy.run_path(str(SCRIPT.with_name("offer.py")))["publish"](globals(), cfg)
+
+
 def snapshot(cfg):
     models = router_models()
     states = {
@@ -781,6 +785,7 @@ def switch(name, cfg, confirm=False, skip=False, automatic=False, scheduled=Fals
                 app(bundle, True)
         record = {"skip_settings": skip}
     save(STATE / "session.json", record)
+    write_offer(cfg)
 
 
 def eligible(cfg):
@@ -803,63 +808,66 @@ def idle_seconds():
 
 
 def tick(cfg):
-    # A night-window failure must not stop the idle return, pause or job checks below.
-    with contextlib.suppress(OSError, ValueError, KeyError, subprocess.SubprocessError):
-        schedule_tick(cfg)
-    record = load(STATE / "session.json", {})
-    if record.get("return_pending") and record.get("return_requested"):
-        switch("working", cfg, automatic=True)
-    elif record.get("return_pending"):
-        on_ac = on_ac_power()
-        now = time.time()
-        if not on_ac:
-            if "battery_since" not in record:
-                record["battery_since"] = now
-                save(STATE / "session.json", record)
-            if record.get("paused") or now - record["battery_since"] >= BATTERY_GRACE_SECONDS:
-                # Save intent first so a failed reload is retried and manual starts are refused.
-                record["paused"] = True
-                save(STATE / "session.json", record)
-                set_models(set(), paused=True)
-                return  # A pause never advances the idle return or starts jobs.
-        elif record.get("paused"):
-            # Resume the existing owner-entered session; do not recapture its recovery record.
-            if not record.get("skip_settings"):
-                run("/usr/bin/sudo", "-n", "/usr/local/sbin/homelab-profile-apply", "inference")
-                if not settings_match(
-                    "inference", settings(), cfg["profiles"]["inference"]["settings"]
-                ):
-                    raise ValueError("resume settings do not match; Inference remains paused")
-            try:
-                set_models(
-                    cfg["profiles"]["inference"]["services"]
-                    if cfg.get("version") == 2
-                    else set(cfg["profiles"]["inference"]["services"])
-                )
-            except (OSError, ValueError, KeyError, subprocess.SubprocessError):
-                # Failed reload/verification must also leave the on-disk presets closed,
-                # so a router restart cannot bypass the still-paused session.
-                try:
-                    set_models(set(), paused=True)
-                except (OSError, ValueError, KeyError, subprocess.SubprocessError):
-                    pass
-                raise
-            record["paused"] = False
-            record.pop("battery_since", None)
-            record["last_active"] = now
-            save(STATE / "session.json", record)
-        elif "battery_since" in record:
-            record.pop("battery_since")
-            save(STATE / "session.json", record)
-        active = any(state not in ("sleeping", "unloaded") for state in router_models().values())
-        active |= any(job_live(job) for job in jobs().values())
-        active |= queue.active()
-        if active:
-            record["last_active"] = now
-            save(STATE / "session.json", record)
-        elif now - record["last_active"] >= cfg.get("return_seconds", 900):
+    try:
+        # A night-window failure must not stop the idle return, pause or job checks below.
+        with contextlib.suppress(OSError, ValueError, KeyError, subprocess.SubprocessError):
+            schedule_tick(cfg)
+        record = load(STATE / "session.json", {})
+        if record.get("return_pending") and record.get("return_requested"):
             switch("working", cfg, automatic=True)
-    dispatch_pending(cfg)
+        elif record.get("return_pending"):
+            on_ac = on_ac_power()
+            now = time.time()
+            if not on_ac:
+                if "battery_since" not in record:
+                    record["battery_since"] = now
+                    save(STATE / "session.json", record)
+                if record.get("paused") or now - record["battery_since"] >= BATTERY_GRACE_SECONDS:
+                    # Save intent first so a failed reload is retried and manual starts are refused.
+                    record["paused"] = True
+                    save(STATE / "session.json", record)
+                    set_models(set(), paused=True)
+                    return  # A pause never advances the idle return or starts jobs.
+            elif record.get("paused"):
+                # Resume the existing owner-entered session; do not recapture its recovery record.
+                if not record.get("skip_settings"):
+                    run("/usr/bin/sudo", "-n", "/usr/local/sbin/homelab-profile-apply", "inference")
+                    if not settings_match(
+                        "inference", settings(), cfg["profiles"]["inference"]["settings"]
+                    ):
+                        raise ValueError("resume settings do not match; Inference remains paused")
+                try:
+                    set_models(
+                        cfg["profiles"]["inference"]["services"]
+                        if cfg.get("version") == 2
+                        else set(cfg["profiles"]["inference"]["services"])
+                    )
+                except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+                    # Failed reload/verification must also leave the on-disk presets closed,
+                    # so a router restart cannot bypass the still-paused session.
+                    try:
+                        set_models(set(), paused=True)
+                    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+                        pass
+                    raise
+                record["paused"] = False
+                record.pop("battery_since", None)
+                record["last_active"] = now
+                save(STATE / "session.json", record)
+            elif "battery_since" in record:
+                record.pop("battery_since")
+                save(STATE / "session.json", record)
+            active = any(state not in ("sleeping", "unloaded") for state in router_models().values())
+            active |= any(job_live(job) for job in jobs().values())
+            active |= queue.active()
+            if active:
+                record["last_active"] = now
+                save(STATE / "session.json", record)
+            elif now - record["last_active"] >= cfg.get("return_seconds", 900):
+                switch("working", cfg, automatic=True)
+        dispatch_pending(cfg)
+    finally:
+        write_offer(cfg)
 
 
 def dispatch_pending(cfg):

@@ -82,3 +82,11 @@ CREATE TABLE IF NOT EXISTS homelab_task_traces (
     created_at timestamptz NOT NULL DEFAULT now(),
     FOREIGN KEY (task_id, attempt) REFERENCES homelab_task_attempts (task_id, number)
 );
+
+-- Public observations only. A failed first read has no offer or successful seen_at.
+CREATE TABLE IF NOT EXISTS homelab_providers (
+    provider text PRIMARY KEY,
+    offer jsonb,
+    seen_at timestamptz,
+    state text NOT NULL CHECK (state IN ('fresh', 'away'))
+);

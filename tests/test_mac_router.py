@@ -463,3 +463,36 @@ def test_native_static_directory_contains_only_pause_flag(monkeypatch, tmp_path)
     assert router.json.loads((public / "homelab-profile.json").read_text()) == {
         "paused_on_battery": True,
     }
+
+
+def test_public_offer_is_served_as_static_file_without_changing_pause_metadata(
+    monkeypatch, tmp_path
+):
+    import json
+
+    state = tmp_path / "router"
+    public = state / "public"
+    public.mkdir(parents=True)
+    pause = public / "homelab-profile.json"
+    pause.write_text('{"paused_on_battery": true}\n')
+    offer = public / "homelab-offer.json"
+    offer.write_text('{"profile":"working"}\n')
+    monkeypatch.setattr(router, "STATE", state)
+    registry = {
+        "version": 1,
+        "services": {
+            svc: {name: {"model": str(tmp_path / name), "flags": {}, "memory_mb": None}}
+            for svc, name in router.model_policy["ROUTED"].items()
+        },
+    }
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(json.dumps(registry))
+    monkeypatch.setitem(router.model_policy, "REGISTRY", registry_path)
+    services = router.model_policy["legacy_services"]([])
+    (state / "allowed.json").write_text(json.dumps({"version": 2, "services": services}))
+    router.write_presets()
+    assert pause.read_text() == '{"paused_on_battery": true}\n'
+    assert offer.read_text() == '{"profile":"working"}\n'
+    address = str(router.ipaddress.IPv4Address(0x64400001))
+    args = router.router_args(address)
+    assert args[args.index("--path") + 1] == str(public)
