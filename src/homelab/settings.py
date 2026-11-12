@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     models_base_url: str = "http://litellm:4000/v1"
     # Accepted and ignored by the proxy today; kept in the client contract.
     models_api_key: SecretStr = SecretStr("homelab")
+    mac_vision_url: str = "http://127.0.0.1:9/v1"
+    mac_embed_url: str = "http://127.0.0.1:9/v1"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
     log_content: bool = Field(

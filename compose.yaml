@@ -80,6 +80,10 @@ services:
 
   api:
     <<: *app
+    environment:
+      <<: *app-env
+      HOMELAB_MAC_VISION_URL: ${HOMELAB_MAC_VISION_URL:-http://127.0.0.1:9/v1}
+      HOMELAB_MAC_EMBED_URL: ${HOMELAB_MAC_EMBED_URL:-http://127.0.0.1:9/v1}
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:

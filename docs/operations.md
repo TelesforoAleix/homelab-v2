@@ -2894,3 +2894,23 @@ For a fake-charge concurrency proof against an isolated schema, run
 `python tests/video_store_proof.py --source-root <checkout>` in an environment with the API's
 Postgres connection. It creates a uniquely named test schema, proves exactly-once accounting
 and ownership, and removes only that schema; it does not call a provider or touch application rows.
+
+## Management reads
+
+From the node, these loopback reads need no key:
+
+```sh
+curl -s 127.0.0.1:8000/v1/manage/routes
+```
+
+Routes are grouped by purpose in table order, including wildcards and native media purposes.
+`live` is the first configured enabled route, not an observation of traffic; `health` is its
+provider's state. All current routes are enabled.
+
+```sh
+curl -s 127.0.0.1:8000/v1/manage/providers
+```
+
+Providers list their kind, state and purposes. Local states come from `/models` checks with a
+two-second timeout and a 30-second cache; hosted states mean configured, not tested. Both
+responses include the SHA-256 version of the route table and omit addresses and keys.

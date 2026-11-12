@@ -890,3 +890,9 @@ ownership. The $20 Vercel budget and host 80%/100% notifications are unchanged. 
 cost-source precedence remains unchanged. A transient final-accounting failure retains the
 confirmed charge in memory and retries its transaction on the next video request; logs contain
 only job ID, configured purpose, state, timing, numeric cost, error type and error code or class, never input or error messages.
+
+The loopback management reads project the image's `config/litellm.yaml`, including native
+media purposes, without calling models or using the gateway key. They report the first route
+in table order as live; this is the configured selection, not observation of gateway traffic.
+All current routes are enabled. Local provider `/models` checks are cached for 30 seconds;
+hosted providers report `configured` without a probe. Responses contain no addresses or keys.
