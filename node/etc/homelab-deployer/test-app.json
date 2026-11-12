@@ -1,0 +1,9 @@
+{
+  "repository": "TelesforoAleix/homelab-v2",
+  "services": ["test-app"],
+  "health": ["/bin/sh", "-c", "test \"$(cat /app/health)\" = healthy"],
+  "migration": [],
+  "guards": [".github", "node", "compose.yaml", "Dockerfile", ".dockerignore", "config"],
+  "compose": "test-app/compose.yaml",
+  "dockerfile": "test-app/Dockerfile"
+}

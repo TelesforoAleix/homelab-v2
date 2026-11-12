@@ -20,13 +20,14 @@ ALERT_UNITS = {
     "watchdog": "homelab-watchdog.service",
     "homelab": "homelab.service",
     "dump": "homelab-dump.service",
+    "deployer": "homelab-deployer.service",
 }
 
 
 def host_modes() -> dict[str, tuple[int, int | None]]:
     rows = re.findall(
         r"^\| `(node/[^`]+/)` \| `(0[0-7]{3})` \| (`0[0-7]{3}`|—) \|$",
-        (ROOT / "AGENTS.md").read_text() + "\n" + rebuild_section(),
+        (ROOT / "AGENTS.md").read_text() + "\n" + host_install_docs(),
         re.M,
     )
     return {
@@ -44,6 +45,11 @@ def rebuild_section() -> str:
     )
 
 
+def host_install_docs() -> str:
+    # The deployer task reserves operations.md for a concurrent slice.
+    return rebuild_section() + "\n" + (ROOT / "docs/deployer.md").read_text()
+
+
 @pytest.mark.parametrize("path", NODE_FILES, ids=lambda path: str(path.relative_to(ROOT)))
 def test_every_host_file_has_documented_directory_and_file_modes(path: Path):
     directory = f"{path.parent.relative_to(ROOT)}/"
@@ -55,7 +61,7 @@ def test_every_host_file_has_documented_directory_and_file_modes(path: Path):
 
 def test_rebuild_installs_every_host_file_at_its_mirrored_path_with_documented_mode():
     installed = {}
-    for line in rebuild_section().splitlines():
+    for line in host_install_docs().splitlines():
         args = shlex.split(line.strip()) if line.strip().startswith("sudo install -m ") else []
         if not args or not any(source.startswith("node/") for source in args[8:-1]):
             continue
@@ -73,7 +79,10 @@ def test_rebuild_installs_every_host_file_at_its_mirrored_path_with_documented_m
                 assert target == "/" + relative.removeprefix("node/")
                 expected_mode = host_modes()[f"{path.parent.relative_to(ROOT)}/"][1]
                 assert mode == expected_mode
-                assert relative not in installed
+                # The deployer guide repeats shared notifier/units installation for
+                # its standalone install; duplicated commands must agree on the mode.
+                if relative in installed:
+                    assert installed[relative] == mode
                 installed[relative] = mode
     # crypttab/fstab are merged entries; overwriting either host table loses OS entries.
     tables = {"node/etc/crypttab", "node/etc/fstab"}
@@ -84,7 +93,7 @@ def test_rebuild_installs_every_host_file_at_its_mirrored_path_with_documented_m
 
 
 def test_rebuild_enables_every_installable_recorded_unit_and_no_trigger_only_unit():
-    commands = re.findall(r"^\s*sudo systemctl enable (.+)$", rebuild_section(), re.M)
+    commands = re.findall(r"^\s*sudo systemctl enable (.+)$", host_install_docs(), re.M)
     enabled = {
         arg for command in commands for arg in shlex.split(command) if not arg.startswith("-")
     }
@@ -209,3 +218,19 @@ def test_database_dump_units():
     assert timer.get("Timer", "OnCalendar") == "daily"
     assert timer.getboolean("Timer", "Persistent")
     assert timer.get("Timer", "Unit") == "homelab-dump.service"
+
+
+def test_deployer_units_keep_socket_authorization_and_private_state():
+    socket_unit = ConfigParser(interpolation=None)
+    socket_unit.read(UNITS / "homelab-deployer.socket")
+    assert socket_unit.get("Socket", "ListenStream") == "/run/homelab-deployer.sock"
+    assert socket_unit.get("Socket", "SocketUser") == "root"
+    assert socket_unit.get("Socket", "SocketGroup") == "homelab-deploy"
+    assert socket_unit.get("Socket", "SocketMode") == "0660"
+    service = ConfigParser(interpolation=None)
+    service.read(UNITS / "homelab-deployer.service")
+    assert service.get("Unit", "OnFailure") == "homelab-notify@deployer.service"
+    assert service.get("Service", "ExecStart") == "/usr/local/sbin/homelab-deployer"
+    assert service.get("Service", "StateDirectoryMode") == "0700"
+    assert service.get("Service", "ProtectSystem") == "strict"
+    assert service.get("Service", "ReadWritePaths") == "/var/lib/homelab-deployer"

@@ -1,0 +1,868 @@
+#!/usr/bin/python3 -I
+"""Identifier-only root deployer. No source, credential or subprocess output is logged."""
+
+import contextlib
+import fcntl
+import gzip
+import hashlib
+import io
+import json
+import logging
+import os
+import re
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from pathlib import Path, PurePosixPath
+
+CONFIG = Path("/etc/homelab-deployer")
+ROOT = Path("/opt/homelab-deployer")
+STATE = Path("/var/lib/homelab-deployer")
+IDENTIFIER = re.compile(r"[a-z][a-z0-9-]{0,62}\Z")
+SHA = re.compile(r"[0-9a-f]{40}\Z")
+REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
+OWNER = "TelesforoAleix"
+MAX_SOURCE = 64 * 1024 * 1024
+MAX_EXPANDED = 256 * 1024 * 1024
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LANG": "C.UTF-8"}
+logger = logging.getLogger("homelab-deployer")
+
+
+class Refused(Exception):
+    """Arguments must be fixed reasons, never exception or command text."""
+
+
+def identifier(value):
+    if type(value) is not str or not IDENTIFIER.fullmatch(value):
+        raise Refused("invalid identifier")
+    return value
+
+
+def sha(value):
+    if type(value) is not str or not SHA.fullmatch(value):
+        raise Refused("invalid sha")
+    return value
+
+
+def fields(value, names):
+    if type(value) is not dict or set(value) != set(names):
+        raise Refused("invalid fields")
+
+
+def decode(data):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise Refused("invalid json")
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(
+            data,
+            object_pairs_hook=pairs,
+            parse_constant=lambda _: (_ for _ in ()).throw(Refused("invalid json")),
+        )
+    except (ValueError, UnicodeError, RecursionError):
+        raise Refused("invalid json") from None
+
+
+def relative(value):
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > 512
+        or not re.fullmatch(r"[A-Za-z0-9._/-]+", value)
+        or value.startswith(("/", "-"))
+        or any(part in ("", ".", "..") for part in value.split("/"))
+    ):
+        raise Refused("invalid path")
+    return value
+
+
+@contextlib.contextmanager
+def directory(path):
+    """Pin every component without following even a root-directory symlink."""
+    path = Path(path)
+    if not path.is_absolute() or ".." in path.parts:
+        raise Refused("unsafe directory")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for part in path.parts[1:]:
+            child = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd
+            )
+            os.close(fd)
+            fd = child
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def metadata(info, mode):
+    if info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != mode:
+        raise Refused("unsafe ownership or mode")
+
+
+def protected_read(path, mode=0o644, limit=4 * 1024 * 1024):
+    with directory(path.parent) as parent:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        metadata(info, mode)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise Refused("unsafe file")
+        value = stream.read(limit + 1)
+        if len(value) > limit:
+            raise Refused("unsafe file")
+        return value
+
+
+def atomic(path, value):
+    with directory(path.parent) as parent:
+        temporary = ".write-" + uuid.uuid4().hex
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump(value, stream, separators=(",", ":"))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path.name, src_dir_fd=parent, dst_dir_fd=parent)
+            os.fsync(parent)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temporary, dir_fd=parent)
+
+
+def unlink(path):
+    with directory(path.parent) as parent:
+        os.unlink(path.name, dir_fd=parent)
+        os.fsync(parent)
+
+
+def command(value, empty=False):
+    if (
+        type(value) is not list
+        or (not value and not empty)
+        or len(value) > 64
+        or any(type(arg) is not str or not arg or len(arg) > 4096 or "\x00" in arg for arg in value)
+        or (value and value[0].startswith("-"))
+    ):
+        raise Refused("invalid command")
+    return value
+
+
+def manifest(application):
+    value = decode(protected_read(CONFIG / (identifier(application) + ".json")))
+    fields(
+        value, ("repository", "services", "health", "migration", "guards", "compose", "dockerfile")
+    )
+    if type(value["repository"]) is not str or not REPOSITORY.fullmatch(value["repository"]):
+        raise Refused("invalid repository")
+    services = value["services"]
+    if type(services) is not list or not services or len(services) > 32:
+        raise Refused("invalid services")
+    for service in services:
+        identifier(service)
+    if len(set(services)) != len(services):
+        raise Refused("invalid services")
+    command(value["health"])
+    command(value["migration"], empty=True)
+    guards = value["guards"]
+    if type(guards) is not list or len(guards) > 256:
+        raise Refused("invalid guards")
+    for path in guards:
+        relative(path)
+    if len(set(guards)) != len(guards):
+        raise Refused("invalid guards")
+    for key, basename in (("compose", "compose.yaml"), ("dockerfile", "Dockerfile")):
+        path = ROOT / relative(value[key])
+        if path.name != basename:
+            raise Refused("invalid installed file")
+        protected_read(path)
+    return value
+
+
+def configuration():
+    callers = decode(protected_read(CONFIG / "callers.json"))
+    if type(callers) is not dict or set(callers) != {"0"}:
+        raise Refused("invalid callers")
+    allowed = callers["0"]
+    if (
+        type(allowed) is not list
+        or not allowed
+        or any(type(op) is not str or op not in ("install", "rollback") for op in allowed)
+        or len(set(allowed)) != len(allowed)
+    ):
+        raise Refused("invalid callers")
+    automatic = protected_read(CONFIG / "automatic").decode("ascii").splitlines()
+    for name in automatic:
+        identifier(name)
+    if len(set(automatic)) != len(automatic):
+        raise Refused("invalid automatic list")
+    return callers, set(automatic)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class GitHub:
+    def request(self, repository, suffix, archive=False):
+        token = protected_read(CONFIG / "github-token", 0o600).decode("ascii").strip()
+        if not token or any(ord(c) < 33 or ord(c) > 126 for c in token):
+            raise Refused("github unavailable")
+        url = f"https://api.github.com/repos/{repository}/{suffix}"
+        headers = {
+            "Authorization": "Bearer " + token,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "homelab-deployer",
+        }
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        try:
+            try:
+                response = opener.open(urllib.request.Request(url, headers=headers), timeout=60)
+            except urllib.error.HTTPError as exc:
+                if not archive or exc.code not in (301, 302, 303, 307, 308):
+                    raise Refused("github unavailable") from None
+                location = exc.headers.get("Location", "")
+                parsed = urllib.parse.urlsplit(location)
+                if (
+                    parsed.scheme != "https"
+                    or parsed.netloc != "codeload.github.com"
+                    or not parsed.path.startswith(f"/{repository}/")
+                ):
+                    raise Refused("github unavailable") from None
+                # Never forward the API credential, even to GitHub's archive host.
+                response = opener.open(urllib.request.Request(location), timeout=60)
+            with response:
+                limit = MAX_SOURCE if archive else 4 * 1024 * 1024
+                data = response.read(limit + 1)
+                if len(data) > limit:
+                    raise Refused("source too large" if archive else "github unavailable")
+                return data if archive else decode(data)
+        except (OSError, ValueError, urllib.error.URLError):
+            raise Refused("github unavailable") from None
+
+    def verify(self, repository, commit):
+        result = self.request(repository, f"compare/{commit}...main")
+        if (
+            type(result) is not dict
+            or result.get("status") not in ("ahead", "identical")
+            or result.get("merge_base_commit", {}).get("sha") != commit
+        ):
+            raise Refused("commit is not on main")
+
+    def pages(self, repository, suffix):
+        for page in range(1, 21):
+            values = self.request(repository, f"{suffix}?per_page=100&page={page}")
+            if type(values) is not list or any(type(v) is not dict for v in values):
+                raise Refused("github unavailable")
+            yield from values
+            if len(values) < 100:
+                return
+        raise Refused("github pagination limit")
+
+    def approved(self, repository, commit):
+        for pr in self.pages(repository, f"commits/{commit}/pulls"):
+            if (
+                pr.get("merge_commit_sha") != commit
+                or not pr.get("merged_at")
+                or pr.get("base", {}).get("ref") != "main"
+                or pr.get("base", {}).get("repo", {}).get("full_name") != repository
+                or type(pr.get("number")) is not int
+                or pr["number"] <= 0
+            ):
+                continue
+            reviews = [
+                review
+                for review in self.pages(repository, f"pulls/{pr['number']}/reviews")
+                if review.get("user", {}).get("login") == OWNER
+                and review.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED")
+            ]
+            if reviews and max(reviews, key=lambda r: r.get("id", 0)).get("state") == "APPROVED":
+                return True
+        return False
+
+    def source(self, repository, commit):
+        return self.request(repository, f"tarball/{commit}", archive=True)
+
+
+class ArchiveReader:
+    """Bound decompression including PAX/GNU metadata before tarfile allocates it."""
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.remaining = MAX_EXPANDED
+
+    def read(self, size):
+        value = self.stream.read(min(size, self.remaining + 1))
+        self.remaining -= len(value)
+        if self.remaining < 0:
+            raise Refused("source too large")
+        return value
+
+
+def unpack(data, destination):
+    """No extractall: regular files and directories only, bounded and never links."""
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(data)) as compressed:
+            return unpack_stream(ArchiveReader(compressed), destination)
+    except (tarfile.TarError, OSError, ValueError, EOFError):
+        raise Refused("invalid archive") from None
+
+
+def unpack_stream(stream, destination):
+    inventory, seen, total, wrapper = {}, set(), 0, None
+    try:
+        with tarfile.open(fileobj=stream, mode="r|") as archive:
+            for count, member in enumerate(archive):
+                if count >= 30000:
+                    raise Refused("source too large")
+                name = relative(member.name.rstrip("/"))
+                parts = PurePosixPath(name).parts
+                if wrapper is None:
+                    wrapper = parts[0]
+                if parts[0] != wrapper or (len(parts) == 1 and not member.isdir()):
+                    raise Refused("invalid archive")
+                if name in seen:
+                    raise Refused("invalid archive")
+                seen.add(name)
+                if not member.isfile() and not member.isdir():
+                    raise Refused("invalid archive")
+                if len(parts) == 1:
+                    continue
+                target = destination.joinpath(*parts[1:])
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    continue
+                total += member.size
+                if member.size < 0 or total > MAX_EXPANDED:
+                    raise Refused("source too large")
+                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                # The scratch root is private and no archive member can create a link.
+                with archive.extractfile(member) as source, target.open("xb") as output:
+                    digest = hashlib.sha256()
+                    while chunk := source.read(1024 * 1024):
+                        output.write(chunk)
+                        digest.update(chunk)
+                os.chmod(target, 0o755 if member.mode & 0o111 else 0o644)
+                inventory["/".join(parts[1:])] = {
+                    "sha": digest.hexdigest(),
+                    "executable": bool(member.mode & 0o111),
+                }
+    except (tarfile.TarError, OSError, ValueError):
+        raise Refused("invalid archive") from None
+    if not inventory:
+        raise Refused("invalid archive")
+    return inventory
+
+
+def guard_inventory(inventory, paths):
+    return {
+        name: value
+        for name, value in inventory.items()
+        if name.split("/")[0] in ("node", ".github")
+        or PurePosixPath(name).name in ("Dockerfile", "compose.yaml")
+        or any(name == path or name.startswith(path + "/") for path in paths)
+    }
+
+
+def run(arguments, *, tag=None, capture=False, timeout=120):
+    try:
+        result = subprocess.run(
+            arguments,
+            env={**ENV, **({"HOMELAB_DEPLOY_TAG": tag} if tag else {})},
+            cwd="/",
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=timeout,
+        )
+        return result.returncode == 0, result.stdout if capture else b""
+    except (OSError, subprocess.SubprocessError):
+        return False, b""
+
+
+class Deployer:
+    def __init__(self, github=None):
+        self.github = github or GitHub()
+
+    @contextlib.contextmanager
+    def locked(self):
+        with directory(STATE) as parent:
+            metadata(os.fstat(parent), 0o700)
+            fd = os.open("lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+        with os.fdopen(fd, "w") as lock:
+            metadata(os.fstat(lock.fileno()), 0o600)
+            if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
+                raise Refused("unsafe file")
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+
+    def path(self, application, suffix):
+        return STATE / (identifier(application) + "." + suffix)
+
+    def read(self, application):
+        try:
+            return decode(
+                protected_read(self.path(application, "json"), 0o600, limit=64 * 1024 * 1024)
+            )
+        except FileNotFoundError:
+            return {"current": None, "previous": None, "guards": {}, "images": []}
+
+    def compose(self, application, config, commit, *args):
+        return run(
+            [
+                "/usr/bin/docker",
+                "compose",
+                "--project-name",
+                "deployer-" + application,
+                "--env-file",
+                "/dev/null",
+                "-f",
+                str(ROOT / config["compose"]),
+                *args,
+            ],
+            tag=commit,
+        )[0]
+
+    def up(self, application, config, commit):
+        return self.compose(
+            application,
+            config,
+            commit,
+            "up",
+            "-d",
+            "--no-build",
+            "--pull",
+            "never",
+            "--wait",
+            "--wait-timeout",
+            "60",
+            *config["services"],
+        )
+
+    def health(self, application, config, commit):
+        for attempt in range(3):
+            if self.running(application, config, commit) and self.compose(
+                application, config, commit, "exec", "-T", config["services"][0], *config["health"]
+            ):
+                return True
+            if attempt < 2:
+                time.sleep(2)
+        return False
+
+    def running(self, application, config, commit):
+        # A healthy OLD container is not evidence that an interrupted switch completed.
+        ok, expected = run(
+            [
+                "/usr/bin/docker",
+                "image",
+                "inspect",
+                "--format",
+                "{{.Id}}",
+                self.image(application, commit),
+            ],
+            capture=True,
+        )
+        if not ok or not re.fullmatch(rb"sha256:[0-9a-f]{64}\n?", expected):
+            return False
+        for service in config["services"]:
+            ok, containers = run(
+                [
+                    "/usr/bin/docker",
+                    "compose",
+                    "--project-name",
+                    "deployer-" + application,
+                    "--env-file",
+                    "/dev/null",
+                    "-f",
+                    str(ROOT / config["compose"]),
+                    "ps",
+                    "--all",
+                    "--quiet",
+                    service,
+                ],
+                tag=commit,
+                capture=True,
+            )
+            try:
+                ids = containers.decode("ascii").splitlines() if ok else []
+            except UnicodeError:
+                return False
+            if not ids or any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in ids):
+                return False
+            for container in ids:
+                ok, actual = run(
+                    [
+                        "/usr/bin/docker",
+                        "inspect",
+                        "--format",
+                        "{{.Image}} {{.State.Running}}",
+                        container,
+                    ],
+                    capture=True,
+                )
+                if not ok or actual.strip() != expected.strip() + b" true":
+                    return False
+        return True
+
+    @staticmethod
+    def image(application, commit):
+        return "homelab-deployer-" + identifier(application) + ":" + sha(commit)
+
+    def refused(self, application, old, target, reason, paths=None):
+        record = {
+            **old,
+            "commit": target,
+            "previous_commit": old["current"],
+            "result": reason,
+        }
+        if paths is not None:
+            record["paths"] = paths
+        atomic(self.path(application, "json"), record)
+        logger.info(
+            "%s", json.dumps({"application": application, "commit": target, "result": reason})
+        )
+        return {
+            "ok": False,
+            "application": application,
+            "commit": target,
+            "result": reason,
+            **({"paths": paths} if paths is not None else {}),
+        }
+
+    def cleanup(self, application, keep):
+        # Enumerate only this helper's commit tags. This also finds builds abandoned
+        # before an intent and removals interrupted after the record was written.
+        ok, output = run(
+            [
+                "/usr/bin/docker",
+                "image",
+                "ls",
+                "--filter",
+                "reference=homelab-deployer-" + identifier(application) + ":*",
+                "--format",
+                "{{.Tag}}",
+            ],
+            capture=True,
+        )
+        if not ok:
+            return False
+        try:
+            tags = output.decode("ascii").splitlines()
+        except UnicodeError:
+            return False
+        success = True
+        for commit in sorted(set(tags)):
+            if SHA.fullmatch(commit) and commit not in keep:
+                removed, _ = run(
+                    ["/usr/bin/docker", "image", "rm", self.image(application, commit)]
+                )
+                success = removed and success
+        return success
+
+    def finish(self, application, old, target, guards, result, success):
+        images = list(old["images"])
+        if success:
+            # Retain the release we just started and the one it replaced, including
+            # installs following an explicit rollback.
+            images = list(dict.fromkeys([target, old["current"], *images]))
+            images = [commit for commit in images if commit is not None]
+        keep = images[:2]
+        record = {
+            "commit": target,
+            "previous_commit": old["current"],
+            "current": target if success else old["current"],
+            "previous": old["current"] if success else old["previous"],
+            "guards": guards if success else old["guards"],
+            "images": keep,
+            "result": result,
+        }
+        if record["current"] == record["previous"]:
+            record["previous"] = old["previous"]
+        # Record before pruning. A crash during pruning leaves only harmless extra images.
+        atomic(self.path(application, "json"), record)
+        try:
+            unlink(self.path(application, "intent"))
+        except FileNotFoundError:
+            pass
+        if not self.cleanup(application, keep):
+            record["image_cleanup_failed"] = True
+            atomic(self.path(application, "json"), record)
+        logger.info(
+            "%s", json.dumps({"application": application, "commit": target, "result": result})
+        )
+        return {
+            "ok": success,
+            "application": application,
+            "commit": target,
+            "result": result,
+            "image_cleanup_failed": record.get("image_cleanup_failed", False),
+        }
+
+    def fail_switch(self, application, config, intent, reason):
+        old = intent["old"]
+        # A killed Compose client can leave its one-off migration running in Docker.
+        # Only the fixed transient container is removed; service containers stay up.
+        run(["/usr/bin/docker", "rm", "-f", "deployer-" + application + "-migration"])
+        if (
+            old["current"]
+            and self.up(application, config, old["current"])
+            and self.health(application, config, old["current"])
+        ):
+            return self.finish(
+                application, old, intent["new"], intent["guards"], reason + "; rolled back", False
+            )
+        stopped = self.compose(application, config, intent["new"], "stop", *config["services"])
+        logger.error("%s", json.dumps({"application": application, "result": "rollback failed"}))
+        alerted, _ = run(["/usr/bin/systemctl", "start", "homelab-notify@deployer.service"])
+        if not alerted:
+            logger.error("deployer alert failed")
+        atomic(
+            self.path(application, "json"),
+            {
+                **old,
+                "commit": intent["new"],
+                "previous_commit": old["current"],
+                "result": "rollback failed",
+                "stop_failed": not stopped,
+                "alert_failed": not alerted,
+            },
+        )
+        # Keep the intent: an operator/restart must establish health before another request.
+        return {
+            "ok": False,
+            "application": application,
+            "result": "rollback failed",
+            "stop_failed": not stopped,
+            "alert_failed": not alerted,
+        }
+
+    def recover(self):
+        for path in sorted(STATE.glob("*.intent")):
+            application = identifier(path.stem)
+            config = manifest(application)
+            intent = decode(protected_read(path, 0o600, limit=64 * 1024 * 1024))
+            if self.health(application, config, sha(intent["new"])):
+                self.finish(
+                    application, intent["old"], intent["new"], intent["guards"], "recovered", True
+                )
+            elif (
+                self.fail_switch(application, config, intent, "interrupted")["result"]
+                == "rollback failed"
+            ):
+                raise Refused("recovery failed")
+
+        for path in sorted(STATE.glob("*.json")):
+            application = identifier(path.stem)
+            record = self.read(application)
+            cleaned = self.cleanup(application, record["images"])
+            if record.get("image_cleanup_failed", False) != (not cleaned):
+                record["image_cleanup_failed"] = not cleaned
+                atomic(path, record)
+
+    def execute(self, request, *, terminal=False, uid=0):
+        if type(request) is not dict or type(request.get("op")) is not str:
+            raise Refused("invalid fields")
+        operation = request["op"]
+        if operation not in ("install", "rollback"):
+            raise Refused("invalid operation")
+        fields(
+            request,
+            ("op", "application", "sha") if operation == "install" else ("op", "application"),
+        )
+        application = identifier(request["application"])
+        if operation == "install":
+            sha(request["sha"])
+        if not terminal:
+            callers, automatic = configuration()
+            if uid != 0 or operation not in callers.get(str(uid), []):
+                raise Refused("unknown caller")
+            if application not in automatic:
+                raise Refused("waits for the owner")
+        elif uid != 0:
+            raise Refused("root required")
+        with self.locked():
+            self.recover()
+            config = manifest(application)
+            old = self.read(application)
+            target = request["sha"] if operation == "install" else old["previous"]
+            if not target:
+                raise Refused("no previous commit")
+            sha(target)
+            repository = config["repository"]
+            try:
+                self.github.verify(repository, target)
+            except Refused as exc:
+                self.refused(application, old, target, str(exc))
+                raise
+            with tempfile.TemporaryDirectory(prefix="source-", dir=STATE) as scratch:
+                try:
+                    inventory = unpack(self.github.source(repository, target), Path(scratch))
+                except Refused as exc:
+                    self.refused(application, old, target, str(exc))
+                    raise
+                guards = guard_inventory(inventory, config["guards"])
+                changed = sorted(
+                    name
+                    for name in guards.keys() | old["guards"].keys()
+                    if guards.get(name) != old["guards"].get(name)
+                )
+                if not old["current"] or changed:
+                    try:
+                        approved = self.github.approved(repository, target)
+                    except Refused as exc:
+                        self.refused(application, old, target, str(exc))
+                        raise
+                    if not approved:
+                        return self.refused(
+                            application, old, target, "owner review required", changed
+                        )
+                if operation == "install":
+                    ok, _ = run(
+                        [
+                            "/usr/bin/docker",
+                            "build",
+                            "--file",
+                            str(ROOT / config["dockerfile"]),
+                            "--tag",
+                            self.image(application, target),
+                            scratch,
+                        ],
+                        timeout=900,
+                    )
+                    if not ok:
+                        return self.finish(application, old, target, guards, "build failed", False)
+                intent = {"state": "switching", "old": old, "new": target, "guards": guards}
+                atomic(self.path(application, "intent"), intent)
+                if operation == "install" and config["migration"]:
+                    dumped, _ = run(
+                        ["/usr/bin/systemctl", "start", "homelab-dump.service"], timeout=900
+                    )
+                    if not dumped or not self.compose(
+                        application,
+                        config,
+                        target,
+                        "run",
+                        "--rm",
+                        "--name",
+                        "deployer-" + application + "-migration",
+                        "--no-deps",
+                        "--pull",
+                        "never",
+                        "-T",
+                        config["services"][0],
+                        *config["migration"],
+                    ):
+                        run(
+                            [
+                                "/usr/bin/docker",
+                                "rm",
+                                "-f",
+                                "deployer-" + application + "-migration",
+                            ]
+                        )
+                        return self.finish(
+                            application, old, target, guards, "migration failed", False
+                        )
+                if not self.up(application, config, target):
+                    return self.fail_switch(application, config, intent, "switch failed")
+                if not self.health(application, config, target):
+                    return self.fail_switch(application, config, intent, "health failed")
+                return self.finish(
+                    application,
+                    old,
+                    target,
+                    guards,
+                    "installed" if operation == "install" else "rolled back",
+                    True,
+                )
+
+    def handle(self, connection):
+        try:
+            uid = struct.unpack(
+                "iII", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+            )[1]
+            connection.settimeout(10)
+            data = bytearray()
+            while b"\n" not in data:
+                chunk = connection.recv(4097 - len(data))
+                if not chunk or len(data) + len(chunk) > 4096:
+                    raise Refused("invalid frame")
+                data.extend(chunk)
+            if data.count(b"\n") != 1 or data[-1:] != b"\n":
+                raise Refused("invalid frame")
+            response = self.execute(decode(data), uid=uid)
+        except Refused as exc:
+            response = {"ok": False, "result": str(exc)}
+        except Exception:
+            response = {"ok": False, "result": "deployer unavailable"}
+        try:
+            connection.sendall((json.dumps(response) + "\n").encode())
+        except OSError:
+            pass
+
+
+def main(argv=None):
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    try:
+        if os.geteuid() != 0:
+            raise Refused("root required")
+        args = sys.argv[1:] if argv is None else argv
+        deployer = Deployer()
+        # Also created for the terminal entry point, independently of systemd.
+        with directory(STATE.parent) as parent:
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(STATE.name, 0o700, dir_fd=parent)
+        if args:
+            if not sys.stdin.isatty():
+                raise Refused("terminal required")
+            if args[0] == "install" and len(args) == 3:
+                request = {"op": "install", "application": args[1], "sha": args[2]}
+            elif args[0] == "rollback" and len(args) == 2:
+                request = {"op": "rollback", "application": args[1]}
+            else:
+                raise Refused("invalid arguments")
+            result = deployer.execute(request, terminal=True)
+            print(json.dumps(result))
+            return 0 if result["ok"] else 1
+        if os.environ.get("LISTEN_PID") != str(os.getpid()) or os.environ.get("LISTEN_FDS") != "1":
+            raise Refused("socket activation required")
+        with deployer.locked():
+            deployer.recover()
+        with socket.socket(fileno=3) as listener:
+            if (
+                listener.family != socket.AF_UNIX
+                or listener.type != socket.SOCK_STREAM
+                or listener.getsockname() != "/run/homelab-deployer.sock"
+            ):
+                raise Refused("invalid socket")
+            while True:
+                connection, _ = listener.accept()
+                with connection:
+                    deployer.handle(connection)
+    except Refused as exc:
+        print(json.dumps({"ok": False, "result": str(exc)}))
+    except (Exception, KeyboardInterrupt):
+        # No traceback: library exceptions may contain source, URLs or credentials.
+        print(json.dumps({"ok": False, "result": "deployer unavailable"}))
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,21 @@
+[Unit]
+Description=Application image deployer
+After=docker.service
+OnFailure=homelab-notify@deployer.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/sbin/homelab-deployer
+StateDirectory=homelab-deployer
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/homelab-deployer
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=journal
+StandardError=journal
