@@ -19,6 +19,7 @@ from homelab.jobs.app import app as jobs_app
 from homelab.jobs.tasks import ingest_brain
 from homelab.knowledge.index import build_stores
 from homelab.knowledge.retrieve import Chunk, _retrieve_with_embedding
+from homelab.manage import documents
 from homelab.models import load_routes
 from homelab.settings import get_settings
 
@@ -147,6 +148,16 @@ def image_cost_total(request: Request):
     if scheme.lower() != "bearer" or not key.strip():
         return JSONResponse({"error": "Bearer client key required"}, status_code=401)
     return image_costs.current_total(key)
+
+
+@app.get("/v1/manage/routes")
+def manage_routes() -> dict:
+    return documents()[0]
+
+
+@app.get("/v1/manage/providers")
+def manage_providers() -> dict:
+    return documents()[1]
 
 
 @app.get("/health")

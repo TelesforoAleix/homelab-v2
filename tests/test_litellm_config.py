@@ -243,16 +243,20 @@ def test_private_mac_url_reaches_proxy_and_worker_with_safe_unset_default():
         compose["services"]["worker"]["environment"]["HOMELAB_DATABASE_URL"]
         == (compose["services"]["api"]["environment"]["HOMELAB_DATABASE_URL"])
     )
+    for setting in ("HOMELAB_MAC_VISION_URL", "HOMELAB_MAC_EMBED_URL"):
+        assert compose["services"]["api"]["environment"][setting] == (
+            compose["services"]["litellm"]["environment"][setting]
+        )
     assert "HOMELAB_MAC_VISION_URL=\n" in (ROOT / ".env.example").read_text()
     for name, service in compose["services"].items():
-        if name not in {"litellm", "worker"}:
+        if name not in {"litellm", "worker", "api"}:
             assert "HOMELAB_MAC_VISION_URL" not in service.get("environment", {})
     assert compose["services"]["litellm"]["environment"]["HOMELAB_MAC_EMBED_URL"] == (
         "${HOMELAB_MAC_EMBED_URL:-http://127.0.0.1:9/v1}"
     )
     assert "HOMELAB_MAC_EMBED_URL=\n" in (ROOT / ".env.example").read_text()
     for name, service in compose["services"].items():
-        if name != "litellm":
+        if name not in {"litellm", "api"}:
             assert "HOMELAB_MAC_EMBED_URL" not in service.get("environment", {})
     import re
 

@@ -867,3 +867,8 @@ SHA-256 values needs an unambiguous byte encoding; compact ASCII-escaped JSON pa
 portable encoding. The manifest includes notes as well as files Pi reads, so a change to the
 recorded hypothesis also changes the setup's identity. Explicit command-line purpose and budget
 options remain available for the task runner's route and retry policy.
+
+**2026-11-12 — Management reads are open on loopback.** Routes and provider state contain
+no addresses or credentials, and Workshop's server is their only caller on the node. Like
+`/health`, these reads need no key. Future writes will carry a scoped key. The configured
+first route is reported as live; the table does not expose runtime gateway selection.
