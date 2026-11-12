@@ -1866,6 +1866,7 @@ SSH accounts work through Tailscale.
 | `node/opt/homelab-fence/cli/` | `0755` | `0644` |
 | `node/opt/homelab-fence/proxy/` | `0755` | `0644` |
 | `node/etc/homelab-task/` | `0755` | `0644` |
+| `node/etc/homelab-launcher/` | `0755` | `0644` |
 
    ```bash
    sudo install -d -m 0755 -o root -g root /etc/ssh /etc/ssh/sshd_config.d /etc/ufw /etc/docker /etc/sysctl.d /etc/profile.d /etc/sudoers.d /usr/local/sbin /opt/homelab-telegram-bot /opt/homelab-context /opt/homelab-task /opt/homelab-package-proxy /etc/homelab-task /etc/systemd/system
@@ -1909,7 +1910,7 @@ SSH accounts work through Tailscale.
    sudo chmod -R u=rwX,go=rX /opt/homelab-telegram-bot/.venv
    sudo /opt/homelab-telegram-bot/.venv/bin/python -c 'import telegram; print(telegram.__version__)'
    sudo install -m 0644 -o root -g root node/etc/polkit-1/rules.d/50-homelab-bot.rules /etc/polkit-1/rules.d/50-homelab-bot.rules
-   sudo install -m 0644 -o root -g root node/etc/systemd/system/*.service node/etc/systemd/system/*.timer node/etc/systemd/system/*.target /etc/systemd/system/
+   sudo install -m 0644 -o root -g root node/etc/systemd/system/*.service node/etc/systemd/system/*.timer node/etc/systemd/system/*.target node/etc/systemd/system/*.socket /etc/systemd/system/
    sudo install -m 0644 -o root -g root node/etc/systemd/system/homelab-notify@.service.d/*.conf /etc/systemd/system/homelab-notify@.service.d/
    sudo install -m 0644 -o root -g root node/etc/systemd/system/homelab-watchdog.service.d/*.conf /etc/systemd/system/homelab-watchdog.service.d/
    sudo install -m 0644 -o root -g root node/etc/systemd/system/homelab-telegram-bot.service.d/*.conf /etc/systemd/system/homelab-telegram-bot.service.d/
@@ -2351,6 +2352,113 @@ Require all four PASS lines, then run one CLI-route task through `homelab-fence`
 existing route and login, and check its done check, review and commit. The worker default
 remains LiteLLM. For rollback, restore the previous `homelab-task-run` command from its
 commit so it calls the still-installed `factory-cli`; leave the existing roots and logins alone.
+
+### Install the fixed fence launcher
+
+This adds an unused root helper; existing runner and chat callers continue invoking
+`homelab-fence` unchanged. The launcher, its data, host units/scripts, Compose files,
+Dockerfiles, proxy allowlists, fence probe and `.github/` are guard files: changes require the
+owner's review before merge. Only uid 0 is permanently authorized. The new profiles are
+unused by production callers, and login remains an owner-terminal operation.
+
+From the node's committed, merged tree, show these diffs before installing (exit 1 means a
+difference; stop on an inspection error). The directory and configuration files are root:root
+0755/0644; the locally generated `images` file is root:root 0600; scripts are 0755. Keep
+`/srv/factory/{work,runs,logins}` as real directories, with root-controlled parent directories;
+never replace an ancestor with a symlink. Keep logins at their existing 21000:21000, 0700.
+
+```bash
+sudo diff -uN /usr/local/sbin/homelab-launcher node/usr/local/sbin/homelab-launcher
+sudo diff -uN /usr/local/sbin/homelab-check-fence node/usr/local/sbin/homelab-check-fence
+sudo diff -ruN /etc/homelab-launcher node/etc/homelab-launcher
+sudo diff -uN /etc/systemd/system/homelab-launcher.socket node/etc/systemd/system/homelab-launcher.socket
+sudo diff -uN /etc/systemd/system/homelab-launcher.service node/etc/systemd/system/homelab-launcher.service
+# Review the diffs before continuing. No existing login is copied or modified.
+getent group homelab-launch >/dev/null || sudo groupadd --system homelab-launch
+sudo install -d -m 0755 -o root -g root /etc/homelab-launcher
+sudo install -m 0644 -o root -g root node/etc/homelab-launcher/profiles.json node/etc/homelab-launcher/callers.json /etc/homelab-launcher/
+sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-launcher /usr/local/sbin/
+# Install the updated homelab-check-fence using its CLI fence install command above.
+for unit in homelab-launcher.socket homelab-launcher.service; do sudo install -m 0644 -o root -g root "node/etc/systemd/system/$unit" /etc/systemd/system/; done
+# homelab-fence must already be installed beside the launcher; its pure builders are imported.
+# Approve the image built by the CLI fence installation; repeat explicitly after a rebuild.
+sudo docker image inspect --format '{{.Id}}' homelab-fence:1
+sudo install -m 0600 -o root -g root /dev/null /etc/homelab-launcher/images
+sudo sh -ec 'docker image inspect --format "{{.Id}}" homelab-fence:1 > /etc/homelab-launcher/images'
+sudo systemd-analyze verify /etc/systemd/system/homelab-launcher.socket /etc/systemd/system/homelab-launcher.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now homelab-launcher.socket
+sudo homelab-check-fence
+sudo homelab-check-fence --launcher
+```
+
+Require the original four PASS lines and ten launcher PASS lines. The new option is a root
+orchestrator that starts short-lived offline containers as numeric uids 21998 and 21999,
+with only the launcher socket mounted and its group added. It refuses to borrow an existing
+account or configured caller. It temporarily allows uid 21998 all four profiles, restarts the
+helper to load it, and uses disposable work/run folders and an empty Git commit. The four
+profile probes print help, export the empty commit or discard the usage output; no model call
+is made. It temporarily substitutes an unapproved id in `images` for the refusal probe,
+restores both configuration files in `finally`, restarts the helper and removes its fixtures
+and run metadata. No login contents are read by the orchestrator or changed. Run this probe
+with no other launcher clients active. The permanent caller configuration still authorizes only
+uid 0 afterward. There are no group members to provision in this installation.
+
+The service accepts one newline-terminated UTF-8 JSON object per Unix stream connection at
+`/run/homelab-launcher.sock` (root:homelab-launch 0660). The complete line, including its
+newline, is at most 65536 bytes. Duplicate keys, non-finite numbers, extra/missing fields and
+wrong types are refused. Socket reads have a 30-second timeout. The kernel's `SO_PEERCRED`
+uid selects allowed profiles from `callers.json`; a supplied uid is an unknown field. Profile
+and caller changes take effect after restarting the service; image approval is checked per
+launch. The tag must resolve to an approved sha256 id and Docker runs that id with pull disabled.
+The configured layouts/limits must match the fixed builders; changing metadata cannot add a
+profile, mount or network.
+
+| Operation | Exact request fields besides `op` |
+|---|---|
+| `own`, `remove` | `role` (`work` or `run`), `folder_id` |
+| `run`, profile `cli-run` | `profile`, `run_id`, `folders` (`work` and `run` ids), `tool` (`claude` or `codex`), `command` (argv), `exports` (list of repository export ids, possibly empty) |
+| `run`, profile `chat` | The `cli-run` fields plus positive integer `turn` (at most 2^63-1) |
+| `run`, profile `bundle` | `profile`, `run_id`, `folders` (`work` and `run` ids), `branch` |
+| `run`, profile `usage` | `profile`, `run_id` |
+| `status`, `stop` | `run_id` |
+
+IDs match `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. Work/run ids select one direct child of
+`/srv/factory/work` or `/srv/factory/runs`; export ids select `<work>/repos/<id>`. Login paths
+come only from the fixed tool name. Existing directories and every ancestor must be real,
+with no links. `own` walks without following links and changes the top folder last; `remove`
+uses Python's descriptor-based, symlink-resistant tree removal, including unlinking leaf
+symlinks without touching their targets. Neither operation accepts the login role.
+
+For `run` only, send exactly two writable descriptors (stdout, stderr) with `SCM_RIGHTS`,
+for example using `socket.send_fds`; send no descriptors for other operations. The helper
+waits and returns `{"ok":true,"exit_code":N}`. All container output, including usage, goes
+directly to those descriptors, never to the response or journal. `usage` has no network and
+only the Codex login mounted read-only; its fixed in-container Python command scans session
+JSONL files newest first and prints only the last `rate_limits` object with a primary or
+secondary window from the first matching file, or `null`. It never runs host-side code from
+the login or work tree.
+
+`cli-run`, `bundle` and `usage` containers use `homelab-fence-run-<run_id>`; chat retains
+`factory-session-turn-<turn>`, a 1200-second timeout and forced removal (124 on timeout,
+125 on cleanup failure). Other Docker arguments for existing profiles equal the CLI fence's
+builders, apart from the stipulated name and immutable image id. `status` returns only
+`ok`, `running` and `exit_code` (null until known); `stop` forcibly removes the recorded
+container and returns `{"ok":true}`. It refuses to acknowledge a launch it could not stop.
+Run ids are single-use until reboot. Root-only 0600 records under `/run/homelab-launcher`
+retain the profile/name/caller/exit code and current run id per name across service restarts,
+with no command or content;
+after reboot runs are unknown. Reusing a chat turn name never lets an older run id
+inspect or stop the newer container. Root may inspect/stop any recorded run; other authorized
+callers may only inspect/stop their own runs and allowed profiles. Refusals return
+`{"ok":false,"error":"<fixed reason>"}`; no exception text is exposed. The journal carries
+only uid, operation, profile, safe identifiers, exit codes and fixed reasons.
+
+Rollback: `sudo systemctl disable --now homelab-launcher.socket`, then
+`sudo systemctl stop homelab-launcher.service`. Existing callers still use the unchanged
+`homelab-fence`; no production caller depends on the socket. Leave the group, inactive files,
+image approval and existing fence installation in place for inspection. No volume or login
+rollback is needed.
 
 ### Bulk disk and storage migration
 

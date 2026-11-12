@@ -1,37 +1,338 @@
 #!/usr/bin/env python3.13
-"""No credentials: check CONNECT allow/deny and direct egress from the internal net."""
-import subprocess
-import time
+"""Check CLI fence egress and optional fixed-launcher socket probes."""
 
-BASE = ['docker', 'run', '--rm', '--pull', 'never', '--user', '21000:21000',
-        '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--read-only',
-        '--memory', '4g', '--memory-swap', '4g', '--cpus', '2', '--pids-limit', '256',
-        '--tmpfs', '/tmp:rw,nosuid,nodev,size=512m',
-        '--tmpfs', '/home/agent:rw,nosuid,nodev,size=512m,uid=21000,gid=21000,mode=0700',
-        '--log-driver', 'none', '--network', 'homelab-fence', 'homelab-fence:1',
-        'curl', '--silent', '--show-error', '--connect-timeout', '5', '--max-time', '15']
+import argparse
+import grp
+import json
+import os
+import pwd
+import shutil
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+
+LAUNCHER_CONFIG = Path("/etc/homelab-launcher")
+LAUNCHER_WORK = Path("/srv/factory/work")
+LAUNCHER_RUNS = Path("/srv/factory/runs")
+LAUNCHER_STATE = Path("/run/homelab-launcher")
+
+BASE = [
+    "docker",
+    "run",
+    "--rm",
+    "--pull",
+    "never",
+    "--user",
+    "21000:21000",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--read-only",
+    "--memory",
+    "4g",
+    "--memory-swap",
+    "4g",
+    "--cpus",
+    "2",
+    "--pids-limit",
+    "256",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,size=512m",
+    "--tmpfs",
+    "/home/agent:rw,nosuid,nodev,size=512m,uid=21000,gid=21000,mode=0700",
+    "--log-driver",
+    "none",
+    "--network",
+    "homelab-fence",
+    "homelab-fence:1",
+    "curl",
+    "--silent",
+    "--show-error",
+    "--connect-timeout",
+    "5",
+    "--max-time",
+    "15",
+]
 
 
 def curl(*args):
     return subprocess.run([*BASE, *args], capture_output=True, text=True, check=False)
 
 
-for attempt in range(10):
-    allowed = curl('--proxy', 'http://cli-proxy:8888', '--fail',
-                   '--output', '/dev/null', 'https://api.github.com')
-    if allowed.returncode == 0:
-        break
-    time.sleep(1)
-else:
-    raise SystemExit('FAIL: allowed host did not answer through proxy')
-print('PASS: api.github.com:443 answers through proxy')
-packages = curl('--proxy', 'http://cli-proxy:8888', '--fail',
-                '--output', '/dev/null', 'https://pypi.org')
-assert packages.returncode == 0, 'PyPI did not answer through proxy'
-print('PASS: pypi.org:443 answers through proxy')
-denied = curl('--proxy', 'http://cli-proxy:8888', 'https://example.com')
-assert denied.returncode != 0 and '403' in denied.stderr, 'deny must be a proxy 403'
-print('PASS: example.com:443 refused with 403')
-direct = curl('--noproxy', '*', 'https://1.1.1.1')
-assert direct.returncode != 0, 'direct HTTPS unexpectedly succeeded'
-print('PASS: direct HTTPS without proxy fails')
+def check_fence():
+    for _attempt in range(10):
+        allowed = curl(
+            "--proxy",
+            "http://cli-proxy:8888",
+            "--fail",
+            "--output",
+            "/dev/null",
+            "https://api.github.com",
+        )
+        if allowed.returncode == 0:
+            break
+        time.sleep(1)
+    else:
+        raise SystemExit("FAIL: allowed host did not answer through proxy")
+    print("PASS: api.github.com:443 answers through proxy")
+    packages = curl(
+        "--proxy", "http://cli-proxy:8888", "--fail", "--output", "/dev/null", "https://pypi.org"
+    )
+    assert packages.returncode == 0, "PyPI did not answer through proxy"
+    print("PASS: pypi.org:443 answers through proxy")
+    denied = curl("--proxy", "http://cli-proxy:8888", "https://example.com")
+    assert denied.returncode != 0 and "403" in denied.stderr, "deny must be a proxy 403"
+    print("PASS: example.com:443 refused with 403")
+    direct = curl("--noproxy", "*", "https://1.1.1.1")
+    assert direct.returncode != 0, "direct HTTPS unexpectedly succeeded"
+    print("PASS: direct HTTPS without proxy fails")
+
+
+# This client has only the launcher socket. No Docker socket, work tree or login mount.
+LAUNCHER_CLIENT = """import json, socket, sys
+request, expected = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+    connection.connect('/run/homelab-launcher.sock')
+    data = (json.dumps(request) + '\\n').encode()
+    with open('/dev/null', 'wb') as output:
+        if request.get('op') == 'run':
+            socket.send_fds(connection, [data], [output.fileno(), output.fileno()])
+        else:
+            connection.sendall(data)
+        with connection.makefile('rb') as stream:
+            response = json.loads(stream.readline(65537))
+    valid = all(response.get(key) == value for key, value in expected.items())
+    sys.exit(0 if valid else 1)
+"""
+
+
+def launcher_client(uid, request, expected):
+    gid = grp.getgrnam("homelab-launch").gr_gid
+    return (
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--pull",
+                "never",
+                "--user",
+                f"{uid}:{uid}",
+                "--group-add",
+                str(gid),
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--read-only",
+                "--network",
+                "none",
+                "--log-driver",
+                "none",
+                "--memory",
+                "128m",
+                "--pids-limit",
+                "64",
+                "--mount",
+                "type=bind,src=/run/homelab-launcher.sock,dst=/run/homelab-launcher.sock",
+                "homelab-fence:1",
+                "python3",
+                "-I",
+                "-c",
+                LAUNCHER_CLIENT,
+                json.dumps(request),
+                json.dumps(expected),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=180,
+        ).returncode
+        == 0
+    )
+
+
+def check_launcher():
+    """Root orchestrates temporary fixtures; every socket request comes from non-root."""
+    if os.getuid() != 0:
+        raise SystemExit("FAIL: launcher probes require the root orchestrator")
+    config = LAUNCHER_CONFIG
+    callers_path, images_path = config / "callers.json", config / "images"
+    callers_bytes, images_bytes = callers_path.read_bytes(), images_path.read_bytes()
+    callers = json.loads(callers_bytes)
+    # No account is created. Refuse to borrow an existing account or configured caller.
+    probe_uid, unknown_uid = 21998, 21999
+    for uid in (probe_uid, unknown_uid):
+        try:
+            pwd.getpwuid(uid)
+        except KeyError:
+            pass
+        else:
+            raise SystemExit("FAIL: launcher probe uid already has an account")
+        if str(uid) in callers:
+            raise SystemExit("FAIL: launcher probe uid already authorized")
+    work = run = linked = None
+    failures = 0
+
+    def report(label, request, expected, uid=probe_uid):
+        nonlocal failures
+        try:
+            passed = launcher_client(uid, request, expected)
+        except (OSError, subprocess.SubprocessError):
+            passed = False
+        print(f"{'PASS' if passed else 'FAIL'}: launcher {label}", flush=True)
+        failures += not passed
+
+    try:
+        work = Path(tempfile.mkdtemp(prefix="launcher-probe-", dir=LAUNCHER_WORK))
+        run = Path(tempfile.mkdtemp(prefix="launcher-probe-", dir=LAUNCHER_RUNS))
+        for path in (work, run):
+            os.chown(path, 21000, 21000)
+        linked = work.with_name(work.name + "-link")
+        linked.symlink_to(work, target_is_directory=True)
+        # A disposable empty Git history for the fixed bundle command, created inside
+        # an offline unprivileged container. No host Git reads an untrusted work tree.
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--pull",
+                "never",
+                "--user",
+                "21000:21000",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--read-only",
+                "--network",
+                "none",
+                "--log-driver",
+                "none",
+                "--mount",
+                f"type=bind,src={work},dst=/work",
+                "--workdir",
+                "/work",
+                "homelab-fence:1",
+                "sh",
+                "-ec",
+                "git init -b launcher-probe >/dev/null && "
+                "git -c user.name=probe -c user.email=probe@localhost "
+                "-c core.hooksPath=/dev/null commit --allow-empty -m probe >/dev/null",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=60,
+        )
+        callers[str(probe_uid)] = ["cli-run", "chat", "bundle", "usage"]
+        callers_path.write_text(json.dumps(callers) + "\n")
+        subprocess.run(
+            ["systemctl", "restart", "homelab-launcher.service"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        folders = {"work": work.name, "run": run.name}
+        base = {
+            "op": "run",
+            "profile": "cli-run",
+            "run_id": run.name + "-cli",
+            "folders": folders,
+            "tool": "codex",
+            "command": ["codex", "exec", "--help"],
+            "exports": [],
+        }
+        report("cli-run starts", base, {"ok": True, "exit_code": 0})
+        # Use a large random positive turn id to avoid ordinary small sequential turn ids.
+        turn = 10**15 + int.from_bytes(os.urandom(6))
+        report(
+            "chat starts",
+            {**base, "profile": "chat", "run_id": run.name + "-chat", "turn": turn},
+            {"ok": True, "exit_code": 0},
+        )
+        report(
+            "bundle starts",
+            {
+                "op": "run",
+                "profile": "bundle",
+                "run_id": run.name + "-bundle",
+                "folders": folders,
+                "branch": "launcher-probe",
+            },
+            {"ok": True, "exit_code": 0},
+        )
+        report(
+            "usage starts",
+            {"op": "run", "profile": "usage", "run_id": run.name + "-usage"},
+            {"ok": True, "exit_code": 0},
+        )
+        report(
+            "unknown profile refused",
+            {**base, "profile": "unknown"},
+            {"ok": False, "error": "unknown_profile"},
+        )
+        report(
+            "outside folder refused",
+            {**base, "folders": {**folders, "work": "/etc"}},
+            {"ok": False, "error": "invalid_identifier"},
+        )
+        report(
+            "linked folder refused",
+            {**base, "folders": {**folders, "work": linked.name}},
+            {"ok": False, "error": "unavailable"},
+        )
+        report(
+            "unknown field refused",
+            {**base, "docker_options": []},
+            {"ok": False, "error": "invalid_fields"},
+        )
+        report("unknown uid refused", base, {"ok": False, "error": "unknown_uid"}, uid=unknown_uid)
+        # Change only the launcher's allowlist, never the live image tag or login. The
+        # launcher reads this file anew for every launch; all existing CLI callers stay put.
+        images_path.write_text("sha256:" + "0" * 64 + "\n")
+        report(
+            "unapproved image refused",
+            {**base, "run_id": run.name + "-unapproved"},
+            {"ok": False, "error": "image_not_approved"},
+        )
+    finally:
+        images_path.write_bytes(images_bytes)
+        callers_path.write_bytes(callers_bytes)
+        subprocess.run(
+            ["systemctl", "restart", "homelab-launcher.service"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if linked is not None:
+            linked.unlink(missing_ok=True)
+        for path in (work, run):
+            if path is not None:
+                shutil.rmtree(path)
+        # Probe-only registry entries have the same unique prefix as the fixtures.
+        if run is not None:
+            for path in LAUNCHER_STATE.glob(run.name + "-*.json"):
+                path.unlink()
+            for path in LAUNCHER_STATE.glob("*.current"):
+                if path.read_text().startswith(run.name + "-"):
+                    path.unlink()
+    if failures:
+        raise SystemExit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--launcher", action="store_true", help="run the non-root socket probes")
+    options = parser.parse_args()
+    if options.launcher:
+        check_launcher()
+    else:
+        check_fence()
+
+
+if __name__ == "__main__":
+    main()

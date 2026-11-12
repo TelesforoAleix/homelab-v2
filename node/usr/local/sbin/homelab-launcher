@@ -1,0 +1,614 @@
+#!/usr/bin/python3 -I
+"""Socket-activated, identifier-only launcher for the fixed CLI fence profiles."""
+
+import concurrent.futures
+import contextlib
+import fcntl
+import importlib.machinery
+import importlib.util
+import json
+import logging
+import os
+import re
+import shutil
+import socket
+import stat
+import struct
+import subprocess
+import threading
+import time
+from pathlib import Path
+
+CONFIG = Path("/etc/homelab-launcher")
+STATE = Path("/run/homelab-launcher")
+MAX_LINE = 64 * 1024
+IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
+logger = logging.getLogger("homelab-launcher")
+
+# Import only the adjacent, root-installed script, never a module from a work copy.
+_loader = importlib.machinery.SourceFileLoader(
+    "launcher_fence", str(Path(__file__).with_name("homelab-fence"))
+)
+_spec = importlib.util.spec_from_loader(_loader.name, _loader)
+fence = importlib.util.module_from_spec(_spec)
+_loader.exec_module(fence)
+
+LIMITS = {"memory": "4g", "memory_swap": "4g", "cpus": "2", "pids": 256}
+LAYOUTS = {
+    "cli-run": {
+        "network": "homelab-fence",
+        "mounts": {
+            "login": "/login:rw",
+            "work": "/work:rw",
+            "run": "/run/factory:rw",
+            "exports": "/work/repos/<id>:ro",
+        },
+        "timeout": None,
+    },
+    "chat": {
+        "network": "homelab-fence",
+        "mounts": {
+            "login": "/login:rw",
+            "work": "/work:rw",
+            "run": "/run/factory:rw",
+            "exports": "/work/repos/<id>:ro",
+        },
+        "timeout": 1200,
+    },
+    "bundle": {
+        "network": "none",
+        "mounts": {"work": "/work:ro", "run": "/run/factory:rw"},
+        "timeout": None,
+    },
+    "usage": {"network": "none", "mounts": {"codex-login": "/login:ro"}, "timeout": None},
+}
+
+# Executed only inside the fence image. No host read of login file contents.
+USAGE_SCRIPT = """import json
+from pathlib import Path
+result = None
+try:
+    paths = sorted((p for p in Path('/login/sessions').rglob('*.jsonl')
+                    if not p.is_symlink() and p.is_file()),
+                   key=lambda p: (p.stat().st_mtime_ns, str(p)), reverse=True)
+    for path in paths:
+        candidate = None
+        try:
+            with path.open() as stream:
+                for line in stream:
+                    try:
+                        value = json.loads(line).get('payload', {}).get('rate_limits')
+                        if isinstance(value, dict) and any(
+                            isinstance(value.get(k), dict) for k in ('primary', 'secondary')):
+                            candidate = value
+                    except (ValueError, AttributeError, TypeError, RecursionError):
+                        pass
+        except (OSError, UnicodeError):
+            continue
+        if candidate is not None:
+            result = candidate
+            break
+except OSError:
+    pass
+print(json.dumps(result, separators=(',', ':')))
+"""
+USAGE_COMMAND = ["python3", "-I", "-c", USAGE_SCRIPT]
+
+
+class Refused(Exception):
+    """Only fixed reason strings may leave the helper."""
+
+
+def identifier(value):
+    if not isinstance(value, str) or not IDENTIFIER.fullmatch(value):
+        raise Refused("invalid_identifier")
+    return value
+
+
+def fields(value, required, optional=()):
+    if (
+        type(value) is not dict
+        or not set(required) <= value.keys()
+        or (value.keys() - set(required) - set(optional))
+    ):
+        raise Refused("invalid_fields")
+
+
+def decode_json(data):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise Refused("invalid_json")
+            result[key] = value
+        return result
+
+    try:
+        if isinstance(data, (bytes, bytearray)):
+            data = data.decode("utf-8")
+        return json.loads(
+            data,
+            object_pairs_hook=pairs,
+            parse_constant=lambda _: (_ for _ in ()).throw(Refused("invalid_json")),
+        )
+    except (ValueError, UnicodeError, RecursionError):
+        raise Refused("invalid_json") from None
+
+
+@contextlib.contextmanager
+def directory(path):
+    """Pin every component with O_NOFOLLOW, including the fixed roots."""
+    path = Path(path)
+    if not path.is_absolute() or ".." in path.parts:
+        raise Refused("invalid_folder")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for part in path.parts[1:]:
+            child = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd
+            )
+            os.close(fd)
+            fd = child
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def folder(role, value):
+    roots = {"work": fence.WORK_ROOT, "run": fence.RUN_ROOT}
+    if role not in roots:
+        raise Refused("invalid_role")
+    path = roots[role] / identifier(value)
+    with directory(path):
+        pass
+    return path
+
+
+def protected_read(path, mode):
+    with directory(path.parent) as parent:
+        fd = os.open(
+            path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=parent
+        )
+    with os.fdopen(fd) as stream:
+        info = os.fstat(stream.fileno())
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != 0
+            or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) != mode
+        ):
+            raise Refused("unsafe_configuration")
+        return stream.read()
+
+
+def load_configuration():
+    profiles = decode_json(protected_read(CONFIG / "profiles.json", 0o644))
+    if type(profiles) is not dict or set(profiles) != set(LAYOUTS):
+        raise Refused("invalid_configuration")
+    for name, layout in LAYOUTS.items():
+        # The builders own the machinery; metadata cannot silently widen their contract.
+        if profiles[name] != {"image": fence.IMAGE, "limits": LIMITS, **layout}:
+            raise Refused("invalid_configuration")
+    callers = decode_json(protected_read(CONFIG / "callers.json", 0o644))
+    if type(callers) is not dict:
+        raise Refused("invalid_configuration")
+    for uid, allowed in callers.items():
+        if (
+            not re.fullmatch(r"0|[1-9][0-9]*", uid)
+            or int(uid) > 2**32 - 1
+            or type(allowed) is not list
+            or not allowed
+            or any(type(p) is not str or p not in profiles for p in allowed)
+            or len(set(allowed)) != len(allowed)
+        ):
+            raise Refused("invalid_configuration")
+    return profiles, callers
+
+
+def approved_image(tag):
+    approved = protected_read(CONFIG / "images", 0o600).splitlines()
+    if not approved or any(not IMAGE_ID.fullmatch(line) for line in approved):
+        raise Refused("invalid_images")
+    result = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", tag],
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    image = result.stdout.decode("ascii").strip()
+    if image not in approved:
+        raise Refused("image_not_approved")
+    return image
+
+
+def usage_arguments(image):
+    credentials = fence.real_directory(fence.LOGIN_ROOT / "codex")
+    info = credentials.stat()
+    if stat.S_IMODE(info.st_mode) != 0o700 or info.st_uid != fence.UID or info.st_gid != fence.GID:
+        raise Refused("invalid_login")
+    return [
+        *fence.sealed_arguments("none"),
+        "--mount",
+        f"type=bind,src={credentials},dst=/login,readonly",
+        "--workdir",
+        "/home/agent",
+        "--env",
+        "HOME=/home/agent",
+        image,
+        *USAGE_COMMAND,
+    ]
+
+
+def run_arguments(request, profiles):
+    profile = request.get("profile")
+    if type(profile) is not str or profile not in profiles:
+        raise Refused("unknown_profile")
+    common = ("op", "profile", "run_id")
+    if profile in ("cli-run", "chat"):
+        fields(
+            request,
+            (
+                *common,
+                "folders",
+                "tool",
+                "command",
+                "exports",
+                *(("turn",) if profile == "chat" else ()),
+            ),
+        )
+        if type(request["tool"]) is not str or request["tool"] not in fence.TOOLS:
+            raise Refused("invalid_tool")
+        command = request["command"]
+        if (
+            type(command) is not list
+            or not command
+            or any(type(arg) is not str or "\x00" in arg for arg in command)
+        ):
+            raise Refused("invalid_command")
+        exports = request["exports"]
+        if type(exports) is not list:
+            raise Refused("invalid_exports")
+        for export in exports:
+            identifier(export)
+        if len(set(exports)) != len(exports):
+            raise Refused("invalid_exports")
+        if profile == "chat" and (
+            type(request["turn"]) is not int or not 1 <= request["turn"] <= 2**63 - 1
+        ):
+            raise Refused("invalid_turn")
+    elif profile == "bundle":
+        fields(request, (*common, "folders", "branch"))
+        if type(request["branch"]) is not str:
+            raise Refused("invalid_branch")
+    else:
+        fields(request, common)
+    run_id = identifier(request["run_id"])
+    name = (
+        f"factory-session-turn-{request['turn']}"
+        if profile == "chat"
+        else f"homelab-fence-run-{run_id}"
+    )
+    if profile != "usage":
+        fields(request["folders"], ("work", "run"))
+        work = folder("work", request["folders"]["work"])
+        run = folder("run", request["folders"]["run"])
+    if profile in ("cli-run", "chat"):
+        paths = [work / "repos" / export for export in exports]
+        for path in paths:
+            with directory(path):
+                pass
+        args = fence.docker_arguments(
+            request["tool"],
+            repo=work,
+            run=run,
+            command=command,
+            read_only_paths=paths,
+            container_name=name if profile == "chat" else None,
+        )
+    elif profile == "bundle":
+        args = fence.bundle_arguments(repo=work, run=run, branch=request["branch"])
+    else:
+        args = usage_arguments(fence.IMAGE)
+    # Resolve the tag immediately before launch and run the approved immutable id.
+    image_index = args.index(fence.IMAGE)
+    args[image_index] = approved_image(profiles[profile]["image"])
+    if profile != "chat":
+        args[image_index:image_index] = ["--name", name]
+    return args, name
+
+
+def own(path):
+    """Use fwalk's pinned directories and never dereference a leaf symlink."""
+    with directory(path) as top:
+        for _, dirs, files, fd in os.fwalk(".", dir_fd=top, follow_symlinks=False):
+            for name in dirs + files:
+                os.chown(name, fence.UID, fence.GID, dir_fd=fd, follow_symlinks=False)
+        os.fchown(top, fence.UID, fence.GID)
+
+
+def remove(path):
+    # shutil's fd-based implementation is resistant to symlink substitution races.
+    if not shutil.rmtree.avoids_symlink_attacks:
+        raise Refused("unsafe_platform")
+    with directory(path.parent) as parent:
+        with directory(path):
+            shutil.rmtree(path.name, dir_fd=parent)
+
+
+def receive(connection, descriptors):
+    data = bytearray()
+    while b"\n" not in data:
+        chunk, received, flags, _ = socket.recv_fds(
+            connection, MAX_LINE + 1 - len(data), 2, socket.MSG_CMSG_CLOEXEC
+        )
+        descriptors.extend(received)
+        if flags & (socket.MSG_CTRUNC | socket.MSG_TRUNC) or len(descriptors) > 2:
+            raise Refused("invalid_descriptors")
+        if not chunk:
+            raise Refused("incomplete_request")
+        data.extend(chunk)
+        if len(data) > MAX_LINE:
+            raise Refused("line_too_long")
+    if data[-1:] != b"\n" or data.count(b"\n") != 1:
+        raise Refused("invalid_frame")
+    return decode_json(data)
+
+
+def peer_uid(connection):
+    return struct.unpack(
+        "iII", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("iII"))
+    )[1]
+
+
+class Launcher:
+    def __init__(self, profiles, callers, state=STATE):
+        self.profiles, self.callers, self.state = profiles, callers, state
+        self.lock = threading.Lock()
+        self.active = set()
+        self.context = threading.local()
+
+    def authorize(self, uid, profile):
+        if str(uid) not in self.callers:
+            raise Refused("unknown_uid")
+        if profile not in self.callers[str(uid)]:
+            raise Refused("profile_denied")
+
+    def record_path(self, run_id):
+        return self.state / (identifier(run_id) + ".json")
+
+    def read_record(self, uid, run_id):
+        try:
+            record = decode_json(protected_read(self.record_path(run_id), 0o600))
+        except FileNotFoundError:
+            raise Refused("unknown_run") from None
+        self.authorize(uid, record["profile"])
+        if uid != 0 and uid != record["uid"]:
+            raise Refused("run_denied")
+        return record
+
+    @staticmethod
+    def write_data(path, data, exclusive=False):
+        if exclusive:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+            with os.fdopen(fd, "w") as stream:
+                stream.write(data)
+        else:
+            temp = path.with_suffix(path.suffix + ".tmp")
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+            try:
+                with os.fdopen(fd, "w") as stream:
+                    stream.write(data)
+                os.replace(temp, path)
+            finally:
+                temp.unlink(missing_ok=True)
+
+    def write_record(self, run_id, record, exclusive=False):
+        self.write_data(self.record_path(run_id), json.dumps(record), exclusive)
+        # Names (especially chat turn numbers) can be reused. An old run id must
+        # never authorize status/stop against a later run with the same name.
+        self.write_data(self.state / (record["name"] + ".current"), run_id)
+
+    def is_current(self, run_id, record):
+        try:
+            return protected_read(self.state / (record["name"] + ".current"), 0o600) == run_id
+        except FileNotFoundError:
+            return False
+
+    def docker(self, *args):
+        return subprocess.run(
+            ["docker", *args], stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=30
+        )
+
+    def container_exists(self, name):
+        return bool(
+            self.docker("ps", "-aq", "--filter", f"name=^/{re.escape(name)}$").stdout.strip()
+        )
+
+    def execute(self, uid, request, descriptors):
+        if str(uid) not in self.callers:
+            raise Refused("unknown_uid")
+        if type(request) is not dict or type(request.get("op")) is not str:
+            raise Refused("invalid_fields")
+        operation = request["op"]
+        if operation == "run":
+            if len(descriptors) != 2:
+                raise Refused("invalid_descriptors")
+            for fd in descriptors:
+                if fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY:
+                    raise Refused("invalid_descriptors")
+            profile = request.get("profile")
+            if type(profile) is not str or profile not in self.profiles:
+                raise Refused("unknown_profile")
+            self.authorize(uid, profile)
+            self.context.profile = profile
+            args, name = run_arguments(request, self.profiles)
+            run_id = request["run_id"]
+            record = {"profile": profile, "name": name, "uid": uid, "exit_code": None}
+            with self.lock:
+                if name in self.active or self.container_exists(name):
+                    raise Refused("run_exists")
+                try:
+                    self.write_record(run_id, record, exclusive=True)
+                except FileExistsError:
+                    raise Refused("run_exists") from None
+                self.active.add(name)
+            code = 125
+            try:
+                try:
+                    code = subprocess.run(
+                        args,
+                        stdin=subprocess.DEVNULL,
+                        stdout=descriptors[0],
+                        stderr=descriptors[1],
+                        check=False,
+                        timeout=self.profiles[profile]["timeout"],
+                    ).returncode
+                except subprocess.TimeoutExpired:
+                    code = 124
+                finally:
+                    # Chat retains the CLI's forced cleanup even on timeout/start failure.
+                    if profile == "chat":
+                        try:
+                            if self.container_exists(name):
+                                self.docker("rm", "-f", name)
+                        except (OSError, subprocess.SubprocessError):
+                            code = 125
+            finally:
+                with self.lock:
+                    record["exit_code"] = code
+                    try:
+                        self.write_record(run_id, record)
+                    finally:
+                        self.active.discard(name)
+            return {"ok": True, "exit_code": code}
+        if descriptors:
+            raise Refused("invalid_descriptors")
+        if operation in ("own", "remove"):
+            fields(request, ("op", "role", "folder_id"))
+            if type(request["role"]) is not str:
+                raise Refused("invalid_role")
+            path = folder(request["role"], request["folder_id"])
+            (own if operation == "own" else remove)(path)
+            return {"ok": True}
+        if operation in ("status", "stop"):
+            fields(request, ("op", "run_id"))
+            with self.lock:
+                record = self.read_record(uid, request["run_id"])
+            name = record["name"]
+            self.context.profile = record["profile"]
+            if operation == "stop":
+                # docker run can still be creating the container. Never acknowledge a
+                # successful stop while that launch can subsequently start unnoticed.
+                deadline = time.monotonic() + 30
+                while True:
+                    with self.lock:
+                        if not self.is_current(request["run_id"], record):
+                            break
+                        exists = self.container_exists(name)
+                        active = name in self.active
+                        if exists:
+                            self.docker("rm", "-f", name)
+                            break
+                        if not active:
+                            break
+                    if time.monotonic() >= deadline:
+                        raise Refused("stop_failed")
+                    time.sleep(0.1)
+                return {"ok": True}
+            with self.lock:
+                record = self.read_record(uid, request["run_id"])
+                exists = self.is_current(request["run_id"], record) and self.container_exists(name)
+            return {"ok": True, "running": exists, "exit_code": record["exit_code"]}
+        raise Refused("unknown_operation")
+
+    def handle(self, connection):
+        descriptors = []
+        request = None
+        uid = -1
+        self.context.profile = None
+        try:
+            uid = peer_uid(connection)
+            connection.settimeout(30)
+            request = receive(connection, descriptors)
+            response = self.execute(uid, request, descriptors)
+        except Refused as exc:
+            response = {"ok": False, "error": str(exc)}
+        except (OSError, ValueError, subprocess.SubprocessError):
+            response = {"ok": False, "error": "unavailable"}
+        except Exception:
+            # No traceback or exception text: it may contain a command or file data.
+            response = {"ok": False, "error": "internal_error"}
+        finally:
+            for fd in descriptors:
+                os.close(fd)
+        audit = {
+            "uid": uid,
+            "reason": response.get("error", "completed"),
+            "exit_code": response.get("exit_code"),
+        }
+        if self.context.profile is not None:
+            audit["profile"] = self.context.profile
+        if type(request) is dict:
+            if request.get("op") in ("own", "remove", "run", "status", "stop"):
+                audit["op"] = request["op"]
+            if type(request.get("profile")) is str and request["profile"] in self.profiles:
+                audit["profile"] = request["profile"]
+            if request.get("role") in ("work", "run"):
+                audit["role"] = request["role"]
+            for key in ("run_id", "folder_id"):
+                value = request.get(key)
+                if type(value) is str and IDENTIFIER.fullmatch(value):
+                    audit[key] = value
+        logger.info("%s", json.dumps(audit, separators=(",", ":")))
+        try:
+            connection.sendall((json.dumps(response, separators=(",", ":")) + "\n").encode())
+        except OSError:
+            pass
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    try:
+        if (
+            os.getuid() != 0
+            or os.environ.get("LISTEN_PID") != str(os.getpid())
+            or os.environ.get("LISTEN_FDS") != "1"
+        ):
+            raise Refused("socket_activation_required")
+        profiles, callers = load_configuration()
+        # RuntimeDirectory= creates this root-only directory; never use a work root.
+        info = STATE.lstat()
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != 0
+            or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise Refused("unsafe_state")
+        launcher = Launcher(profiles, callers)
+        with socket.socket(fileno=3) as listener:
+            if listener.family != socket.AF_UNIX or listener.type != socket.SOCK_STREAM:
+                raise Refused("invalid_socket")
+            # Bound the number of connections and threads, while keeping stop/status live.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=32) as workers:
+                slots = threading.BoundedSemaphore(32)
+                while True:
+                    slots.acquire()
+                    connection, _ = listener.accept()
+
+                    def serve(connection=connection):
+                        try:
+                            with connection:
+                                launcher.handle(connection)
+                        finally:
+                            slots.release()
+
+                    workers.submit(serve)
+    except (Refused, OSError, ValueError):
+        logger.error("launcher_unavailable")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

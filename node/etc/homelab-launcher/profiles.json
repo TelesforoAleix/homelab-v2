@@ -1,0 +1,65 @@
+{
+  "cli-run": {
+    "image": "homelab-fence:1",
+    "limits": {
+      "memory": "4g",
+      "memory_swap": "4g",
+      "cpus": "2",
+      "pids": 256
+    },
+    "network": "homelab-fence",
+    "mounts": {
+      "login": "/login:rw",
+      "work": "/work:rw",
+      "run": "/run/factory:rw",
+      "exports": "/work/repos/<id>:ro"
+    },
+    "timeout": null
+  },
+  "chat": {
+    "image": "homelab-fence:1",
+    "limits": {
+      "memory": "4g",
+      "memory_swap": "4g",
+      "cpus": "2",
+      "pids": 256
+    },
+    "network": "homelab-fence",
+    "mounts": {
+      "login": "/login:rw",
+      "work": "/work:rw",
+      "run": "/run/factory:rw",
+      "exports": "/work/repos/<id>:ro"
+    },
+    "timeout": 1200
+  },
+  "bundle": {
+    "image": "homelab-fence:1",
+    "limits": {
+      "memory": "4g",
+      "memory_swap": "4g",
+      "cpus": "2",
+      "pids": 256
+    },
+    "network": "none",
+    "mounts": {
+      "work": "/work:ro",
+      "run": "/run/factory:rw"
+    },
+    "timeout": null
+  },
+  "usage": {
+    "image": "homelab-fence:1",
+    "limits": {
+      "memory": "4g",
+      "memory_swap": "4g",
+      "cpus": "2",
+      "pids": 256
+    },
+    "network": "none",
+    "mounts": {
+      "codex-login": "/login:ro"
+    },
+    "timeout": null
+  }
+}
