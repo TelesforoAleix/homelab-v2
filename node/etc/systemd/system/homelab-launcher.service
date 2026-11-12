@@ -1,0 +1,21 @@
+[Unit]
+Description=Fixed CLI fence launcher
+After=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/sbin/homelab-launcher
+RuntimeDirectory=homelab-launcher
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/factory/work /srv/factory/runs /run/homelab-launcher
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX
+StandardOutput=journal
+StandardError=journal

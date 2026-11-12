@@ -1,0 +1,12 @@
+[Unit]
+Description=Fixed CLI fence launcher socket
+
+[Socket]
+ListenStream=/run/homelab-launcher.sock
+SocketUser=root
+SocketGroup=homelab-launch
+SocketMode=0660
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
