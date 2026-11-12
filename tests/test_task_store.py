@@ -391,3 +391,39 @@ def test_runs_compare_by_role_and_route_in_plain_sql(connection):
                VALUES (%s, 2, 'worker', %s::jsonb, 'review')""",
             (task, route),
         )
+
+
+@pytest.mark.parametrize("field", ["set", "case", "configuration"])
+@pytest.mark.parametrize("value", ["../escape", "x\n", "", "a" * 65, "-name"])
+def test_eval_names_are_refused(field, value):
+    mark = {"set": "T", "case": "example", "configuration": "base", field: value}
+    with pytest.raises(Refused):
+        parse(encoded(task_file(entry(1, eval=mark))))
+
+
+def test_unknown_eval_configuration_is_refused_without_content():
+    with pytest.raises(Refused) as refused:
+        parse(
+            encoded(
+                task_file(
+                    entry(
+                        1,
+                        eval={
+                            "set": "T",
+                            "case": "example",
+                            "configuration": SECRET,
+                        },
+                    )
+                )
+            )
+        )
+    assert "unknown eval configuration" in str(refused.value)
+    assert SECRET not in str(refused.value)
+
+
+def test_eval_mark_is_stored(connection):
+    mark = {"set": "T", "case": "example", "configuration": "base"}
+    submit(connection, parse(encoded(task_file(entry(1, eval=mark), entry(2)))))
+    assert connection.execute(
+        "SELECT eval_set, eval_case, eval_configuration FROM homelab_tasks ORDER BY position"
+    ).fetchall() == [("T", "example", "base"), (None, None, None)]

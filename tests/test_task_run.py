@@ -1661,8 +1661,9 @@ def test_cli_fix_turn_gets_review_notes_and_keeps_review_on_litellm(
     assert len(record["reviews"]) == 2 and not any(record["tokens"].values())
 
 
+@pytest.mark.parametrize("eval_task", [False, True])
 def test_cli_queue_attempt_reaches_push_with_unmeasured_worker_usage(
-    repo, tmp_path, monkeypatch, fake_factory, caplog
+    repo, tmp_path, monkeypatch, fake_factory, caplog, eval_task
 ):
     import contextlib
     import io
@@ -1714,10 +1715,30 @@ def test_cli_queue_attempt_reaches_push_with_unmeasured_worker_usage(
     monkeypatch.setenv("HOMELAB_TASK_AUTHOR_EMAIL", "fixture@example.invalid")
     caplog.set_level("INFO", logger="homelab-task-runner")
     item = task(routes=[CODEX], allowed_files=["app.py"])
+    if eval_task:
+        item.update(eval_set="T", eval_case="example", eval_configuration="base")
+        monkeypatch.setattr(service, "RUNS", steps.runs)
+        monkeypatch.setattr(
+            service,
+            "configuration_snapshot",
+            lambda folder, name: (ROOT / "configurations" / name, "a" * 40),
+        )
     service.run_task(item)
     assert list(steps.calls) == ["prepare", "check", "review", "commit"]
-    assert len(pushes) == 1 and pushes[0][:2] == (item, repo)
-    assert git(repo, "show", f"{pushes[0][2]}:app.py") == "VALUE = 2\n"
+    if eval_task:
+        assert pushes == []
+        retained = list((steps.runs / "eval/T/example").glob("*/*/run.json"))
+        assert len(retained) == 1
+        record = json.loads(retained[0].read_text())
+        assert record["ended"] == "committed"
+        assert retained[0].parent.parent.name == record["configuration_hash"]
+        assert record["configuration_commit"] == "a" * 40
+        assert events[-1]["reason"] == "eval_kept"
+        committed = record["commit"]
+    else:
+        assert len(pushes) == 1 and pushes[0][:2] == (item, repo)
+        committed = pushes[0][2]
+    assert git(repo, "show", f"{committed}:app.py") == "VALUE = 2\n"
     assert git(repo, "log", "-1", "--format=%s").strip() == "Change value"
     assert (repo / ".task-commit-message").read_text() == "Change value\n"
     assert events[-1]["status"] == "done"

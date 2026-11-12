@@ -1050,3 +1050,43 @@ def test_unknown_visibility_is_public(monkeypatch):
 
 def test_private_content_location_is_not_logged_or_notified():
     assert runner.log_reason("push_private_content: private-file:2") == "push_private_content"
+
+
+@pytest.mark.parametrize("ended", ["committed", "agent_failed", "check_failed", "review_rejected"])
+def test_eval_keeps_every_attempt_and_never_pushes(monkeypatch, tmp_path, ended):
+    digest = "b" * 64
+    outcomes = [(ended, {"configuration_hash": digest})]
+    if ended in runner.RETRIES:
+        outcomes.append(("committed", {"configuration_hash": digest}))
+    script = Script(monkeypatch, tmp_path, *outcomes)
+    monkeypatch.setattr(runner, "RUNS", tmp_path)
+    item = task(eval_set="T", eval_case="example", eval_configuration="base", routes=[CHEAP])
+    runner.run_task(item)
+    expected = ("escalated", ended) if ended == "agent_failed" else ("done", "eval_kept")
+    assert script.ending() == expected
+    attempts = script.named("end_attempt")
+    assert len(attempts) == len(outcomes)
+    for event in attempts:
+        folder = tmp_path / "eval/T/example" / digest / event["run_id"]
+        assert (folder / "check.log").is_file()
+        assert not (tmp_path / event["run_id"]).exists()
+        assert event["configuration_hash"] == digest
+        for parent in [folder, *list(folder.parents)[:4]]:
+            assert parent.stat().st_mode & 0o777 == 0o700
+    if ended == "committed":
+        assert attempts[0]["status"] == "done"
+        assert attempts[0]["reason"] == "eval_kept"
+
+
+def test_eval_uses_the_tasks_configuration(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(
+        runner,
+        "configuration_snapshot",
+        lambda folder, name: (seen.append(name) or folder / name, "a" * 40),
+    )
+    monkeypatch.setattr(runner, "invoke_ticket", lambda *args: {"ended": "run_refused"})
+    monkeypatch.setenv("HOMELAB_TASK_AUTHOR_NAME", "Fixture")
+    monkeypatch.setenv("HOMELAB_TASK_AUTHOR_EMAIL", "fixture@example.invalid")
+    runner.run_ticket(task(eval_set="T", eval_configuration="other"), tmp_path, "p", "r", None)
+    assert seen == ["pi/other"]

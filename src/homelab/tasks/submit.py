@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sys
 from graphlib import CycleError, TopologicalSorter
+from pathlib import Path
 from typing import Annotated, Any
 
 import psycopg
@@ -51,6 +52,22 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+EvalName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
+CONFIGURATIONS = Path(__file__).resolve().parents[3] / "configurations" / "pi"
+
+
+class EvalMark(Strict):
+    set: EvalName
+    case: EvalName
+    configuration: EvalName
+
+    @model_validator(mode="after")
+    def known_configuration(self) -> EvalMark:
+        if not (CONFIGURATIONS / self.configuration).is_dir():
+            raise ValueError("unknown eval configuration")
+        return self
+
+
 class TaskEntry(Strict):
     position: Position
     depends_on: list[Position] = []
@@ -61,6 +78,7 @@ class TaskEntry(Strict):
     pinned_paths: list[RepositoryPath] = []
     priority: int = Field(default=0, ge=-INT_MAX, le=INT_MAX)
     severity: Text = "normal"
+    eval: EvalMark | None = None
 
     @model_validator(mode="after")
     def distinct_dependencies(self) -> TaskEntry:

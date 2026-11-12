@@ -26,6 +26,9 @@ FIELDS = (
     "allowed_files",
     "check_command",
     "pinned_paths",
+    "eval_set",
+    "eval_case",
+    "eval_configuration",
 )
 
 

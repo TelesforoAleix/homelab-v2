@@ -474,7 +474,7 @@ def test_minute_copy_preserves_encryption_and_workflow_files():
         assert hashlib.sha256((root / path).read_bytes()).hexdigest() == digest, path
 
 
-def test_dockerfile_removes_only_unused_routes_variable():
+def test_dockerfile_keeps_approved_image_configuration():
     expected = (
         (
             "# Two stages: resolve and install dependencies with uv, "
@@ -501,6 +501,7 @@ RUN apt-get update \\
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin homelab
 WORKDIR /app
 COPY --from=builder --chown=homelab:homelab /app /app
+COPY configurations/ /app/configurations/
 ENV PATH="/app/.venv/bin:$PATH" \\
     PYTHONUNBUFFERED=1
 USER homelab

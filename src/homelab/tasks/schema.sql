@@ -90,3 +90,11 @@ CREATE TABLE IF NOT EXISTS homelab_providers (
     seen_at timestamptz,
     state text NOT NULL CHECK (state IN ('fresh', 'away'))
 );
+
+-- Expand only: older submitters and runners may omit these fields.
+ALTER TABLE homelab_tasks ADD COLUMN IF NOT EXISTS eval_set text;
+ALTER TABLE homelab_tasks ADD COLUMN IF NOT EXISTS eval_case text;
+ALTER TABLE homelab_tasks ADD COLUMN IF NOT EXISTS eval_configuration text;
+ALTER TABLE homelab_task_attempts ADD COLUMN IF NOT EXISTS configuration_hash text;
+CREATE INDEX IF NOT EXISTS homelab_tasks_eval_set_idx
+    ON homelab_tasks (eval_set, eval_case) WHERE eval_set IS NOT NULL;
