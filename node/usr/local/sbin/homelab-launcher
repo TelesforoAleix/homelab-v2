@@ -159,8 +159,8 @@ def folder(role, value):
     roots = {"work": fence.WORK_ROOT, "run": fence.RUN_ROOT}
     if role not in roots:
         raise Refused("invalid_role")
-    parts = value.split("/") if role == "run" and isinstance(value, str) else [value]
-    if len(parts) > 3:
+    parts = value.split("/") if isinstance(value, str) else [value]
+    if len(parts) > (3 if role == "run" else 2):
         raise Refused("invalid_folder")
     path = roots[role].joinpath(*(identifier(part) for part in parts))
     with directory(path):

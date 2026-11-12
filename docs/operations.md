@@ -2447,8 +2447,9 @@ profile, mount or network.
 | `run`, profile `usage` | `profile`, `run_id` |
 | `status`, `stop` | `run_id` |
 
-IDs match `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. Work ids select one direct child of
-`/srv/factory/work`, run folders select one to three identifier parts (such as `<run>`,
+IDs match `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. Work folders select one or two identifier parts
+(such as `<work>` or `session-N/planning`) under `/srv/factory/work`, including for `own`
+and `remove`; run folders select one to three identifier parts (such as `<run>`,
 `<turn>/io` or `<scope>/<run>/io`) under `/srv/factory/runs`
 with each part matching the identifier rule, and export ids select `<work>/repos/<id>`. Login paths
 come only from the fixed tool name. Existing directories and every ancestor must be real,
