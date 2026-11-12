@@ -324,11 +324,16 @@ def test_fresh_requests_and_plain_usage(tmp_path, monkeypatch):
     bins.mkdir()
     claude = bins / "claude"
     codex = bins / "codex"
-    event = {"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {
-        "five_hour": {"utilization": 0.37, "resetsAt": 1800000000},
-        "seven_day": {"utilization": 0.77, "resetsAt": 1800500000},
-    }}}
-    claude.write_text(f'#!/bin/sh\nprintf "%s\\n" \'{json.dumps(event)}\'\n')
+    event = {
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+            "unifiedWindows": {
+                "five_hour": {"utilization": 0.37, "resetsAt": 1800000000},
+                "seven_day": {"utilization": 0.77, "resetsAt": 1800500000},
+            }
+        },
+    }
+    claude.write_text(f"#!/bin/sh\nprintf \"%s\\n\" '{json.dumps(event)}'\n")
     entry = codex_entry("2026-11-12T00:00:00Z", 21, 42)
     codex.write_text(
         '#!/bin/sh\nmkdir -p "$HOME/.codex/sessions"\n'
@@ -345,12 +350,12 @@ def test_fresh_requests_and_plain_usage(tmp_path, monkeypatch):
     report = profile.fresh_usage_report()
     assert report["claude"]["five_hour"]["used_percentage"] == 37
     assert report["codex"]["five_hour"]["used_percentage"] == 21
-    claude.write_text('#!/bin/sh\nexit 1\n')
+    claude.write_text("#!/bin/sh\nexit 1\n")
     report = profile.fresh_usage_report()
     assert report["claude"]["error"] == "claude request failed: exit 1"
     assert report["codex"]["five_hour"]["used_percentage"] == 21
-    codex.write_text('#!/bin/sh\nexit 2\n')
-    claude.write_text(f'#!/bin/sh\nprintf "%s\\n" \'{json.dumps(event)}\'\n')
+    codex.write_text("#!/bin/sh\nexit 2\n")
+    claude.write_text(f"#!/bin/sh\nprintf \"%s\\n\" '{json.dumps(event)}'\n")
     report = profile.fresh_usage_report()
     assert report["codex"]["error"] == "codex request failed: exit 2"
     assert report["codex"]["five_hour"]["used_percentage"] == 21
@@ -362,7 +367,9 @@ def test_fresh_request_missing_and_timeout(name, monkeypatch, tmp_path):
     monkeypatch.setattr(profile.shutil, "which", lambda *args, **kwargs: None)
     assert profile.fresh_request(name)[1] == f"{name} request failed: not found"
     monkeypatch.setattr(profile.shutil, "which", lambda *args, **kwargs: str(tmp_path / name))
+
     def timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired(args[0], 60)
+
     monkeypatch.setattr(profile.subprocess, "run", timeout)
     assert profile.fresh_request(name)[1] == f"{name} request failed: timeout"

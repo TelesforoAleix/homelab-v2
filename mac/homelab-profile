@@ -860,7 +860,9 @@ def tick(cfg):
             elif "battery_since" in record:
                 record.pop("battery_since")
                 save(STATE / "session.json", record)
-            active = any(state not in ("sleeping", "unloaded") for state in router_models().values())
+            active = any(
+                state not in ("sleeping", "unloaded") for state in router_models().values()
+            )
             active |= any(job_live(job) for job in jobs().values())
             active |= queue.active()
             if active:
@@ -1249,18 +1251,47 @@ def claude_usage(path=None):
 
 
 def fresh_request(name):
-    paths = os.pathsep.join(filter(None, [os.environ.get("PATH", ""), "/opt/homebrew/bin",
-                                          "/usr/local/bin", str(Path.home() / ".local/bin")]))
+    paths = os.pathsep.join(
+        filter(
+            None,
+            [
+                os.environ.get("PATH", ""),
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                str(Path.home() / ".local/bin"),
+            ],
+        )
+    )
     executable = shutil.which(name, path=paths)
     if not executable:
         return None, f"{name} request failed: not found"
     executable = str(Path(executable).resolve())
     if name == "claude":
-        args = [executable, "-p", "--model", "haiku", "--output-format", "stream-json",
-                "--verbose", "--tools", "", "Reply only: OK"]
+        args = [
+            executable,
+            "-p",
+            "--model",
+            "haiku",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--tools",
+            "",
+            "Reply only: OK",
+        ]
     else:
-        args = [executable, "exec", "-m", "gpt-6-luna", "-c", 'model_reasoning_effort="low"',
-                "--skip-git-repo-check", "-s", "read-only", "Reply only: OK"]
+        args = [
+            executable,
+            "exec",
+            "-m",
+            "gpt-6-luna",
+            "-c",
+            'model_reasoning_effort="low"',
+            "--skip-git-repo-check",
+            "-s",
+            "read-only",
+            "Reply only: OK",
+        ]
     try:
         with tempfile.TemporaryDirectory() as folder:
             result = subprocess.run(args, cwd=folder, capture_output=True, text=True, timeout=60)
@@ -1280,8 +1311,12 @@ def fresh_request(name):
                     for key in ("five_hour", "seven_day"):
                         row = windows[key]
                         converted[key] = usage_window(
-                            {"used_percentage": row["utilization"] * 100,
-                             "resets_at": row.get("resetsAt")}, "used_percentage")
+                            {
+                                "used_percentage": row["utilization"] * 100,
+                                "resets_at": row.get("resetsAt"),
+                            },
+                            "used_percentage",
+                        )
                     if all(converted.values()):
                         reading = {"as_of": iso(time.time()), **converted}
                 except (ValueError, TypeError, KeyError, AttributeError):
@@ -1304,7 +1339,9 @@ def fresh_usage_report():
     report["read_at"] = iso(now)
     for name, (reading, error) in results.items():
         if reading is not None:
-            reading["age_seconds"] = max(0, round(now - datetime.fromisoformat(reading["as_of"]).timestamp()))
+            reading["age_seconds"] = max(
+                0, round(now - datetime.fromisoformat(reading["as_of"]).timestamp())
+            )
             report[name] = reading
         if error:
             report[name] = {**(report[name] or {}), "error": error}
