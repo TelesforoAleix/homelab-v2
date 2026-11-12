@@ -1270,6 +1270,7 @@ def fresh_request(name):
         args = [
             executable,
             "-p",
+            "Reply only: OK",
             "--model",
             "haiku",
             "--output-format",
@@ -1277,7 +1278,6 @@ def fresh_request(name):
             "--verbose",
             "--tools",
             "",
-            "Reply only: OK",
         ]
     else:
         args = [
@@ -1294,7 +1294,9 @@ def fresh_request(name):
         ]
     try:
         with tempfile.TemporaryDirectory() as folder:
-            result = subprocess.run(args, cwd=folder, capture_output=True, text=True, timeout=60)
+            result = subprocess.run(
+                args, cwd=folder, capture_output=True, text=True, timeout=60 if name == "claude" else 90
+            )
         if result.returncode:
             return None, f"{name} request failed: exit {result.returncode}"
         if name == "codex":
