@@ -362,14 +362,38 @@ def test_fresh_requests_and_plain_usage(tmp_path, monkeypatch):
     assert report["claude"]["seven_day"]["used_percentage"] == 77
 
 
-@pytest.mark.parametrize("name", ["claude", "codex"])
-def test_fresh_request_missing_and_timeout(name, monkeypatch, tmp_path):
+def test_fresh_claude_arguments(monkeypatch, tmp_path):
+    executable = str(tmp_path / "claude")
+    monkeypatch.setattr(profile.shutil, "which", lambda *args, **kwargs: executable)
+
+    def run(args, **kwargs):
+        assert args == [
+            executable,
+            "-p",
+            "Reply only: OK",
+            "--model",
+            "haiku",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--tools",
+            "",
+        ]
+        return subprocess.CompletedProcess(args, 1, "", "")
+
+    monkeypatch.setattr(profile.subprocess, "run", run)
+    assert profile.fresh_request("claude")[1] == "claude request failed: exit 1"
+
+
+@pytest.mark.parametrize("name,limit", [("claude", 60), ("codex", 90)])
+def test_fresh_request_missing_and_timeout(name, limit, monkeypatch, tmp_path):
     monkeypatch.setattr(profile.shutil, "which", lambda *args, **kwargs: None)
     assert profile.fresh_request(name)[1] == f"{name} request failed: not found"
     monkeypatch.setattr(profile.shutil, "which", lambda *args, **kwargs: str(tmp_path / name))
 
     def timeout(*args, **kwargs):
-        raise subprocess.TimeoutExpired(args[0], 60)
+        assert kwargs["timeout"] == limit
+        raise subprocess.TimeoutExpired(args[0], limit)
 
     monkeypatch.setattr(profile.subprocess, "run", timeout)
     assert profile.fresh_request(name)[1] == f"{name} request failed: timeout"
