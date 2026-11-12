@@ -80,6 +80,16 @@ def env(tmp_path, monkeypatch):
     return SimpleNamespace(service=service, request=request, work=work, run=run, state=state)
 
 
+@pytest.fixture(params=["folder", "scope/folder"])
+def run_folder(env, request):
+    if "/" in request.param:
+        scope = fence.RUN_ROOT / "scope"
+        scope.mkdir(mode=0o700)
+        env.run = scope / "folder"
+        env.run.mkdir()
+    env.request["folders"]["run"] = request.param
+
+
 @pytest.mark.parametrize("profile", ["cli-run", "chat"])
 @pytest.mark.parametrize(
     "tool,command",
@@ -90,7 +100,7 @@ def env(tmp_path, monkeypatch):
         ("claude", ["claude", "--print", "--", "ticket"]),
     ],
 )
-def test_exact_cli_argument_equality(env, profile, tool, command):
+def test_exact_cli_argument_equality(env, run_folder, profile, tool, command):
     request = {**env.request, "profile": profile, "tool": tool, "command": command}
     if profile == "chat":
         request["turn"] = 7
@@ -113,7 +123,7 @@ def test_exact_cli_argument_equality(env, profile, tool, command):
 
 
 @pytest.mark.parametrize("branch", ["main", "slice/change-1"])
-def test_exact_bundle_argument_equality(env, branch):
+def test_exact_bundle_argument_equality(env, run_folder, branch):
     request = {
         "op": "run",
         "profile": "bundle",
@@ -284,6 +294,64 @@ def test_paths_links_at_every_level_and_non_directories(env):
         launcher.folder("login", "codex")
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "a/b/c",
+        "",
+        "/folder",
+        "scope/",
+        "scope//folder",
+        ".",
+        "..",
+        "./folder",
+        "../folder",
+        "scope/.",
+        "scope/..",
+        "scope\\folder",
+        "scope/fo\\lder",
+        *[f"{part}/folder" for part in ("-a", "_a", "a,b", "a\nb", "a\rb", "a\0b", "x" * 129)],
+        *[f"scope/{part}" for part in ("-a", "_a", "a,b", "a\nb", "a\rb", "a\0b", "x" * 129)],
+        None,
+        1,
+        True,
+        [],
+    ],
+)
+def test_run_folder_refusals(env, value):
+    env.request["folders"]["run"] = value
+    with pytest.raises(launcher.Refused, match="invalid_(folder|identifier)"):
+        launcher.run_arguments(env.request, PROFILES)
+
+
+@pytest.mark.parametrize("component", ["scope", "run"])
+@pytest.mark.parametrize("kind", ["link", "missing", "file"])
+def test_nested_run_requires_real_directories(env, component, kind):
+    scope = fence.RUN_ROOT / "scope"
+    scope.mkdir(mode=0o700)
+    run = scope / "run"
+    run.mkdir()
+    target = scope if component == "scope" else run
+    saved = target.with_name(target.name + "-saved")
+    target.rename(saved)
+    if kind == "link":
+        target.symlink_to(saved, target_is_directory=True)
+    elif kind == "file":
+        target.touch()
+    env.request["folders"]["run"] = "scope/run"
+    with pytest.raises(OSError):
+        launcher.run_arguments(env.request, PROFILES)
+    if kind == "missing":
+        assert not target.exists()
+
+
+def test_work_folder_still_requires_one_identifier(env):
+    (env.work / "nested").mkdir()
+    env.request["folders"]["work"] = "work/nested"
+    with pytest.raises(launcher.Refused, match="invalid_identifier"):
+        launcher.run_arguments(env.request, PROFILES)
+
+
 @pytest.mark.parametrize("operation", ["own", "remove", "status", "stop"])
 def test_non_run_schemas(env, operation):
     base = (
@@ -425,7 +493,7 @@ def test_excess_ancillary_descriptors_are_closed(env):
                 os.close(fd)
 
 
-def test_real_peer_credentials_and_fd_output(env, tmp_path, monkeypatch, caplog):
+def test_real_peer_credentials_and_fd_output(env, run_folder, tmp_path, monkeypatch, caplog):
     # A real bound Unix socket pair, accepted in the temporary folder. Do not stub
     # SO_PEERCRED, recv_fds or descriptor writes: these are the privilege boundary.
     path = tmp_path / "launcher.sock"
@@ -464,6 +532,7 @@ def test_real_peer_credentials_and_fd_output(env, tmp_path, monkeypatch, caplog)
             response = json.loads(client.recv(65536))
             future.result(timeout=5)
     assert response == {"ok": True, "exit_code": 17}
+    assert f"type=bind,src={env.run},dst=/run/factory" in calls[-1][0]
     assert out_path.read_bytes() == b"PRIVATE STDOUT\n"
     assert err_path.read_bytes() == b"PRIVATE STDERR\n"
     assert not any(text in caplog.text for text in ("PRIVATE", "ticket", "command", "/srv/"))
