@@ -87,6 +87,7 @@ compose_alert() {
         watchdog)     unit="homelab-watchdog.service" ;;
         homelab)      unit="homelab.service" ;;
         dump)         unit="homelab-dump.service" ;;
+        deployer)     unit="homelab-deployer.service" ;;
         *) die "unknown alert alias: '${alias}' (expected bot, watchdog, homelab or dump)" ;;
     esac
 

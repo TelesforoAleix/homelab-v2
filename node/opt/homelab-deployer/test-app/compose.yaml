@@ -1,0 +1,11 @@
+services:
+  test-app:
+    image: homelab-deployer-test-app:${HOMELAB_DEPLOY_TAG:?commit required}
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    network_mode: none
+    restart: unless-stopped
+    logging:
+      driver: none

@@ -1,0 +1,12 @@
+[Unit]
+Description=Application deployer socket
+
+[Socket]
+ListenStream=/run/homelab-deployer.sock
+SocketUser=root
+SocketGroup=homelab-deploy
+SocketMode=0660
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
