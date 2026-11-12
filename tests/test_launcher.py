@@ -89,6 +89,16 @@ def run_folder(env, request):
     env.request["folders"]["run"] = request.param
 
 
+@pytest.fixture(params=["work", "session-1/planning"])
+def work_folder(env, request):
+    if "/" in request.param:
+        session = fence.WORK_ROOT / "session-1"
+        session.mkdir(mode=0o700)
+        env.work = session / "planning"
+        (env.work / "repos" / "project").mkdir(parents=True)
+    env.request["folders"]["work"] = request.param
+
+
 @pytest.mark.parametrize("profile", ["cli-run", "chat"])
 @pytest.mark.parametrize(
     "tool,command",
@@ -99,7 +109,7 @@ def run_folder(env, request):
         ("claude", ["claude", "--print", "--", "ticket"]),
     ],
 )
-def test_exact_cli_argument_equality(env, run_folder, profile, tool, command):
+def test_exact_cli_argument_equality(env, run_folder, work_folder, profile, tool, command):
     request = {**env.request, "profile": profile, "tool": tool, "command": command}
     if profile == "chat":
         request["turn"] = 7
@@ -122,7 +132,7 @@ def test_exact_cli_argument_equality(env, run_folder, profile, tool, command):
 
 
 @pytest.mark.parametrize("branch", ["main", "slice/change-1"])
-def test_exact_bundle_argument_equality(env, run_folder, branch):
+def test_exact_bundle_argument_equality(env, run_folder, work_folder, branch):
     request = {
         "op": "run",
         "profile": "bundle",
@@ -293,6 +303,7 @@ def test_paths_links_at_every_level_and_non_directories(env):
         launcher.folder("login", "codex")
 
 
+@pytest.mark.parametrize("role", ["work", "run"])
 @pytest.mark.parametrize(
     "value",
     [
@@ -326,8 +337,8 @@ def test_paths_links_at_every_level_and_non_directories(env):
         [],
     ],
 )
-def test_run_folder_refusals(env, value):
-    env.request["folders"]["run"] = value
+def test_folder_refusals(env, role, value):
+    env.request["folders"][role] = value
     with pytest.raises(launcher.Refused, match="invalid_(folder|identifier)"):
         launcher.run_arguments(env.request, PROFILES)
 
@@ -364,11 +375,72 @@ def test_nested_run_requires_real_directories(env, value, component, kind):
         assert not target.exists()
 
 
-def test_work_folder_still_requires_one_identifier(env):
-    (env.work / "nested").mkdir()
-    env.request["folders"]["work"] = "work/nested"
-    with pytest.raises(launcher.Refused, match="invalid_identifier"):
-        launcher.run_arguments(env.request, PROFILES)
+@pytest.mark.parametrize("operation", ["run", "own", "remove"])
+def test_work_folder_refuses_three_parts(env, operation):
+    (env.work / "nested" / "third").mkdir(parents=True)
+    with pytest.raises(launcher.Refused, match="invalid_folder"):
+        if operation == "run":
+            env.request["folders"]["work"] = "work/nested/third"
+            launcher.run_arguments(env.request, PROFILES)
+        else:
+            env.service.execute(
+                os.getuid(),
+                {"op": operation, "role": "work", "folder_id": "work/nested/third"},
+                [],
+            )
+
+
+@pytest.mark.parametrize("component", ["session", "planning"])
+@pytest.mark.parametrize("kind", ["link", "missing", "file"])
+@pytest.mark.parametrize("operation", ["run", "own", "remove"])
+def test_nested_work_requires_real_directories(env, component, kind, operation):
+    session = fence.WORK_ROOT / "session-2"
+    session.mkdir(mode=0o700)
+    planning = session / "planning"
+    planning.mkdir()
+    target = session if component == "session" else planning
+    saved = target.with_name(target.name + "-saved")
+    target.rename(saved)
+    if kind == "link":
+        target.symlink_to(saved, target_is_directory=True)
+    elif kind == "file":
+        target.touch()
+    if operation == "run":
+        env.request["folders"]["work"] = "session-2/planning"
+        with pytest.raises(OSError):
+            launcher.run_arguments(env.request, PROFILES)
+    else:
+        with pytest.raises(OSError):
+            env.service.execute(
+                os.getuid(),
+                {"op": operation, "role": "work", "folder_id": "session-2/planning"},
+                [],
+            )
+    if kind == "missing":
+        assert not target.exists()
+
+
+@pytest.mark.parametrize("operation", ["own", "remove"])
+def test_work_folder_operations(env, work_folder, monkeypatch, operation):
+    changed = []
+    monkeypatch.setattr(os, "chown", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        os,
+        "fchown",
+        lambda fd, uid, gid: changed.append((Path(os.readlink(f"/proc/self/fd/{fd}")), uid, gid)),
+    )
+    parent = env.work.parent
+    assert env.service.execute(
+        os.getuid(),
+        {"op": operation, "role": "work", "folder_id": env.request["folders"]["work"]},
+        [],
+    ) == {"ok": True}
+    assert parent.is_dir()
+    if operation == "own":
+        assert changed == [(env.work, fence.UID, fence.GID)]
+        assert (env.work / "repos/project").is_dir()
+    else:
+        assert not env.work.exists()
 
 
 @pytest.mark.parametrize("operation", ["own", "remove", "status", "stop"])
@@ -512,7 +584,9 @@ def test_excess_ancillary_descriptors_are_closed(env):
                 os.close(fd)
 
 
-def test_real_peer_credentials_and_fd_output(env, run_folder, tmp_path, monkeypatch, caplog):
+def test_real_peer_credentials_and_fd_output(
+    env, run_folder, work_folder, tmp_path, monkeypatch, caplog
+):
     # A real bound Unix socket pair, accepted in the temporary folder. Do not stub
     # SO_PEERCRED, recv_fds or descriptor writes: these are the privilege boundary.
     path = tmp_path / "launcher.sock"
