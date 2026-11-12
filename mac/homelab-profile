@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import copy
+import concurrent.futures
 import fcntl
 import json
 import math
@@ -12,9 +13,11 @@ import plistlib
 import re
 import runpy
 import shlex
+import shutil
 import signal
 import subprocess
 import time
+import tempfile
 from datetime import UTC, datetime, timedelta
 from datetime import time as dtime
 from pathlib import Path
@@ -857,7 +860,9 @@ def tick(cfg):
             elif "battery_since" in record:
                 record.pop("battery_since")
                 save(STATE / "session.json", record)
-            active = any(state not in ("sleeping", "unloaded") for state in router_models().values())
+            active = any(
+                state not in ("sleeping", "unloaded") for state in router_models().values()
+            )
             active |= any(job_live(job) for job in jobs().values())
             active |= queue.active()
             if active:
@@ -1245,6 +1250,104 @@ def claude_usage(path=None):
     return None
 
 
+def fresh_request(name):
+    paths = os.pathsep.join(
+        filter(
+            None,
+            [
+                os.environ.get("PATH", ""),
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                str(Path.home() / ".local/bin"),
+            ],
+        )
+    )
+    executable = shutil.which(name, path=paths)
+    if not executable:
+        return None, f"{name} request failed: not found"
+    executable = str(Path(executable).resolve())
+    if name == "claude":
+        args = [
+            executable,
+            "-p",
+            "--model",
+            "haiku",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--tools",
+            "",
+            "Reply only: OK",
+        ]
+    else:
+        args = [
+            executable,
+            "exec",
+            "-m",
+            "gpt-6-luna",
+            "-c",
+            'model_reasoning_effort="low"',
+            "--skip-git-repo-check",
+            "-s",
+            "read-only",
+            "Reply only: OK",
+        ]
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            result = subprocess.run(args, cwd=folder, capture_output=True, text=True, timeout=60)
+        if result.returncode:
+            return None, f"{name} request failed: exit {result.returncode}"
+        if name == "codex":
+            reading = codex_usage()
+        else:
+            reading = None
+            for line in result.stdout.splitlines():
+                try:
+                    event = json.loads(line)
+                    if event.get("type") != "rate_limit_event":
+                        continue
+                    windows = event["rate_limit_info"]["unifiedWindows"]
+                    converted = {}
+                    for key in ("five_hour", "seven_day"):
+                        row = windows[key]
+                        converted[key] = usage_window(
+                            {
+                                "used_percentage": row["utilization"] * 100,
+                                "resets_at": row.get("resetsAt"),
+                            },
+                            "used_percentage",
+                        )
+                    if all(converted.values()):
+                        reading = {"as_of": iso(time.time()), **converted}
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    continue
+        if reading is None:
+            return None, f"{name} request failed: no usage data"
+        return reading, None
+    except subprocess.TimeoutExpired:
+        return None, f"{name} request failed: timeout"
+    except OSError:
+        return None, f"{name} request failed: unavailable"
+
+
+def fresh_usage_report():
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {name: pool.submit(fresh_request, name) for name in ("claude", "codex")}
+        results = {name: future.result() for name, future in futures.items()}
+    report = usage_report()
+    now = time.time()
+    report["read_at"] = iso(now)
+    for name, (reading, error) in results.items():
+        if reading is not None:
+            reading["age_seconds"] = max(
+                0, round(now - datetime.fromisoformat(reading["as_of"]).timestamp())
+            )
+            report[name] = reading
+        if error:
+            report[name] = {**(report[name] or {}), "error": error}
+    return report
+
+
 def usage_report(now=None):
     now = time.time() if now is None else now
     codex = None
@@ -1369,8 +1472,9 @@ def main():
     add.add_argument("argv", nargs="+")
     job.add_parser("remove").add_argument("name")
     sub.add_parser("job-worker").add_argument("name")
-    for command in ("waiting", "usage", "plan-inference"):
+    for command in ("waiting", "plan-inference"):
         sub.add_parser(command)
+    sub.add_parser("usage").add_argument("--fresh", action="store_true")
     night = sub.add_parser("schedule").add_subparsers(dest="action", required=True)
     night.add_parser("show")
     night.add_parser("off")
@@ -1416,7 +1520,7 @@ def main():
             print(json.dumps(waiting_report()))
             return 0
         if args.command == "usage":
-            print(json.dumps(usage_report()))
+            print(json.dumps(fresh_usage_report() if args.fresh else usage_report()))
             return 0
         if args.command == "schedule" and args.action == "show":
             print(json.dumps(schedule_report()))

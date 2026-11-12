@@ -1098,19 +1098,19 @@ locally, and there is no queue. An empty journal query (exit 1) means no refusal
 selector excludes proof containers and sudo audit entries. If a node read fails, the command
 and menu name the failing read without displaying its output.
 
-**Usage, on *Refresh*.** `usage` reads local files only, without writing any:
+**Usage, on menu opening and *Refresh*.** Opening the menu requests fresh account-wide
+Claude and Codex limits once; reopening within 60 seconds reuses the reading. *Refresh* makes
+another request, and a request already running is not duplicated. The two small CLI requests
+run in parallel with 60-second limits in empty temporary directories. Each consumes a small
+part of its five-hour window and starts a window if none is open. Claude's rate-limit event
+supplies its figures; Codex's fresh session log supplies its figures. If either request fails,
+the menu shows its error and falls back independently to the local reading, if available.
 
-- Codex: the newest `rate_limits` entry in `~/.codex/sessions/**/*.jsonl` with `primary` 300 and
-  `secondary` 10,080 window minutes (other limit families are ignored), newest files first.
-  Null or missing windows are skipped; without a complete entry usage is unknown.
-  `used_percent` and `resets_at` become the 5-hour and 7-day figures, as of the entry's timestamp.
-- Claude: `~/.claude/usage-now.json`, which the owner's status line already writes whenever a
-  Claude chat renders it: `{"at": <epoch seconds>, "rate_limits": {"five_hour": {...},
-  "seven_day": {...}}}` with `used_percentage` and `resets_at`. The figures are as of `at`.
-  A missing or invalid file shows Claude as “unknown”. Nothing in the status line needs changing.
-
-Each source reports `age_seconds` from its own timestamp, and the menu shows it beside the
-“as of” time. Usage values stay on the Mac and out of git.
+Plain `usage` makes no requests: Codex reads the newest complete five-hour and seven-day
+`rate_limits` entry in `~/.codex/sessions/**/*.jsonl`, and Claude reads the status line's
+`~/.claude/usage-now.json`. Missing readings are unknown. `usage --fresh` makes the requests
+above. Each reading includes its own timestamp and age; request output and replies are not
+included in the report.
 
 **Night window.** Off by default. Set it in the menu (start, end, days, *Save*; the switch turns
 it on or off) or with `schedule`; it is stored in private `~/.config/homelab/night-window.json`.

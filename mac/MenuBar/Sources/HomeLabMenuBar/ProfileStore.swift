@@ -64,12 +64,17 @@ final class ProfileStore: ObservableObject {
         draftDays = Set(decoded.days)
     }
 
-    func refreshUsage() async {
+    private var lastFreshUsage: Date?
+
+    func refreshUsage(onOpen: Bool = false) async {
+        guard !refreshingUsage else { return }
+        if onOpen, let last = lastFreshUsage, Date().timeIntervalSince(last) < 60 { return }
         refreshingUsage = true
         defer { refreshingUsage = false }
-        let result = await ProfileCommand.run(["usage"])
+        let result = await ProfileCommand.run(["usage", "--fresh"])
         if result.succeeded, let decoded = result.decode(UsageReport.self) {
             usage = decoded
+            lastFreshUsage = Date()
             usageError = nil
         } else {
             usageError = result.message
