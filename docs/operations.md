@@ -181,6 +181,38 @@ inbox. The orchestrator coordinates the remaining owner checks: an idea with cla
 `just save it`, a public link, a photo, a message for a repository orchestrator, and `/inbox`
 listing/detail. These phone checks are not replaced by fixture tests.
 
+#### Inbox helper over SSH
+
+Mac orchestrators read the inbox through the root-owned `homelab-inbox` helper over the
+node's existing SSH connection; no new network route is added. From the Mac:
+
+```bash
+ssh homelab-agent sudo -n homelab-inbox list development
+ssh homelab-agent sudo -n homelab-inbox list med-ask
+ssh homelab-agent sudo -n homelab-inbox file <id> > attachment
+ssh homelab-agent sudo -n homelab-inbox done <id> [<id> ...]
+```
+
+`homelab-inbox list <target>` prints one JSON array of new items, oldest first. The
+`development` target receives every idea, link and file plus its addressed messages; other
+targets receive only messages addressed to them. `homelab-inbox file <id>` streams only the
+attachment bytes unchanged. `homelab-inbox done <id> ...` atomically marks records `read`,
+preserving owner, group and mode, and is idempotent. The exit codes are `0` for success, `2` for
+usage or a rejected/failed item, and `3` for an absent or unreadable inbox, which prints
+exactly `locked`. Errors never include item content. The helper opens every path component
+without following symlinks.
+
+Install from the node's committed, merged main checkout after showing the installed-file
+diff. Save any existing helper in a dated root-only rollback directory first, then install
+it as `root:root` `0755`:
+
+```bash
+sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-inbox /usr/local/sbin/homelab-inbox
+```
+
+Roll back by restoring the saved helper as `root:root` `0755`, or removing only the helper
+on a first installation; keep all inbox data and receipts. No service restart is needed.
+
 ### Bot order endpoint
 
 The owner must allow the Mac collector to reach **the node's TCP 8110** in the Tailscale
@@ -1549,6 +1581,7 @@ SSH accounts work through Tailscale.
    sudo install -m 0440 -o root -g root node/etc/sudoers.d/homelab-agent-v2 /etc/sudoers.d/homelab-agent-v2
    sudo install -m 0644 -o root -g root node/etc/homelab-copy.recipient /etc/homelab-copy.recipient
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-copy /usr/local/sbin/homelab-copy
+   sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-inbox /usr/local/sbin/homelab-inbox
    sudo install -d -m 0700 -o root -g root /var/lib/homelab-copy
    sudo install -m 0755 -o root -g root node/usr/local/sbin/*.sh /usr/local/sbin/
    sudo install -m 0644 -o root -g root node/opt/homelab-telegram-bot/*.py /opt/homelab-telegram-bot/
@@ -1593,6 +1626,9 @@ SSH accounts work through Tailscale.
    The inbox needs no new provisioning: the existing frontline writable directory holds
    its atomic item directories and opaque files. Follow [Bot inbox](#bot-inbox) for layout,
    caps, rollback and the owner's phone checks. Keep inbox data when reverting bot code.
+   Install the root-owned `homelab-inbox` helper as `root:root` `0755` after showing its
+   installed-file diff; see [Inbox helper over SSH](#inbox-helper-over-ssh) for the Mac
+   command checks and helper-only rollback. No bot restart is needed for helper changes.
    The order listener uses the existing AF_INET permission and writable frontline directory;
    the unit changes only its networking comment. Before copying, show the installed-file diffs
    and save a dated root-only rollback copy of all installed bot modules and the unit. Verify
