@@ -80,13 +80,12 @@ def env(tmp_path, monkeypatch):
     return SimpleNamespace(service=service, request=request, work=work, run=run, state=state)
 
 
-@pytest.fixture(params=["folder", "scope/folder"])
+@pytest.fixture(params=["folder", "scope/folder", "scope/folder/io"])
 def run_folder(env, request):
-    if "/" in request.param:
-        scope = fence.RUN_ROOT / "scope"
-        scope.mkdir(mode=0o700)
-        env.run = scope / "folder"
-        env.run.mkdir()
+    env.run = fence.RUN_ROOT
+    for part in request.param.split("/"):
+        env.run /= part
+        env.run.mkdir(mode=0o700, exist_ok=True)
     env.request["folders"]["run"] = request.param
 
 
@@ -297,7 +296,7 @@ def test_paths_links_at_every_level_and_non_directories(env):
 @pytest.mark.parametrize(
     "value",
     [
-        "a/b/c",
+        "a/b/c/d",
         "",
         "/folder",
         "scope/",
@@ -310,8 +309,17 @@ def test_paths_links_at_every_level_and_non_directories(env):
         "scope/..",
         "scope\\folder",
         "scope/fo\\lder",
+        "scope/folder/",
+        "scope//io",
+        "scope/folder/.",
+        "scope/folder/..",
+        "scope/folder/i\\o",
         *[f"{part}/folder" for part in ("-a", "_a", "a,b", "a\nb", "a\rb", "a\0b", "x" * 129)],
         *[f"scope/{part}" for part in ("-a", "_a", "a,b", "a\nb", "a\rb", "a\0b", "x" * 129)],
+        *[
+            f"scope/folder/{part}"
+            for part in ("-a", "_a", "a,b", "a\nb", "a\rb", "a\0b", "x" * 129)
+        ],
         None,
         1,
         True,
@@ -324,21 +332,32 @@ def test_run_folder_refusals(env, value):
         launcher.run_arguments(env.request, PROFILES)
 
 
-@pytest.mark.parametrize("component", ["scope", "run"])
+@pytest.mark.parametrize(
+    "value,component",
+    [
+        ("scope/run", "scope"),
+        ("scope/run", "run"),
+        ("scope/run/io", "scope"),
+        ("scope/run/io", "run"),
+        ("scope/run/io", "io"),
+    ],
+)
 @pytest.mark.parametrize("kind", ["link", "missing", "file"])
-def test_nested_run_requires_real_directories(env, component, kind):
+def test_nested_run_requires_real_directories(env, value, component, kind):
     scope = fence.RUN_ROOT / "scope"
     scope.mkdir(mode=0o700)
     run = scope / "run"
-    run.mkdir()
-    target = scope if component == "scope" else run
+    run.mkdir(mode=0o700)
+    io = run / "io"
+    io.mkdir()
+    target = {"scope": scope, "run": run, "io": io}[component]
     saved = target.with_name(target.name + "-saved")
     target.rename(saved)
     if kind == "link":
         target.symlink_to(saved, target_is_directory=True)
     elif kind == "file":
         target.touch()
-    env.request["folders"]["run"] = "scope/run"
+    env.request["folders"]["run"] = value
     with pytest.raises(OSError):
         launcher.run_arguments(env.request, PROFILES)
     if kind == "missing":

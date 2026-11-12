@@ -160,7 +160,7 @@ def folder(role, value):
     if role not in roots:
         raise Refused("invalid_role")
     parts = value.split("/") if role == "run" and isinstance(value, str) else [value]
-    if len(parts) > 2:
+    if len(parts) > 3:
         raise Refused("invalid_folder")
     path = roots[role].joinpath(*(identifier(part) for part in parts))
     with directory(path):
