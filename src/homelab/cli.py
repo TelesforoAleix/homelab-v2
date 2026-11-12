@@ -61,7 +61,10 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_parser.add_argument("--dry-run", action="store_true")
     subparsers.add_parser("providers")
     subparsers.add_parser("routes")
-    subparsers.add_parser("eval")
+    eval_parser = subparsers.add_parser("eval")
+    eval_commands = eval_parser.add_subparsers(dest="eval_command")
+    results_parser = eval_commands.add_parser("results")
+    results_parser.add_argument("--set", required=True, dest="eval_set")
     return parser
 
 
@@ -72,6 +75,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "routes":
         return _routes()
     if args.command == "eval":
+        if args.eval_command == "results":
+            from homelab.tasks.eval_results import print_results
+
+            return print_results(args.eval_set)
         from homelab.knowledge.evaluate import run_eval
 
         return run_eval()

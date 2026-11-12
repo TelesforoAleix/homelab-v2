@@ -19,6 +19,7 @@ RUN apt-get update \
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin homelab
 WORKDIR /app
 COPY --from=builder --chown=homelab:homelab /app /app
+COPY configurations/ /app/configurations/
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 USER homelab

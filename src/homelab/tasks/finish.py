@@ -49,6 +49,7 @@ class EndAttempt(Strict):
     reason: str | None = None
     run_id: str | None = None
     check_exit_code: int | None = None
+    configuration_hash: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
     steps: Count = 0
     fresh_tokens: Count = 0
     cached_tokens: Count = 0
@@ -103,13 +104,15 @@ def end_attempt(connection: Any, event: EndAttempt) -> None:
     with connection.transaction():
         closed = connection.execute(
             """UPDATE homelab_task_attempts
-               SET status = %s, reason = %s, run_id = %s, check_exit_code = %s, ended_at = now()
+               SET status = %s, reason = %s, run_id = %s, check_exit_code = %s,
+                   configuration_hash = %s, ended_at = now()
                WHERE task_id = %s AND number = %s AND status = 'running'""",
             (
                 event.status,
                 event.reason,
                 event.run_id,
                 event.check_exit_code,
+                event.configuration_hash,
                 event.task_id,
                 event.number,
             ),

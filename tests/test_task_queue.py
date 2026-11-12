@@ -459,3 +459,14 @@ def test_a_negative_cost_is_refused(where):
         event["cost_usd"] = cost
         event["reviews"][0]["cost_usd"] = cost
         finish.parse(json.dumps(event).encode())
+
+
+def test_claim_delivers_eval_mark(connection):  # noqa: F811
+    mark = {"set": "T", "case": "example", "configuration": "base"}
+    submit(connection, plan(entry(1, eval=mark)))
+    task = claiming.claim(connection)
+    assert (task["eval_set"], task["eval_case"], task["eval_configuration"]) == (
+        "T",
+        "example",
+        "base",
+    )

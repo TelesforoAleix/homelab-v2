@@ -60,8 +60,10 @@ def write_tasks(connection: Any, plan: Any) -> tuple[dict[int, int], list[tuple[
         (ids[position],) = connection.execute(
             """INSERT INTO homelab_tasks
                (slice, repository, branch, base_commit, position, depends_on, title, goal,
-                allowed_files, check_command, pinned_paths, priority, severity)
-               VALUES (%s, %s, %s, %s, %s, %s::bigint[], %s, %s, %s::text[], %s, %s::text[], %s, %s)
+                allowed_files, check_command, pinned_paths, priority, severity,
+                eval_set, eval_case, eval_configuration)
+               VALUES (%s, %s, %s, %s, %s, %s::bigint[], %s, %s, %s::text[], %s,
+                       %s::text[], %s, %s, %s, %s, %s)
                RETURNING id""",
             (
                 plan.slice,
@@ -77,6 +79,9 @@ def write_tasks(connection: Any, plan: Any) -> tuple[dict[int, int], list[tuple[
                 task.pinned_paths,
                 task.priority,
                 task.severity,
+                task.eval.set if task.eval else None,
+                task.eval.case if task.eval else None,
+                task.eval.configuration if task.eval else None,
             ),
         ).fetchone()
         if all(d in earlier and earlier[d][1] == "done" for d in task.depends_on):

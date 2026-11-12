@@ -32,6 +32,7 @@ from pathlib import Path
 
 VOLUME = Path("/srv/homelab")
 WORK = VOLUME / "task-work"
+RUNS = VOLUME / "task-runs"
 RUN = "/usr/local/sbin/homelab-task-run"
 CONFIG_REPOSITORY = "https://github.com/TelesforoAleix/homelab-v2.git"
 CONFIGURATION = "pi/base"
@@ -224,7 +225,7 @@ def ticket(task, feedback):
     return text
 
 
-def configuration_snapshot(folder):
+def configuration_snapshot(folder, configuration=None):
     """Fetch main independently of both the stack and task working copies."""
     clone = folder / "clone"
     env = git_env()
@@ -272,7 +273,7 @@ def configuration_snapshot(folder):
         snapshot.mkdir()
         with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
             archive.extractall(snapshot, filter="data")
-        return snapshot / "configurations" / CONFIGURATION, commit
+        return snapshot / "configurations" / (configuration or CONFIGURATION), commit
     except (OSError, ValueError, UnicodeError, tarfile.TarError, subprocess.SubprocessError):
         raise Refused("configuration_snapshot_failed") from None
 
@@ -308,7 +309,15 @@ def run_ticket(task, copy, purpose, review_purpose, feedback, *, cli=None, numbe
     for path in task["allowed_files"]:
         command += ["--allow", path]
     with tempfile.TemporaryDirectory(prefix="homelab-config-") as temporary:
-        configuration, configuration_commit = configuration_snapshot(Path(temporary))
+        name = task.get("eval_configuration")
+        if task.get("eval_set") is not None:
+            if not isinstance(name, str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name
+            ):
+                raise Refused("eval_configuration_refused")
+            configuration, configuration_commit = configuration_snapshot(Path(temporary), "pi/" + name)
+        else:
+            configuration, configuration_commit = configuration_snapshot(Path(temporary))
         command += [
             "--configuration",
             str(configuration),
@@ -539,7 +548,8 @@ def attempt(task, route, review_route, number, feedback):
         run = run_ticket(task, copy, route["purpose"], review_route["purpose"], feedback)
     ended = run["ended"]
     if ended == "committed":
-        ended = push(task, copy, run["commit"])
+        ended = "eval_kept" if task.get("eval_set") is not None else push(task, copy, run["commit"])
+    keep_eval_run(task, run)
     tokens = run.get("tokens") or {}
     record(
         {
@@ -547,10 +557,11 @@ def attempt(task, route, review_route, number, feedback):
             "task_id": task["id"],
             "number": number,
             "route": route,
-            "status": "done" if ended == "pushed" else "failed",
+            "status": "done" if ended in {"pushed", "eval_kept"} else "failed",
             "reason": None if ended == "pushed" else ended,
             "run_id": run.get("run_id"),
             "check_exit_code": run.get("check_exit_code"),
+            "configuration_hash": run.get("configuration_hash"),
             "steps": run.get("steps", 0),
             "fresh_tokens": tokens.get("fresh", 0),
             "cached_tokens": tokens.get("cached", 0),
@@ -571,6 +582,32 @@ def attempt(task, route, review_route, number, feedback):
     if ended == "review_rejected":
         return ended, ("review", run.get("review_notes") or "")
     return ended, (("check", check_output_of(run)) if ended in RETRIES else None)
+
+
+def keep_eval_run(task, run):
+    """Move content within the existing root-only run store, including failed attempts."""
+    if task.get("eval_set") is None or not run.get("run_folder"):
+        return
+    names = [task.get("eval_set"), task.get("eval_case"), run.get("run_id")]
+    if any(
+        not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name)
+        for name in names
+    ) or not re.fullmatch(r"[0-9a-f]{64}", str(run.get("configuration_hash"))):
+        raise Refused("eval_run_refused")
+    source = RUNS / run["run_id"]
+    if Path(run["run_folder"]) != source or source.is_symlink():
+        raise Refused("eval_run_refused")
+    parent = RUNS
+    for name in ("eval", task["eval_set"], task["eval_case"], run["configuration_hash"]):
+        parent = parent / name
+        parent.mkdir(mode=0o700, exist_ok=True)
+        if parent.is_symlink():
+            raise Refused("eval_run_refused")
+        parent.chmod(0o700)
+    source.chmod(0o700)
+    destination = parent / run["run_id"]
+    source.rename(destination)
+    run["run_folder"] = str(destination)
 
 
 def known_cost(item):
@@ -621,7 +658,7 @@ def run_routes(task, routes, review_route, numbers):
         ended, feedback = attempt(task, route, review_route, next(numbers), None)
         if ended in RETRIES:
             ended, _ = attempt(task, route, review_route, next(numbers), feedback)
-        if ended.startswith("push"):
+        if ended.startswith("push") or ended == "eval_kept":
             return ended
     return ended
 
@@ -639,6 +676,8 @@ def work(task):
     if ended == "push_rejected":
         # The branch moved: once more from its new tip, with every route available again.
         ended = run_routes(task, routes, reviewers[0], numbers)
+    if ended == "eval_kept":
+        return "done", "eval_kept"
     return ("done", None) if ended == "pushed" else ("escalated", ended)
 
 

@@ -1657,6 +1657,27 @@ Dependents need neither: they are released as their dependencies finish.
 asked for, and what it refused. To allow another host, add a line to
 `node/opt/homelab-package-proxy/package-hosts`.
 
+### Eval tasks
+
+Add `"eval": {"set": "T", "case": "example", "configuration": "base"}` to a task
+entry in the usual submission file, then submit with
+`sudo docker exec -i homelab-worker-1 python -m homelab.tasks.submit < tasks.json`.
+Each name is 1–64 letters, digits, dots, underscores or hyphens, starting with a letter or
+digit; configuration must exist under `configurations/pi/` in the submitting release.
+Use a scratch repository and a slice branch as for ordinary tasks. Prepare, agent, check and
+review run normally; a commit ends `done` with `eval_kept` and never reaches push or needs a
+push key. Other endings and retries keep their existing reasons. Every run folder is kept at
+`/srv/homelab/task-runs/eval/<set>/<case>/<configuration hash>/<run id>/`, root-only.
+An unmarked task keeps its ordinary behavior.
+
+Read `sudo docker exec homelab-worker-1 homelab eval results --set T`.
+Each tab-separated line contains case, configuration hash, runs, passed, then mean steps,
+fresh tokens, cached tokens, output tokens, seconds and USD cost. A run is a completed attempt;
+passed means check and review accepted a commit. Usage includes worker and reviews; seconds
+cover the whole attempt. Cost is empty if any worker or review cost is unknown. Results come
+only from Postgres; prompts and outputs stay in the run folders. Bare `homelab eval` still
+runs the knowledge eval.
+
 ## Database dumps and restore checks
 
 The daily `homelab-dump.timer` writes a custom-format dump to
@@ -1890,6 +1911,9 @@ SSH accounts work through Tailscale.
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-run /usr/local/sbin/homelab-task-run
    sudo install -m 0644 -o root -g root node/opt/homelab-task/Dockerfile /opt/homelab-task/Dockerfile
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-runner /usr/local/sbin/homelab-task-runner
+   # Eval support: install the runner above, restart homelab.service to apply the additive
+   # schema and rebuild the worker, then restart homelab-task-runner.service. Submit one
+   # eval task on a scratch repository and read homelab eval results before normal use.
    # Both scripts must be updated together for CLI worker routes. The task image is unchanged.
    # CLI routes need the installed homelab-fence command and its Codex login; do not
    # copy that login or credentials into this tree or the task image. Its existing work/runs
