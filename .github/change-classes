@@ -1,0 +1,21 @@
+# .github/change-classes — read by the runner before a merge and by the deployer before an install.
+# <class> <pattern>; the highest class of every matching line wins; no match is class 1.
+# Patterns are gitignore-style, from the repository's root.
+4 /.github/**
+4 /node/**
+4 /compose.yaml
+4 **/Dockerfile
+4 /.dockerignore
+4 /config/**
+4 /mac/homelab-listener
+4 /mac/homelab-profile.sudoers.in
+2 **/*.sql
+2 /pyproject.toml
+2 /uv.lock
+2 /src/homelab/tasks/**
+2 /configurations/pi/base/**
+2 /mac/profile_models.py
+2 /mac/profile_queue.py
+2 /mac/homelab-profile
+2 /mac/homelab-router
+1 /configurations/**

@@ -1,0 +1,9 @@
+/.github/CODEOWNERS @TelesforoAleix
+/.github/ @TelesforoAleix
+/node/ @TelesforoAleix
+**/Dockerfile @TelesforoAleix
+/compose.yaml @TelesforoAleix
+/.dockerignore @TelesforoAleix
+/config/ @TelesforoAleix
+/mac/homelab-listener @TelesforoAleix
+/mac/homelab-profile.sudoers.in @TelesforoAleix
