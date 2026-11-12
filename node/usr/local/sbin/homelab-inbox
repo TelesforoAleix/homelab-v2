@@ -119,6 +119,9 @@ def done(folder):
         temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder
     )
     try:
+        staged = os.fstat(descriptor)
+        if not stat.S_ISREG(staged.st_mode) or staged.st_nlink != 1:
+            raise ValueError
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             os.fchown(stream.fileno(), info.st_uid, info.st_gid)
             os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
