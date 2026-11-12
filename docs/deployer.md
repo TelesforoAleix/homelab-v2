@@ -76,6 +76,8 @@ skips migration and dump. No host shell interprets these arrays. Paths are liter
 paths without traversal, options, globs or symlinks. Compose and Dockerfile paths are relative
 to the fixed `/opt/homelab-deployer` root and must end in `compose.yaml` and `Dockerfile`.
 The helper rejects unknown fields and unsafe types, modes, owners, symlinks and tar members.
+Archive member names also allow `@` for systemd template units; manifest paths retain their
+stricter character rule.
 Archives allow only regular files and directories: at most 30,000 entries, 64 MiB compressed
 and 256 MiB expanded. Application repositories containing links are refused.
 

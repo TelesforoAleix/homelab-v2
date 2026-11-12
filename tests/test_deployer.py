@@ -628,6 +628,9 @@ def test_sha_validation(env, commit):
         {"migration": [1]},
         {"migration": ["x\x00y"]},
         {"guards": ["../node"]},
+        {"guards": ["node/etc/systemd/system/x@.service"]},
+        {"compose": "test@app/compose.yaml"},
+        {"dockerfile": "test@app/Dockerfile"},
         {"guards": ["node", "node"]},
         {"guards": "node"},
     ],
@@ -679,11 +682,50 @@ def test_configuration_wrong_modes_are_refused(env, name):
         install(env, terminal=name == "test-app.json")
 
 
+def test_archive_template_units_unpack_and_remain_mandatory_guards(env, tmp_path):
+    paths = [
+        "node/etc/systemd/system/x@.service",
+        "node/etc/systemd/system/x@.service.d/y.conf",
+    ]
+    directory = tarfile.TarInfo("github-wrapper/node/etc/systemd/system/x@.service.d/")
+    directory.type = tarfile.DIRTYPE
+    members = [directory]
+    for path in paths:
+        member = tarfile.TarInfo("github-wrapper/" + path)
+        member.size = 1
+        members.append(member)
+    source = archive(members=members)
+    destination = tmp_path / "source"
+    destination.mkdir()
+    inventory = d.unpack(source, destination)
+    guards = d.guard_inventory(inventory, [])
+    for path in paths:
+        assert (destination / path).read_bytes() == b"x"
+        assert guards[path] == {
+            "sha": hashlib.sha256(b"x").hexdigest(),
+            "executable": False,
+        }
+
+    update_manifest(guards=[])
+    env.github.sources[A] = source
+    env.github.reviews = []
+    result = install(env)
+    assert result["result"] == "owner review required"
+    assert set(paths) <= set(result["paths"])
+    assert not env.docker.calls
+    env.github.reviews = [
+        {"id": 1, "state": "APPROVED", "user": {"login": d.OWNER}, "commit_id": D}
+    ]
+    assert install(env)["result"] == "installed"
+    assert all(record(env)["guards"][path] == guards[path] for path in paths)
+
+
 @pytest.mark.parametrize(
-    "kind", [tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.FIFOTYPE, tarfile.CHRTYPE]
+    "kind",
+    [tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.FIFOTYPE, tarfile.CHRTYPE, tarfile.BLKTYPE],
 )
 def test_archive_never_follows_links_or_extracts_special_files(env, kind):
-    member = tarfile.TarInfo("github-wrapper/danger")
+    member = tarfile.TarInfo("github-wrapper/danger@.service")
     member.type = kind
     member.linkname = "/etc/passwd"
     env.github.sources[A] = archive(members=[member])
@@ -697,7 +739,15 @@ def test_archive_never_follows_links_or_extracts_special_files(env, kind):
     [
         "../escape",
         "/absolute",
+        "-option/file",
         "wrapper/../../escape",
+        "github-wrapper/node/../escape",
+        "github-wrapper/node/./file",
+        "github-wrapper/node//file",
+        "github-wrapper/node/x@.service/../escape",
+        "github-wrapper/node/x@.service//file",
+        "github-wrapper/node/file name",
+        "github-wrapper/" + "x" * 512,
         "other-root/file",
         "github-wrapper/src/app.txt",
     ],

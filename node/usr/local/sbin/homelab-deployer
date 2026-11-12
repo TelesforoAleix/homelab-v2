@@ -90,6 +90,19 @@ def relative(value):
     return value
 
 
+def archive_name(value):
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > 512
+        or not re.fullmatch(r"[A-Za-z0-9._/@-]+", value)
+        or value.startswith(("/", "-"))
+        or any(part in ("", ".", "..") for part in value.split("/"))
+    ):
+        raise Refused("invalid path")
+    return value
+
+
 @contextlib.contextmanager
 def directory(path):
     """Pin every component without following even a root-directory symlink."""
@@ -331,7 +344,7 @@ def unpack_stream(stream, destination):
             for count, member in enumerate(archive):
                 if count >= 30000:
                     raise Refused("source too large")
-                name = relative(member.name.rstrip("/"))
+                name = archive_name(member.name.rstrip("/"))
                 parts = PurePosixPath(name).parts
                 if wrapper is None:
                     wrapper = parts[0]
