@@ -37,7 +37,9 @@ struct MenuView: View {
         .frame(width: 340)
         .disabled(store.busy != nil)
         .task {
+            async let usage: Void = store.refreshUsage(onOpen: true)
             await store.reload()
+            await usage
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(5)) } catch { return }
                 if store.busy == nil { await store.reloadStatus() }
@@ -202,7 +204,7 @@ struct MenuView: View {
                 usageRows("Claude", usage.claude)
                 usageRows("Codex", usage.codex)
             } else {
-                Text(store.usageError ?? "Press Refresh to read local usage.").foregroundStyle(.secondary)
+                Text(store.usageError ?? "Reading usage…").foregroundStyle(.secondary)
             }
         }
     }
@@ -214,11 +216,20 @@ struct MenuView: View {
                 HStack {
                     Text(name)
                     Spacer()
-                    Text("as of \(Self.time(source.asOf)) (\(Self.age(source.ageSeconds)))")
-                        .foregroundStyle(.secondary)
+                    if let asOf = source.asOf, let age = source.ageSeconds {
+                        Text("as of \(Self.time(asOf)) (\(Self.age(age)))")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("unknown").foregroundStyle(.secondary)
+                    }
                 }
-                usageLine("5 hours", source.fiveHour)
-                usageLine("7 days", source.sevenDay)
+                if let five = source.fiveHour, let seven = source.sevenDay {
+                    usageLine("5 hours", five)
+                    usageLine("7 days", seven)
+                }
+                if let error = source.error {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                }
             }
         } else {
             HStack {
