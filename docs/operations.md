@@ -1670,6 +1670,65 @@ push key. Other endings and retries keep their existing reasons. Every run folde
 `/srv/homelab/task-runs/eval/<set>/<case>/<configuration hash>/<run id>/`, root-only.
 An unmarked task keeps its ordinary behavior.
 
+The loopback platform API at `127.0.0.1:8000` also offers two keyed routes for an
+external eval runner. The owner sets `HOMELAB_EVAL_TASK_KEY` privately after merge;
+this key is passed only to the API service. Both routes require
+`Authorization: Bearer <key>`. With the setting unset or empty, both return
+`503 {"error":"Eval tasks are not configured"}`. A missing or incorrect bearer key
+returns `401 {"error":"Eval task key required"}`. Existing `/v1/manage/*` reads stay open.
+
+`POST /v1/tasks/eval` accepts exactly one task:
+
+```json
+{
+  "attempt": "docs-1",
+  "repository": "owner/scratch-repo",
+  "branch": "eval/docs-1",
+  "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "title": "Update sample docs",
+  "goal": "Make the requested documentation change",
+  "allowed_files": ["docs/example.md"],
+  "check_command": "sh tests/check.sh",
+  "pinned_paths": ["tests/check.sh"],
+  "eval": {"set": "T", "case": "docs", "configuration": "base"}
+}
+```
+
+The caller creates and pushes the case's starting commit, including its pinned tests,
+on its `eval/<something>` branch before submission. The endpoint uses the CLI's task
+models and submission transaction, with position 1 and slice `eval:<attempt>`.
+`attempt` follows the same 1–64 character naming rule as the eval mark. A successful
+submission returns `201 {"task":123}`. Reusing an attempt, including across repositories,
+returns `409 {"error":"Attempt already submitted","task":123}`. Refused bodies return
+422 with an `error` containing the refusal text, without echoing input. Unknown fields
+are refused. The example commit is a placeholder; supply the actual start commit.
+
+`GET /v1/tasks/eval/123` returns `task`, `status`, `reason`, `attempts`, and
+`diff_base64`; an unknown task or one whose slice does not start with `eval:` returns 404.
+Each attempt includes `number`, `status`, `reason`, `started_at`, `ended_at`,
+`configuration_hash`, and `usage` (`steps`, `fresh_tokens`, `cached_tokens`,
+`output_tokens`, `cost_usd`). Usage sums all the attempt's traces, including reviews;
+missing values stay null and cost is null if any trace has unknown cost.
+The diff is base64 of the bytes from the highest numbered `diff*.patch` round of the
+last ended attempt. Missing or unreadable diffs are null; a diff over 2 MiB returns
+`"diff_base64": null, "diff_too_large": true`. An active later attempt does not replace
+the last ended attempt's diff.
+
+Only the API mounts `${HOMELAB_TASK_RUNS_PATH:-/srv/homelab/task-runs}` read-only,
+at `HOMELAB_TASK_RUNS_DIR` (default `/srv/homelab/task-runs`). Diff lookup uses only a
+single-part `run_id` recorded in Postgres, directly under that directory, and refuses
+symlink folders and files. **Deployment limitation:** the current host runner moves eval
+runs into the nested root-only layout described above. Those files are not accessible
+through this direct lookup or by the API's UID 10001, so they yield null diffs. Resolving
+the layout and access requires an owner decision before relying on node diff retrieval;
+this endpoint does not change host permissions or the runner.
+
+Node step after merge: **install; the owner sets HOMELAB_EVAL_TASK_KEY; then one submit
+and read** with a docs-only case. The orchestrator installs through the platform Compose
+restart, checks 503 before the owner sets the key, then checks 401 with a wrong fixture
+key and submits and reads the case with the owner's key without printing it. CI must be
+green and the owner reviews the Compose guard-file change before merge.
+
 Read `sudo docker exec homelab-worker-1 homelab eval results --set T`.
 Each tab-separated line contains case, configuration hash, runs, passed, then mean steps,
 fresh tokens, cached tokens, output tokens, seconds and USD cost. A run is a completed attempt;

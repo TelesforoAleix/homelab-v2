@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     active_collection: Literal["brain", "about_aleix"] = "about_aleix"
     corpus_file: Path = Path("/data/corpus/about-aleix/corpus.json")
     eval_file: Path = Path("/data/corpus/about-aleix/eval.json")
+    eval_task_key: SecretStr = SecretStr("")
+    task_runs_dir: Path = Path("/srv/homelab/task-runs")
     brain_dir: Path = Path("/data/brain")
     brain_include: Annotated[list[str], NoDecode] = ["01-knowledge", "02-ideas", "05-logs"]
 
