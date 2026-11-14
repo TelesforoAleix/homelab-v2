@@ -84,6 +84,12 @@ services:
       <<: *app-env
       HOMELAB_MAC_VISION_URL: ${HOMELAB_MAC_VISION_URL:-http://127.0.0.1:9/v1}
       HOMELAB_MAC_EMBED_URL: ${HOMELAB_MAC_EMBED_URL:-http://127.0.0.1:9/v1}
+      HOMELAB_EVAL_TASK_KEY: ${HOMELAB_EVAL_TASK_KEY:-}
+      HOMELAB_TASK_RUNS_DIR: ${HOMELAB_TASK_RUNS_DIR:-/srv/homelab/task-runs}
+    volumes:
+      - ${HOMELAB_BRAIN_PATH:-/srv/homelab/brain}:/data/brain:ro
+      - ${HOMELAB_CORPUS_PATH:-/srv/homelab/homelab-v2-data/originals/corpus}:/data/corpus:ro
+      - ${HOMELAB_TASK_RUNS_PATH:-/srv/homelab/task-runs}:${HOMELAB_TASK_RUNS_DIR:-/srv/homelab/task-runs}:ro
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:

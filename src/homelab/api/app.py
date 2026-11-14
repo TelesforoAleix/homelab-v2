@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StrictBool, StrictInt, ValidationError, field_validator
 
 from homelab import __version__
-from homelab.api import image_costs
+from homelab.api import eval_tasks, image_costs
 from homelab.jobs.app import app as jobs_app
 from homelab.jobs.tasks import ingest_brain
 from homelab.knowledge.index import build_stores
@@ -138,6 +138,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Home Lab", version=__version__, lifespan=lifespan)
+app.include_router(eval_tasks.router)
 
 
 @app.get("/v1/images/cost")
