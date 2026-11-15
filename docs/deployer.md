@@ -2,8 +2,8 @@
 
 `homelab-deployer` is a socket-activated root helper using only Python's standard library.
 It deploys an application image from a full, lowercase 40-character commit SHA on `main`.
-This installation includes only `test-app`; the platform stack still uses its existing
-manual Compose deployment. Every node install still needs the owner's go.
+The shipped manifests cover `test-app` and Factory; the platform stack still uses its
+existing manual Compose deployment. Every node install still needs the owner's go.
 
 An install verifies the manifest and GitHub ancestry, downloads a bounded tarball without
 checking out Git, and compares guard-file hashes and executable bits with the installed
@@ -22,9 +22,9 @@ There is no deployment of the platform stack through this helper yet.
 Before migrating or switching it atomically writes and fsyncs an intent under
 `/var/lib/homelab-deployer` (root:root 0700). Nonempty migrations first run the existing
 `homelab-dump.service` and then `compose run` in the new image, inheriting the installed
-service's user. This dump covers the platform PostgreSQL database; manifests needing a
-different database backup are not supported by this slice. Migrations must only expand
-schemas, so old code remains compatible. The helper never reverses a migration.
+service's user. This dump covers every non-template database in the platform PostgreSQL
+cluster, including `homelab` and `factory`; any dump failure stops the install before migration.
+Migrations must only expand schemas, so old code remains compatible. The helper never reverses a migration.
 A failed or interrupted migration's fixed-name transient container is removed before
 rollback, so killing the Compose client does not leave a migration running in the background.
 Build and migration failures leave the old services running. A switch or health failure
@@ -85,7 +85,16 @@ Guard paths select exact repository files or directory prefixes, including absen
 All of `node/`, `.github/`, every `compose.yaml` and every `Dockerfile` are mandatory guards
 in addition to the manifest's paths. This includes the helpers and data, host scripts and
 units, proxy allow lists, fence probe, GitHub workflows and CODEOWNERS. Guard changes list
-paths in the reply. The shipped manifest also protects `.dockerignore` and `config/`.
+paths in the reply. The test-app manifest also protects `.dockerignore` and `config/`.
+
+Factory's `factory.json` targets `TelesforoAleix/factory`, with services `ui`, `intake`,
+`sessions`, `runner` in that order, sharing one image. Health runs Python's urllib against
+`http://127.0.0.1:8300/` inside `ui`; the expand-only migration is `cplane migrate`.
+Its installed files are `/opt/homelab-deployer/factory/compose.yaml` and
+`/opt/homelab-deployer/factory/Dockerfile`, supplied by Factory's separate host installation.
+The manifest guards `.github`, `node`, `compose.yaml`, `Dockerfile`, `.dockerignore`,
+`cplane/install_host.py` and `cplane/installation.py`, in addition to the mandatory guards.
+This manifest can ship before Factory's host files; an install requires those files to exist.
 
 ## Requests
 
@@ -109,11 +118,19 @@ line of at most 4096 bytes and replies with one JSON line:
 ```
 
 Rollback uses `{"op":"rollback","application":"test-app"}`. Linux peer credentials must
-match `/etc/homelab-deployer/callers.json`, currently only uid 0 with install and rollback.
+match `/etc/homelab-deployer/callers.json`: each canonical numeric uid maps to a nonempty
+subset of `install` and `rollback`, without duplicates. The shipped file permits uid 0 both
+operations and `factory-runner` (21010) only `install`. An unlisted uid or operation returns
+`unknown caller`; terminal commands still require root.
 The application must also appear in `/etc/homelab-deployer/automatic`, one name per line,
-for either socket operation. This file ships empty: every socket install returns
-`waits for the owner`. Editing it is itself a guard change. Neither membership in the socket
-group nor access to the socket grants permission to deploy. No sudoers rule is added.
+for either socket operation, for every caller including root. This file ships empty: every
+listed socket caller receives `waits for the owner`. Editing it is itself a guard change.
+Neither membership in the socket group nor access to the socket grants permission to deploy. No sudoers rule is added.
+
+The launcher callers file permits uid 0 its existing profiles, `factory-runner` (21010)
+`cli-run`, `bundle` and `usage`, and `factory-sessions` (21011) `chat` and `cli-run`.
+They use the existing work/run roots and folder/run operations. Launcher code, profiles and
+socket modes are unchanged; containers join `homelab-launch` and `homelab-deploy` as needed.
 
 ## Install host files
 
@@ -126,6 +143,9 @@ or the repository. The orchestrator installs files; the owner places the token s
 ```sh
 sudo diff -uN /usr/local/sbin/homelab-deployer node/usr/local/sbin/homelab-deployer
 sudo diff -ruN /etc/homelab-deployer node/etc/homelab-deployer --exclude=github-token
+sudo diff -uN /etc/homelab-launcher/callers.json node/etc/homelab-launcher/callers.json
+sudo diff -uN /usr/local/sbin/homelab-dump node/usr/local/sbin/homelab-dump
+sudo diff -uN /usr/local/sbin/homelab-restore-check node/usr/local/sbin/homelab-restore-check
 sudo diff -ruN /opt/homelab-deployer/test-app node/opt/homelab-deployer/test-app
 sudo diff -uN /usr/local/sbin/homelab-notify.sh node/usr/local/sbin/homelab-notify.sh
 sudo diff -uN /etc/systemd/system/homelab-deployer.socket node/etc/systemd/system/homelab-deployer.socket
@@ -136,12 +156,17 @@ sudo install -d -m 0755 -o root -g root /etc/homelab-deployer /opt/homelab-deplo
 sudo install -d -m 0700 -o root -g root /var/lib/homelab-deployer
 sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-deployer /usr/local/sbin/homelab-deployer
 sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-notify.sh /usr/local/sbin/homelab-notify.sh
-sudo install -m 0644 -o root -g root node/etc/homelab-deployer/callers.json node/etc/homelab-deployer/automatic node/etc/homelab-deployer/test-app.json /etc/homelab-deployer/
+sudo install -m 0644 -o root -g root node/etc/homelab-deployer/callers.json node/etc/homelab-deployer/automatic node/etc/homelab-deployer/test-app.json node/etc/homelab-deployer/factory.json /etc/homelab-deployer/
+sudo install -d -m 0755 -o root -g root /etc/homelab-launcher
+sudo install -m 0644 -o root -g root node/etc/homelab-launcher/callers.json /etc/homelab-launcher/callers.json
+sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-dump node/usr/local/sbin/homelab-restore-check /usr/local/sbin/
 sudo install -m 0644 -o root -g root node/opt/homelab-deployer/test-app/* /opt/homelab-deployer/test-app/
 sudo install -m 0644 -o root -g root node/etc/systemd/system/homelab-deployer.socket node/etc/systemd/system/homelab-deployer.service /etc/systemd/system/
 sudo systemd-analyze verify /etc/systemd/system/homelab-deployer.socket /etc/systemd/system/homelab-deployer.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now homelab-deployer.socket
+sudo systemctl restart homelab-launcher.service
+sudo systemctl restart homelab-deployer.service
 ```
 
 The notifier and units are also covered by the operations runbook's wildcard installation;
@@ -159,8 +184,14 @@ from the caller or environment, never sent to the archive redirect host, and nev
 to Docker. The helper does not create or change this secret. There is no credential today;
 the tests fake GitHub and Docker.
 
-The node acceptance step is: install an owner-reviewed good `test-app` commit; install an
-owner-reviewed commit whose `health` source says `unhealthy` and observe automatic rollback;
+For the Factory platform update, run `sudo homelab-dump` and verify today's
+`<database>-<date>.dump` for every non-template database, then run
+`sudo homelab-restore-check` and require `ok`. Send a socket install request from an
+unlisted uid and require `unknown caller`. Leave `automatic` empty: enabling Factory
+automation is a later owner action. No Factory deployment is required for these checks.
+
+The original deployer node acceptance step is: install an owner-reviewed good `test-app`
+commit; install an owner-reviewed commit whose `health` source says `unhealthy` and observe automatic rollback;
 then interrupt the active terminal helper after its intent appears and restart
 `homelab-deployer.service` to observe recovery to a healthy release. Restarting the idle
 service alone does not interrupt a separate terminal command. Both test

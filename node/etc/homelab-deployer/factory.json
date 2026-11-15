@@ -1,0 +1,9 @@
+{
+  "repository": "TelesforoAleix/factory",
+  "services": ["ui", "intake", "sessions", "runner"],
+  "health": ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8300/', timeout=5).read()"],
+  "migration": ["cplane", "migrate"],
+  "guards": [".github", "node", "compose.yaml", "Dockerfile", ".dockerignore", "cplane/install_host.py", "cplane/installation.py"],
+  "compose": "factory/compose.yaml",
+  "dockerfile": "factory/Dockerfile"
+}

@@ -809,7 +809,21 @@ def test_configuration_and_initial_callers(monkeypatch):
     )
     assert launcher.load_configuration() == (PROFILES, callers)
     installed = json.loads((ROOT / "node/etc/homelab-launcher/callers.json").read_text())
-    assert installed == callers
+    assert installed == {
+        "0": list(PROFILES),
+        "21010": ["cli-run", "bundle", "usage"],
+        "21011": ["chat", "cli-run"],
+    }
+    callers = installed
+    assert launcher.load_configuration() == (PROFILES, installed)
+    service = launcher.Launcher(PROFILES, installed)
+    for uid, allowed in installed.items():
+        for profile in PROFILES:
+            if profile in allowed:
+                service.authorize(int(uid), profile)
+            else:
+                with pytest.raises(launcher.Refused, match="profile_denied"):
+                    service.authorize(int(uid), profile)
     for bad in (
         {"root": ["usage"]},
         {"1": []},

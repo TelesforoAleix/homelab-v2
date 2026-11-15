@@ -1746,14 +1746,33 @@ runs the knowledge eval.
 
 ## Database dumps and restore checks
 
-The daily `homelab-dump.timer` writes a custom-format dump to
-`/srv/homelab/homelab-v2-data/originals/postgres/`, retaining seven dated dumps.
-The weekly encrypted originals copy includes them. Run `sudo homelab-dump` for an
-immediate dump, or `sudo homelab-restore-check [dump-path]` to restore into a
-network-isolated temporary container and compare table names and row counts. Without a
-path the check takes a new dump first. Both print `ok` on success. Changes to the live
-database while the check runs can cause a count difference; repeat during a quiet period.
+The daily `homelab-dump.timer` dumps every non-template database in
+`homelab-postgres-1` as user `homelab` to
+`/srv/homelab/homelab-v2-data/originals/postgres/<database>-<date>.dump`.
+This includes `homelab` and `factory`; `homelab-<date>.dump` keeps its existing name.
+Each custom-format dump is written to a temporary file with mode 0640, fsynced and
+atomically replaced under the shared lock. Seven dated dumps are retained per database;
+one database's failure fails the run, so the deployer stops before migration.
+Earlier databases' completed dumps remain if a later database fails.
+The weekly encrypted originals copy includes the whole folder.
+
+Run `sudo homelab-dump` for an immediate dump, or `sudo homelab-restore-check` to take
+fresh dumps and check today's dump of every non-template database, each in its own
+network-isolated temporary container. It compares table names and row counts, stopping
+at the first difference and naming the database. Each temporary container is removed
+after its check, including on failure. Both helpers print `ok` only on overall success.
+The existing `sudo homelab-restore-check <dump-path>` remains a single-dump check against
+the live `homelab` database. Changes to live databases while the check runs can cause
+a count difference; repeat during a quiet period.
 A dump is not a substitute for testing a full application recovery.
+
+Install these helpers from the merged tree after showing both diffs (exit 1 means differences):
+
+```sh
+sudo diff -uN /usr/local/sbin/homelab-dump node/usr/local/sbin/homelab-dump
+sudo diff -uN /usr/local/sbin/homelab-restore-check node/usr/local/sbin/homelab-restore-check
+sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-dump node/usr/local/sbin/homelab-restore-check /usr/local/sbin/
+```
 
 ## Rebuilding the node
 
