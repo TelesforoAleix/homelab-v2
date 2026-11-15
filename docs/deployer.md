@@ -28,8 +28,11 @@ Migrations must only expand schemas, so old code remains compatible. The helper 
 A failed or interrupted migration's fixed-name transient container is removed before
 rollback, so killing the Compose client does not leave a migration running in the background.
 Build and migration failures leave the old services running. A switch or health failure
-starts the previous tag and checks it again. If neither release becomes healthy it stops
-the application's services, records failure, retains the intent and starts
+starts the previous tag and checks it again. If no previous release exists, it stops the
+application's new services and records `<reason>; no previous version` (for example,
+`health failed; no previous version`). A successful stop clears the intent so the next
+install can proceed. If stopping fails, or a previous release cannot be restored, it records
+`rollback failed` and retains the intent. All these failure outcomes start
 `homelab-notify@deployer.service`. It never deletes volumes.
 
 Health verifies the image ID and running state of every listed service, then executes the
@@ -38,8 +41,10 @@ has a timeout; builds allow 15 minutes. The helper uses the standard
 [Compose run](https://docs.docker.com/reference/cli/docker/compose/run/) and
 [Compose up](https://docs.docker.com/reference/cli/docker/compose/up/) commands.
 Restart recovery checks the intended new image and health before accepting the release, otherwise starts the old tag and checks health.
-An unresolved recovery prevents further installs. First-install failures have no previous
-release: the services stop and the owner repairs the cause before restarting recovery.
+An unresolved recovery prevents further installs. Recovery of a failed first install follows
+the same rule: a successful stop records `interrupted; no previous version` and clears the
+intent; a failed stop retains it. The owner can repair the cause and submit another install
+after the services have stopped successfully.
 The helper's lock serializes terminal commands, socket requests and recovery across processes.
 
 Each application's 0600 JSON record carries the requested commit, previous commit, current
@@ -168,6 +173,13 @@ sudo systemctl enable --now homelab-deployer.socket
 sudo systemctl restart homelab-launcher.service
 sudo systemctl restart homelab-deployer.service
 ```
+
+For a helper-only update, show the helper diff and preserve the installed helper in the
+root-only backup as above. Stop `homelab-deployer.socket`, then stop
+`homelab-deployer.service` before installing the merged helper with mode 0755 and
+root:root ownership. Start `homelab-deployer.socket` afterward; the next request activates
+the updated helper. Confirm that Factory still installs. No manifest, credential or unit
+changes are needed for this update.
 
 The notifier and units are also covered by the operations runbook's wildcard installation;
 install them only once. These additional directory modes supplement that runbook:
