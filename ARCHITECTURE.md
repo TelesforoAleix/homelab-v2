@@ -186,8 +186,9 @@ is introduced. Only order id, action, slice id and status enter order audit line
 A standard-library HTTP server hands out queued orders oldest first and accepts idempotent
 receipts; it runs no orders. It binds only the node's runtime Tailscale IPv4 on TCP 8110,
 retrying when Tailscale is absent, with no fallback address. Before unlock the two routes
-return 503. Like the Mac's 8091 listener, it has no key: the owner's Tailscale policy gates
-access (the node already permits tailscale0 traffic). This is a host listener, leaving the
+return 503. It has no key: the owner's Tailscale policy gates tailnet access, and ufw accepts
+TCP 8110 from `homelab_default` (`172.18.0.0/16`) so platform containers can reach the same
+Tailscale address. The node already permits tailscale0 traffic. This is a host listener, leaving the
 container API boundary unchanged. Existing AF_INET and writable-directory permissions suffice;
 no sandbox directives, credentials, polkit rules or allowlists change. The HTTP contract is in
 [operations](docs/operations.md#bot-order-endpoint); the Mac runner is built separately.
@@ -800,8 +801,9 @@ including quotes). Only counts are exposed, without text or match details.
 
 1. Secrets never in git or images — Compose secrets or systemd `LoadCredential=`.
 2. Only `api` and LiteLLM publish container ports, on loopback. The host bot's order
-   listener is the explicit tailnet-only exception: runtime Tailscale IPv4, TCP 8110,
-   gated by Tailscale policy, following the Mac host listener on 8091.
+   listener is the explicit exception: runtime Tailscale IPv4, TCP 8110, reachable from
+   the tailnet under Tailscale policy and from `homelab_default` (`172.18.0.0/16`) under
+   a ufw input rule. The Mac host listener on 8091 remains gated by Tailscale policy.
 3. Brain is mounted read-only; everything derived lives on the encrypted volume.
 4. Containers run as non-root with `cap_drop: ALL`.
 5. Content is not logged by default; ids, sizes, timings and costs are.

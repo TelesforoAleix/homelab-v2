@@ -239,7 +239,13 @@ listing/detail. These phone checks are not replaced by fixture tests.
 ### Bot order endpoint
 
 The owner must allow the Mac collector to reach **the node's TCP 8110** in the Tailscale
-policy. The node already accepts `tailscale0`; do not change ufw or add a listener key.
+policy. The node accepts `tailscale0`, so tailnet peers allowed by that policy can reach it.
+Platform containers on `homelab_default` (`172.18.0.0/16`) can also reach the endpoint at
+the same Tailscale address: one ufw input rule accepts TCP 8110 from that source subnet.
+Container traffic arrives through the Docker bridge rather than `tailscale0` and otherwise
+hits the input drop policy. This source-subnet rule trusts containers on that network;
+Tailscale policy gates tailnet traffic, not this local bridge path. There is no listener key.
+
 The bot discovers its own IPv4 with `/usr/bin/tailscale ip -4` and binds only that address,
 never loopback, LAN, wildcard or IPv6. Discovery/bind failures retry every five seconds.
 Telegram polling and host commands continue while the interface is absent. There is no Mac
@@ -334,8 +340,24 @@ curl -s --max-time 5 "http://$NODE_TS_IP:8110/orders"
 curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 "http://$NODE_TS_IP:8110/unknown"
 ```
 
-Expect `{"orders": []}` and 404. A timeout means the owner needs to check the Tailscale
-grant; do not broaden the bind or change firewall policy. The owner's remaining phone check:
+Expect `{"orders": []}` when no orders are queued and 404. A Mac timeout calls for checking
+the Tailscale grant. On the unlocked node, check from an existing platform container
+on `homelab_default` (the worker has Python; no image download is needed):
+
+```bash
+NODE_TS_IP="$(tailscale ip -4)"
+docker exec homelab-worker-1 python -c '
+import sys
+import urllib.request
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+with opener.open(f"http://{sys.argv[1]}:8110/orders", timeout=5) as response:
+    print(response.status)
+' "$NODE_TS_IP"
+```
+
+Expect HTTP 200 with the volume unlocked. For a container timeout, check its network and
+source subnet and confirm `sudo ufw status` shows TCP 8110 allowed from `172.18.0.0/16`.
+Keep the listener bound only to the Tailscale IPv4. The owner's remaining phone check:
 request an order, inspect its exact confirmation, tap Yes, see it in GET, then discard it:
 
 ```bash
@@ -1957,6 +1979,21 @@ SSH accounts work through Tailscale.
    done < <(find node -type f | sort)
    ```
 
+   For an existing node updating only the bot order endpoint rule, use the merged clone
+   at `/srv/homelab/homelab-v2`. Before copying, show the installed-file diff
+   with `sudo diff -u /etc/ufw/user.rules node/etc/ufw/user.rules`
+   (status 1 means differences). After reviewing it, run:
+
+   ```bash
+   sudo install -m 0640 -o root -g root node/etc/ufw/user.rules /etc/ufw/user.rules
+   sudo ufw reload
+   sudo ufw status
+   ```
+
+   Confirm TCP 8110 is allowed from `172.18.0.0/16`, then run the
+   [container and Mac checks](#bot-order-endpoint). This update installs only `user.rules`;
+   the other firewall files and IPv6 rules stay unchanged.
+
    Run the following only after reviewing all diffs. Directory and file modes are also
    recorded in `AGENTS.md`. Preserve the vendor's `root:polkitd` ownership and `0750` mode
    on `/etc/polkit-1/rules.d`; the rule itself is `root:root` `0644`. All other directories
@@ -1979,6 +2016,7 @@ SSH accounts work through Tailscale.
    sudo install -d -m 0755 -o root -g root /etc/systemd/system/homelab-notify@.service.d /etc/systemd/system/homelab-watchdog.service.d /etc/systemd/system/homelab-telegram-bot.service.d
    sudo install -d -m 0750 -o root -g polkitd /etc/polkit-1/rules.d
    sudo install -m 0600 -o root -g root node/etc/ssh/sshd_config.d/10-homelab-hardening.conf /etc/ssh/sshd_config.d/10-homelab-hardening.conf
+   # user.rules accepts TCP 8110 from homelab_default (172.18.0.0/16).
    sudo install -m 0640 -o root -g root node/etc/ufw/after.rules node/etc/ufw/after6.rules node/etc/ufw/user.rules node/etc/ufw/user6.rules /etc/ufw/
    sudo install -m 0644 -o root -g root node/etc/docker/daemon.json /etc/docker/daemon.json
    sudo install -d -m 0755 -o root -g root /etc/containerd

@@ -23,6 +23,9 @@
 ### tuple ### allow udp 41641 0.0.0.0/0 any 0.0.0.0/0 in_wlp1s0
 -A ufw-user-input -i wlp1s0 -p udp --dport 41641 -j ACCEPT
 
+### tuple ### allow tcp 8110 0.0.0.0/0 any 172.18.0.0/16 in
+-A ufw-user-input -p tcp --dport 8110 -s 172.18.0.0/16 -j ACCEPT
+
 ### END RULES ###
 
 ### LOGGING ###

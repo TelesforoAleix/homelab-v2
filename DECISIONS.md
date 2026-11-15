@@ -872,3 +872,12 @@ options remain available for the task runner's route and retry policy.
 no addresses or credentials, and Workshop's server is their only caller on the node. Like
 `/health`, these reads need no key. Future writes will carry a scoped key. The configured
 first route is reported as live; the table does not expose runtime gateway selection.
+
+**2026-11-15 — Platform containers can reach the bot order endpoint.**
+A client moving onto `homelab_default` needs the existing order endpoint at the node's
+Tailscale IPv4 on TCP 8110. Its bridge traffic does not enter on `tailscale0`, so the
+input drop policy blocks it despite the tailnet accept rule. The owner chose one ufw
+input accept for TCP 8110 from `172.18.0.0/16`, trusting that platform subnet without
+adding another port or source. The listener address, lack of a key, and IPv6 rules stay
+unchanged. Tailnet peers remain gated by Tailscale policy; platform containers use the
+source-subnet rule. This extends the reachability recorded in the 2026-10-20 decision.
