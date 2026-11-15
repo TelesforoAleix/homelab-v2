@@ -7,6 +7,7 @@ import hmac
 import re
 from pathlib import Path
 
+import procrastinate
 import psycopg
 from fastapi import APIRouter, Request
 from fastapi.encoders import jsonable_encoder
@@ -15,11 +16,18 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from homelab.settings import get_settings
-from homelab.tasks.store import Refused
+from homelab.tasks.store import JOB, QUEUE, Refused
 from homelab.tasks.submit import EvalMark, EvalName, Strict, TaskEntry, TaskFile, submit
 
 router = APIRouter()
 DIFF_LIMIT = 2 * 1024 * 1024
+
+# This connector stays synchronous even while the API job app is open asynchronously.
+submit_app = procrastinate.App(connector=procrastinate.PsycopgConnector())
+
+
+def configure_submit_job(**options):
+    return submit_app.configure_task(JOB, queue=QUEUE, **options)
 
 
 class EvalSubmission(Strict):
@@ -75,7 +83,7 @@ def create_task(plan: TaskFile) -> JSONResponse:
         row = existing()
         if row is None:
             try:
-                (task_id,) = submit(connection, plan)
+                (task_id,) = submit(connection, plan, configure_job=configure_submit_job)
             except Refused:
                 # submit rolls back its savepoint on a concurrent duplicate insert.
                 row = existing()
