@@ -401,10 +401,14 @@ def test_switch_and_health_failures_roll_back_and_health_previous(env, operation
     assert not (d.STATE / "test-app.intent").exists()
 
 
-def test_failed_rollback_stops_and_alerts_and_retains_intent(env):
+@pytest.mark.parametrize("operation", ["up", "exec"])
+def test_failed_rollback_stops_and_alerts_and_retains_intent(env, operation):
     install(env)
-    env.docker.fail.update({("exec", B), ("up", A)})
-    assert install(env, B)["result"] == "rollback failed"
+    env.docker.fail.update({(operation, B), ("up", A)})
+    result = install(env, B)
+    assert result["result"] == "rollback failed"
+    assert not result["stop_failed"]
+    assert record(env)["result"] == "rollback failed"
     assert env.docker.current is None
     assert (d.STATE / "test-app.intent").exists()
     assert any("homelab-notify@deployer.service" in args for args, _ in env.docker.calls)
@@ -416,11 +420,50 @@ def test_failed_rollback_stops_and_alerts_and_retains_intent(env):
     assert env.docker.current == A
 
 
-def test_first_install_unhealthy_stops_and_alerts(env):
-    env.docker.fail.add(("exec", A))
-    assert install(env)["result"] == "rollback failed"
+@pytest.mark.parametrize("operation,reason", [("up", "switch failed"), ("exec", "health failed")])
+@pytest.mark.parametrize("next_commit", [A, B])
+def test_failed_first_install_stops_alerts_and_allows_next_install(
+    env, operation, reason, next_commit
+):
+    env.docker.fail.add((operation, A))
+    result = install(env)
+    assert not result["ok"]
+    assert result["result"] == reason + "; no previous version"
+    assert not result["stop_failed"]
+    assert not result["alert_failed"]
+    assert record(env)["result"] == result["result"]
+    assert record(env)["current"] is None
+    assert not (d.STATE / "test-app.intent").exists()
     assert env.docker.current is None
     assert any("stop" in args for args, _ in env.docker.calls)
+    assert any("homelab-notify@deployer.service" in args for args, _ in env.docker.calls)
+    env.docker.fail.clear()
+    assert install(env, next_commit)["ok"]
+    assert env.docker.current == next_commit
+
+
+def test_failed_first_install_stop_keeps_intent_and_blocks_next_install(env):
+    env.docker.fail.update({("exec", A), ("stop", A)})
+    result = install(env)
+    assert result["result"] == "rollback failed"
+    assert result["stop_failed"]
+    assert record(env)["result"] == "rollback failed"
+    assert record(env)["stop_failed"]
+    assert (d.STATE / "test-app.intent").exists()
+    assert any("homelab-notify@deployer.service" in args for args, _ in env.docker.calls)
+    with pytest.raises(d.Refused, match="recovery failed"):
+        install(env, B)
+    assert B not in env.docker.images
+    assert (d.STATE / "test-app.intent").exists()
+
+
+def test_recovery_of_failed_first_install_allows_next_install_after_stop_succeeds(env):
+    env.docker.fail.update({("exec", A), ("stop", A)})
+    assert install(env)["result"] == "rollback failed"
+    env.docker.fail.remove(("stop", A))
+    assert install(env, B)["ok"]
+    assert env.docker.current == B
+    assert not (d.STATE / "test-app.intent").exists()
 
 
 def test_terminal_rollback_uses_previous_tag_without_build_or_migration(env):

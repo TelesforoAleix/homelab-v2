@@ -645,7 +645,9 @@ class Deployer:
                 application, old, intent["new"], intent["guards"], reason + "; rolled back", False
             )
         stopped = self.compose(application, config, intent["new"], "stop", *config["services"])
-        logger.error("%s", json.dumps({"application": application, "result": "rollback failed"}))
+        resolved = not old["current"] and stopped
+        result = reason + "; no previous version" if resolved else "rollback failed"
+        logger.error("%s", json.dumps({"application": application, "result": result}))
         alerted, _ = run(["/usr/bin/systemctl", "start", "homelab-notify@deployer.service"])
         if not alerted:
             logger.error("deployer alert failed")
@@ -655,16 +657,18 @@ class Deployer:
                 **old,
                 "commit": intent["new"],
                 "previous_commit": old["current"],
-                "result": "rollback failed",
+                "result": result,
                 "stop_failed": not stopped,
                 "alert_failed": not alerted,
             },
         )
-        # Keep the intent: an operator/restart must establish health before another request.
+        if resolved:
+            unlink(self.path(application, "intent"))
+        # Otherwise an operator/restart must establish health before another request.
         return {
             "ok": False,
             "application": application,
-            "result": "rollback failed",
+            "result": result,
             "stop_failed": not stopped,
             "alert_failed": not alerted,
         }
