@@ -108,19 +108,9 @@ async def post_eval(request: Request):
 def read_diff(root: Path, run_id: str | None) -> dict:
     if not run_id or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", run_id):
         return {"diff_base64": None}
-    folder = root / run_id
+    path = root / f"{run_id}.patch"
     try:
-        if folder.is_symlink():
-            return {"diff_base64": None}
-        patches = []
-        for path in folder.iterdir():
-            match = re.fullmatch(r"diff(?:-([1-9][0-9]*))?\.patch", path.name)
-            if match:
-                patches.append((int(match[1] or 1), path))
-        if not patches:
-            return {"diff_base64": None}
-        path = max(patches)[1]
-        if path.is_symlink() or not path.is_file():
+        if root.is_symlink() or path.is_symlink() or not path.is_file():
             return {"diff_base64": None}
         with path.open("rb") as stream:
             data = stream.read(DIFF_LIMIT + 1)
@@ -174,7 +164,7 @@ def get_eval(task_id: str, request: Request):
         for row in rows
     ]
     last = next((row for row in reversed(rows) if row[4] is not None), None)
-    diff = read_diff(get_settings().task_runs_dir, last[6] if last else None)
+    diff = read_diff(get_settings().eval_diffs_dir, last[6] if last else None)
     return JSONResponse(
         jsonable_encoder(
             {"task": task[0], "status": task[1], "reason": task[2], "attempts": attempts, **diff}
