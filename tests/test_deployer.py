@@ -904,7 +904,8 @@ def test_main_terminal_entrypoint(env, monkeypatch, capsys):
 def test_shipped_configuration_and_test_application():
     assert (REPO / "node/etc/homelab-deployer/automatic").read_bytes() == b""
     assert json.loads((REPO / "node/etc/homelab-deployer/callers.json").read_text()) == {
-        "0": ["install", "rollback"]
+        "0": ["install", "rollback"],
+        "21010": ["install"],
     }
     compose = (REPO / "node/opt/homelab-deployer/test-app/compose.yaml").read_text()
     assert "${HOMELAB_DEPLOY_TAG:?commit required}" in compose
@@ -990,10 +991,80 @@ def test_socket_hides_exception_content(env, monkeypatch):
     assert result == {"ok": False, "result": "deployer unavailable"}
 
 
-def test_socket_callers_are_uid_zero_only_and_strict(env):
-    (d.CONFIG / "callers.json").write_text('{"0":["install"],"1000":["install"]}')
+@pytest.mark.parametrize("uid", [0, 21010])
+def test_listed_socket_callers_install_only_when_automatic(env, uid):
+    (d.CONFIG / "callers.json").write_text('{"0":["install","rollback"],"21010":["install"]}')
+    with pytest.raises(d.Refused, match="waits for the owner"):
+        install(env, terminal=False, uid=uid)
+    (d.CONFIG / "automatic").write_text("test-app\n")
+    assert install(env, terminal=False, uid=uid)["ok"]
+    with pytest.raises(d.Refused, match="unknown caller"):
+        install(env, terminal=False, uid=21011)
+
+
+def test_listed_caller_cannot_rollback_or_use_terminal(env):
+    (d.CONFIG / "callers.json").write_text('{"21010":["install"]}')
+    (d.CONFIG / "automatic").write_text("test-app\n")
+    with pytest.raises(d.Refused, match="unknown caller"):
+        env.service.execute({"op": "rollback", "application": APPLICATION}, uid=21010)
+    with pytest.raises(d.Refused, match="root required"):
+        install(env, terminal=True, uid=21010)
+
+
+@pytest.mark.parametrize(
+    "callers",
+    [
+        [],
+        {"root": ["install"]},
+        {"01": ["install"]},
+        {"-1": ["install"]},
+        {str(2**32): ["install"]},
+        {"21010": []},
+        {"21010": "install"},
+        {"21010": ["unknown"]},
+        {"21010": [None]},
+        {"21010": ["install", "install"]},
+    ],
+)
+def test_socket_callers_are_strict(env, callers):
+    (d.CONFIG / "callers.json").write_text(json.dumps(callers))
     with pytest.raises(d.Refused, match="invalid callers"):
-        install(env, terminal=False)
+        install(env, terminal=False, uid=21010)
+
+
+def test_shipped_files_load_with_deployer_validation(monkeypatch):
+    config = REPO / "node/etc/homelab-deployer"
+
+    def read(path, *args):
+        if path.parent == config:
+            return path.read_bytes()
+        assert path in (d.ROOT / "factory/compose.yaml", d.ROOT / "factory/Dockerfile")
+        # Factory's installed host files belong to its sibling slice.
+        return b"installed file"
+
+    monkeypatch.setattr(d, "CONFIG", config)
+    monkeypatch.setattr(d, "protected_read", read)
+    callers, automatic = d.configuration()
+    assert callers == {"0": ["install", "rollback"], "21010": ["install"]}
+    assert automatic == set()
+    manifest = d.manifest("factory")
+    assert manifest["repository"] == "TelesforoAleix/factory"
+    assert manifest["services"] == ["ui", "intake", "sessions", "runner"]
+    assert manifest["migration"] == ["cplane", "migrate"]
+    assert manifest["health"] == [
+        "python",
+        "-c",
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8300/', timeout=5).read()",
+    ]
+    assert manifest["guards"] == [
+        ".github",
+        "node",
+        "compose.yaml",
+        "Dockerfile",
+        ".dockerignore",
+        "cplane/install_host.py",
+        "cplane/installation.py",
+    ]
 
 
 def test_automatic_list_is_strict(env):
@@ -1109,3 +1180,24 @@ def test_decompression_limit_includes_archive_metadata(env, monkeypatch):
     with pytest.raises(d.Refused, match="source too large"):
         install(env)
     assert not env.docker.calls
+
+
+@pytest.mark.parametrize("uid", [0, 21010])
+def test_socket_rollback_automatic_gate_applies_to_all_listed_callers(env, uid):
+    (d.CONFIG / "callers.json").write_text('{"0":["rollback"],"21010":["rollback"]}')
+    with pytest.raises(d.Refused, match="waits for the owner"):
+        env.service.execute({"op": "rollback", "application": APPLICATION}, uid=uid)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        '{"21010":["install"],"21010":["rollback"]}',
+        '{"21010":',
+    ],
+)
+def test_malformed_callers_file_is_refused(env, contents):
+    (d.CONFIG / "callers.json").write_text(contents)
+    with pytest.raises(d.Refused, match="invalid json"):
+        install(env, terminal=False, uid=21010)
+    assert not env.github.calls

@@ -208,16 +208,19 @@ def manifest(application):
 
 def configuration():
     callers = decode(protected_read(CONFIG / "callers.json"))
-    if type(callers) is not dict or set(callers) != {"0"}:
+    if type(callers) is not dict:
         raise Refused("invalid callers")
-    allowed = callers["0"]
-    if (
-        type(allowed) is not list
-        or not allowed
-        or any(type(op) is not str or op not in ("install", "rollback") for op in allowed)
-        or len(set(allowed)) != len(allowed)
-    ):
-        raise Refused("invalid callers")
+    for uid, allowed in callers.items():
+        if (
+            not re.fullmatch(r"0|[1-9][0-9]*", uid)
+            or len(uid) > 10
+            or int(uid) > 2**32 - 1
+            or type(allowed) is not list
+            or not allowed
+            or any(type(op) is not str or op not in ("install", "rollback") for op in allowed)
+            or len(set(allowed)) != len(allowed)
+        ):
+            raise Refused("invalid callers")
     automatic = protected_read(CONFIG / "automatic").decode("ascii").splitlines()
     for name in automatic:
         identifier(name)
@@ -704,7 +707,7 @@ class Deployer:
             sha(request["sha"])
         if not terminal:
             callers, automatic = configuration()
-            if uid != 0 or operation not in callers.get(str(uid), []):
+            if operation not in callers.get(str(uid), []):
                 raise Refused("unknown caller")
             if application not in automatic:
                 raise Refused("waits for the owner")
