@@ -330,7 +330,7 @@ def test_fence_subnets_are_fixed_and_do_not_overlap_stack():
     # Include the supplied running stack assignments as well as all declared subnets.
     stack_subnets = {
         "172.18.0.0/16",
-        "172.19.0.0/16",
+        "10.253.88.0/24",
         "172.25.0.0/16",
         "172.26.0.0/16",
         "10.253.87.0/24",
