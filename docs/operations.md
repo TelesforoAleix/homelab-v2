@@ -2506,11 +2506,32 @@ commit so it calls the still-installed `factory-cli`; leave the existing roots a
 
 ### Install the fixed fence launcher
 
-This adds an unused root helper; existing runner and chat callers continue invoking
-`homelab-fence` unchanged. The launcher, its data, host units/scripts, Compose files,
+The root helper runs fixed fence profiles for authorized callers.
+The launcher, its data, host units/scripts, Compose files,
 Dockerfiles, proxy allowlists, fence probe and `.github/` are guard files: changes require the
-owner's review before merge. Only uid 0 is permanently authorized. The new profiles are
-unused by production callers, and login remains an owner-terminal operation.
+owner's review before merge. The permanent caller list is:
+
+| uid | Caller | Allowed profiles |
+|---|---|---|
+| 0 | Root | `cli-run`, `chat`, `bundle`, `usage` |
+| 21010 | Factory runner | `cli-run`, `bundle`, `usage` |
+| 21011 | Factory chat service | `chat`, `cli-run`, `bundle` |
+
+The chat service uses `bundle` to export a planning chat's commits after a turn.
+Login remains an owner-terminal operation.
+
+For a caller-list update on an existing installation, run from the node's committed,
+merged tree. Show and review the installed-file diff before copying (exit 1 means a
+difference; stop on an inspection error):
+
+```bash
+sudo diff -uN /etc/homelab-launcher/callers.json node/etc/homelab-launcher/callers.json
+sudo install -m 0644 -o root -g root node/etc/homelab-launcher/callers.json /etc/homelab-launcher/callers.json
+sudo systemctl restart homelab-launcher.service
+```
+
+After installing the chat service's `bundle` permission, verify that a planning chat
+delivers a commit.
 
 From the node's committed, merged tree, show these diffs before installing (exit 1 means a
 difference; stop on an inspection error). The directory and configuration files are root:root
@@ -2552,8 +2573,8 @@ profile probes print help, export the empty commit or discard the usage output; 
 is made. It temporarily substitutes an unapproved id in `images` for the refusal probe,
 restores both configuration files in `finally`, restarts the helper and removes its fixtures
 and run metadata. No login contents are read by the orchestrator or changed. Run this probe
-with no other launcher clients active. The permanent caller configuration still authorizes only
-uid 0 afterward. There are no group members to provision in this installation.
+with no other launcher clients active. The permanent caller configuration is restored to
+the caller list above afterward.
 
 The service accepts one newline-terminated UTF-8 JSON object per Unix stream connection at
 `/run/homelab-launcher.sock` (root:homelab-launch 0660). The complete line, including its
@@ -2609,8 +2630,9 @@ callers may only inspect/stop their own runs and allowed profiles. Refusals retu
 only uid, operation, profile, safe identifiers, exit codes and fixed reasons.
 
 Rollback: `sudo systemctl disable --now homelab-launcher.socket`, then
-`sudo systemctl stop homelab-launcher.service`. Existing callers still use the unchanged
-`homelab-fence`; no production caller depends on the socket. Leave the group, inactive files,
+`sudo systemctl stop homelab-launcher.service`. This prevents authorized callers from
+launching runs. To roll back only a caller-list update, restore the previous `callers.json`
+and restart `homelab-launcher.service` instead. Leave the group, inactive files,
 image approval and existing fence installation in place for inspection. No volume or login
 rollback is needed.
 

@@ -812,7 +812,7 @@ def test_configuration_and_initial_callers(monkeypatch):
     assert installed == {
         "0": list(PROFILES),
         "21010": ["cli-run", "bundle", "usage"],
-        "21011": ["chat", "cli-run"],
+        "21011": ["chat", "cli-run", "bundle"],
     }
     callers = installed
     assert launcher.load_configuration() == (PROFILES, installed)
