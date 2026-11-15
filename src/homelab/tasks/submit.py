@@ -116,15 +116,15 @@ def parse(raw: bytes) -> TaskFile:
         raise Refused(f"{where}: {first['msg']}") from None
 
 
-def submit(connection: Any, plan: TaskFile) -> list[int]:
+def submit(connection: Any, plan: TaskFile, *, configure_job=None) -> list[int]:
     """Write the tasks and defer their jobs in one transaction: all of it happens, or none."""
+    if configure_job is None:
+        configure_job = run_coding_task.configure
     try:
         with connection.transaction():
             ids, ready = write_tasks(connection, plan)
             for task_id, priority in ready:
-                run_coding_task.configure(connection=connection, priority=priority).defer(
-                    task_id=task_id
-                )
+                configure_job(connection=connection, priority=priority).defer(task_id=task_id)
     except psycopg.errors.UniqueViolation:
         raise Refused("this slice already has a task at one of these positions") from None
     return [ids[position] for position in sorted(ids)]

@@ -139,7 +139,7 @@ def stub_database(monkeypatch, task=(1, "done", "eval_kept"), attempts=()):
 def test_submit_uses_shared_models_and_submit(monkeypatch):
     stub_database(monkeypatch, task=None)
     plans = []
-    monkeypatch.setattr(eval_tasks, "submit", lambda db, plan: plans.append(plan) or [42])
+    monkeypatch.setattr(eval_tasks, "submit", lambda db, plan, **kwargs: plans.append(plan) or [42])
     response = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=body())
     assert response.status_code == 201
     assert response.json() == {"task": 42}
@@ -163,7 +163,7 @@ def test_concurrent_duplicate_is_409(monkeypatch):
     database = SimpleNamespace(execute=lambda *args: next(rows))
     monkeypatch.setattr(eval_tasks.psycopg, "connect", lambda *a, **kw: nullcontext(database))
 
-    def concurrent_submit(*args):
+    def concurrent_submit(*args, **kwargs):
         raise Refused("this slice already has a task at one of these positions")
 
     monkeypatch.setattr(eval_tasks, "submit", concurrent_submit)
