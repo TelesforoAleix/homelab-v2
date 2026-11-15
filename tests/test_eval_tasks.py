@@ -43,7 +43,7 @@ def body(**changes):
 
 @pytest.fixture(autouse=True)
 def settings(monkeypatch, tmp_path):
-    settings = Settings(_env_file=None, eval_task_key=KEY, task_runs_dir=tmp_path)
+    settings = Settings(_env_file=None, eval_task_key=KEY, eval_diffs_dir=tmp_path)
     monkeypatch.setattr(eval_tasks, "get_settings", lambda: settings)
     return settings
 
@@ -193,18 +193,15 @@ def attempt(number, *, ended=True, run_id="run-1", usage=(3, 10, 4, 6, Decimal("
     )
 
 
-def test_read_attempts_and_last_round_diff(monkeypatch, settings):
-    folder = settings.task_runs_dir / "run-1"
-    folder.mkdir()
+def test_read_attempts_and_last_ended_diff(monkeypatch, settings):
     data = b"final diff\x00\xff"
-    for name, content in [
-        ("diff.patch", b"first"),
-        ("diff-2.patch", b"second"),
-        ("diff-10.patch", data),
-        ("diff-bogus.patch", b"ignore"),
-    ]:
-        (folder / name).write_bytes(content)
-    stub_database(monkeypatch, attempts=[attempt(1), attempt(2, ended=False, run_id="other")])
+    (settings.eval_diffs_dir / "run-1.patch").write_bytes(data)
+    (settings.eval_diffs_dir / "older.patch").write_bytes(b"older attempt")
+    (settings.eval_diffs_dir / "other.patch").write_bytes(b"active attempt")
+    stub_database(
+        monkeypatch,
+        attempts=[attempt(1, run_id="older"), attempt(2), attempt(3, ended=False, run_id="other")],
+    )
     response = CLIENT.get("/v1/tasks/eval/1", headers=HEADERS)
     assert response.status_code == 200
     result = response.json()
@@ -212,8 +209,8 @@ def test_read_attempts_and_last_round_diff(monkeypatch, settings):
     assert result["status"] == "done"
     assert result["reason"] == "eval_kept"
     assert base64.b64decode(result["diff_base64"]) == data
-    assert result["attempts"][0] == {
-        "number": 1,
+    assert result["attempts"][1] == {
+        "number": 2,
         "status": "done",
         "reason": "eval_kept",
         "started_at": "2026-11-13T00:00:00+00:00",
@@ -227,7 +224,7 @@ def test_read_attempts_and_last_round_diff(monkeypatch, settings):
             "cost_usd": 0.25,
         },
     }
-    assert result["attempts"][1]["ended_at"] is None
+    assert result["attempts"][2]["ended_at"] is None
 
 
 @pytest.mark.parametrize(
@@ -235,9 +232,7 @@ def test_read_attempts_and_last_round_diff(monkeypatch, settings):
     [(0, False), (eval_tasks.DIFF_LIMIT, False), (eval_tasks.DIFF_LIMIT + 1, True)],
 )
 def test_diff_size(monkeypatch, settings, size, too_large):
-    folder = settings.task_runs_dir / "run-1"
-    folder.mkdir()
-    (folder / "diff.patch").write_bytes(b"x" * size)
+    (settings.eval_diffs_dir / "run-1.patch").write_bytes(b"x" * size)
     stub_database(monkeypatch, attempts=[attempt(1)])
     result = CLIENT.get("/v1/tasks/eval/1", headers=HEADERS).json()
     if too_large:
@@ -253,23 +248,22 @@ def test_invalid_run_id_never_reads(monkeypatch, settings, run_id):
     def no_read(*args):
         pytest.fail("unsafe run_id reached the filesystem")
 
-    monkeypatch.setattr(Path, "iterdir", no_read)
+    monkeypatch.setattr(Path, "is_symlink", no_read)
     stub_database(monkeypatch, attempts=[attempt(1, run_id=run_id)])
     assert CLIENT.get("/v1/tasks/eval/1", headers=HEADERS).json()["diff_base64"] is None
 
 
 @pytest.mark.parametrize("link_folder", [False, True])
 def test_diff_symlinks_are_not_followed(settings, link_folder):
-    outside = settings.task_runs_dir.parent / (settings.task_runs_dir.name + "-outside")
+    outside = settings.eval_diffs_dir.parent / (settings.eval_diffs_dir.name + "-outside")
     outside.mkdir()
-    (outside / "diff.patch").write_bytes(b"private bytes")
-    folder = settings.task_runs_dir / "run-1"
+    (outside / "run-1.patch").write_bytes(b"private bytes")
     if link_folder:
-        folder.symlink_to(outside, target_is_directory=True)
+        settings.eval_diffs_dir.rmdir()
+        settings.eval_diffs_dir.symlink_to(outside, target_is_directory=True)
     else:
-        folder.mkdir()
-        (folder / "diff.patch").symlink_to(outside / "diff.patch")
-    assert eval_tasks.read_diff(settings.task_runs_dir, "run-1") == {"diff_base64": None}
+        (settings.eval_diffs_dir / "run-1.patch").symlink_to(outside / "run-1.patch")
+    assert eval_tasks.read_diff(settings.eval_diffs_dir, "run-1") == {"diff_base64": None}
 
 
 def test_no_attempts_or_missing_diff(monkeypatch):
@@ -283,13 +277,18 @@ def test_no_attempts_or_missing_diff(monkeypatch):
     assert result["diff_base64"] is None
 
 
-def test_compose_only_api_gets_key_and_run_mount():
+def test_compose_only_api_gets_key_and_diff_mount():
     services = yaml.safe_load(Path("compose.yaml").read_text())["services"]
     api = services["api"]
     assert api["environment"]["HOMELAB_EVAL_TASK_KEY"] == "${HOMELAB_EVAL_TASK_KEY:-}"
-    assert any(
-        "HOMELAB_TASK_RUNS_PATH" in volume and volume.endswith(":ro") for volume in api["volumes"]
+    assert api["environment"]["HOMELAB_EVAL_DIFFS_DIR"] == (
+        "${HOMELAB_EVAL_DIFFS_DIR:-/srv/homelab/task-runs/eval-diffs}"
     )
+    assert "HOMELAB_TASK_RUNS_DIR" not in api["environment"]
+    assert [v for v in api["volumes"] if "HOMELAB_TASK_RUNS_PATH" in v] == [
+        "${HOMELAB_TASK_RUNS_PATH:-/srv/homelab/task-runs}/eval-diffs:"
+        "${HOMELAB_EVAL_DIFFS_DIR:-/srv/homelab/task-runs/eval-diffs}:ro"
+    ]
     for name, service in services.items():
         if name != "api":
             assert "HOMELAB_EVAL_TASK_KEY" not in service.get("environment", {})
@@ -381,3 +380,10 @@ def test_concurrent_submissions_postgres(connection, settings):  # noqa: F811
     assert responses[0].json()["task"] == responses[1].json()["task"]
     assert connection.execute("SELECT count(*) FROM homelab_tasks").fetchone() == (1,)
     assert connection.execute("SELECT count(*) FROM procrastinate_jobs").fetchone() == (1,)
+
+
+def test_eval_diff_setting(monkeypatch, tmp_path):
+    monkeypatch.delenv("HOMELAB_EVAL_DIFFS_DIR", raising=False)
+    assert Settings(_env_file=None).eval_diffs_dir == Path("/srv/homelab/task-runs/eval-diffs")
+    monkeypatch.setenv("HOMELAB_EVAL_DIFFS_DIR", str(tmp_path))
+    assert Settings(_env_file=None).eval_diffs_dir == tmp_path

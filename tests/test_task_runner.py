@@ -1090,3 +1090,102 @@ def test_eval_uses_the_tasks_configuration(monkeypatch, tmp_path):
     monkeypatch.setenv("HOMELAB_TASK_AUTHOR_EMAIL", "fixture@example.invalid")
     runner.run_ticket(task(eval_set="T", eval_configuration="other"), tmp_path, "p", "r", None)
     assert seen == ["pi/other"]
+
+
+@pytest.fixture
+def eval_run(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "RUNS", tmp_path)
+    folder = tmp_path / "run-1"
+    folder.mkdir(mode=0o700)
+    run = {"run_id": "run-1", "run_folder": str(folder), "configuration_hash": "b" * 64}
+    return task(eval_set="T", eval_case="example"), run, folder
+
+
+def test_eval_exports_only_final_diff(monkeypatch, eval_run):
+    item, run, folder = eval_run
+    for name, content in [
+        ("diff.patch", b"first"),
+        ("diff-2.patch", b"second"),
+        ("diff-10.patch", b"final\x00\xff"),
+        ("diff-bogus.patch", b"ignore"),
+        ("events.jsonl", b"private events"),
+    ]:
+        (folder / name).write_bytes(content)
+    ownership = []
+    real_chown, real_fchown = os.chown, os.fchown
+
+    def chown(path, uid, gid):
+        ownership.append((uid, gid))
+        if os.geteuid() == 0:
+            real_chown(path, uid, gid)
+
+    def fchown(fd, uid, gid):
+        ownership.append((uid, gid))
+        if os.geteuid() == 0:
+            real_fchown(fd, uid, gid)
+
+    monkeypatch.setattr(runner.os, "chown", chown)
+    monkeypatch.setattr(runner.os, "fchown", fchown)
+    runner.keep_eval_run(item, run)
+    exports = runner.RUNS / "eval-diffs"
+    patch = exports / "run-1.patch"
+    assert patch.read_bytes() == b"final\x00\xff"
+    assert list(exports.iterdir()) == [patch]
+    assert exports.stat().st_mode & 0o777 == 0o750
+    assert patch.stat().st_mode & 0o777 == 0o640
+    assert ownership == [(0, 10001), (0, 10001)]
+    if os.geteuid() == 0:
+        for path in (exports, patch):
+            assert (path.stat().st_uid, path.stat().st_gid) == (0, 10001)
+    assert (Path(run["run_folder"]) / "events.jsonl").read_bytes() == b"private events"
+    assert Path(run["run_folder"]).stat().st_mode & 0o777 == 0o700
+
+
+def test_eval_without_diff_exports_no_file(eval_run):
+    item, run, _ = eval_run
+    runner.keep_eval_run(item, run)
+    assert not (runner.RUNS / "eval-diffs/run-1.patch").exists()
+
+
+@pytest.mark.parametrize("link", ["source", "patch", "exports", "target"])
+def test_eval_export_refuses_symlinks(eval_run, link):
+    item, run, folder = eval_run
+    outside = runner.RUNS / "outside"
+    outside.mkdir()
+    private = outside / "private"
+    private.write_bytes(b"private bytes")
+    patch = folder / "diff-2.patch"
+    (folder / "diff.patch").write_bytes(b"older diff")
+    if link == "source":
+        folder.rename(outside / "run")
+        folder.symlink_to(outside / "run", target_is_directory=True)
+    elif link == "patch":
+        patch.symlink_to(private)
+    else:
+        patch.write_bytes(b"final diff")
+        exports = runner.RUNS / "eval-diffs"
+        if link == "exports":
+            exports.symlink_to(outside, target_is_directory=True)
+        else:
+            exports.mkdir()
+            (exports / "run-1.patch").symlink_to(private)
+    with pytest.raises(runner.Refused, match="eval_run_refused"):
+        runner.keep_eval_run(item, run)
+    assert private.read_bytes() == b"private bytes"
+    assert not (outside / "run-1.patch").exists()
+
+
+def test_eval_diff_copy_failure_publishes_nothing(monkeypatch, eval_run):
+    item, run, folder = eval_run
+    (folder / "diff.patch").write_bytes(b"final diff")
+    monkeypatch.setattr(runner.os, "chown", lambda *args: None)
+
+    def fail_copy(source, output):
+        output.write(b"partial")
+        raise OSError("fixture copy failure")
+
+    monkeypatch.setattr(runner.shutil, "copyfileobj", fail_copy)
+    with pytest.raises(OSError, match="fixture copy failure"):
+        runner.keep_eval_run(item, run)
+    assert list((runner.RUNS / "eval-diffs").iterdir()) == []
+    assert (Path(run["run_folder"]) / "diff.patch").read_bytes() == b"final diff"

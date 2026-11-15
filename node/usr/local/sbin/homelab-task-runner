@@ -315,7 +315,9 @@ def run_ticket(task, copy, purpose, review_purpose, feedback, *, cli=None, numbe
                 r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name
             ):
                 raise Refused("eval_configuration_refused")
-            configuration, configuration_commit = configuration_snapshot(Path(temporary), "pi/" + name)
+            configuration, configuration_commit = configuration_snapshot(
+                Path(temporary), "pi/" + name
+            )
         else:
             configuration, configuration_commit = configuration_snapshot(Path(temporary))
         command += [
@@ -608,6 +610,38 @@ def keep_eval_run(task, run):
     destination = parent / run["run_id"]
     source.rename(destination)
     run["run_folder"] = str(destination)
+    export_eval_diff(destination, run["run_id"])
+
+
+def export_eval_diff(folder, run_id):
+    """Publish only the final round's patch for the API, by atomic replacement."""
+    patches = []
+    for path in folder.iterdir():
+        match = re.fullmatch(r"diff(?:-([1-9][0-9]*))?\.patch", path.name)
+        if match:
+            patches.append((int(match[1] or 1), path))
+    if not patches:
+        return
+    patch = max(patches)[1]
+    if patch.is_symlink() or not patch.is_file():
+        raise Refused("eval_run_refused")
+    exports = RUNS / "eval-diffs"
+    exports.mkdir(mode=0o750, exist_ok=True)
+    target = exports / f"{run_id}.patch"
+    if exports.is_symlink() or target.is_symlink():
+        raise Refused("eval_run_refused")
+    os.chown(exports, 0, 10001)
+    exports.chmod(0o750)
+    fd, name = tempfile.mkstemp(prefix=f".{run_id}.", dir=exports)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as output, patch.open("rb") as source:
+            shutil.copyfileobj(source, output)
+            os.fchown(output.fileno(), 0, 10001)
+            os.fchmod(output.fileno(), 0o640)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def known_cost(item):

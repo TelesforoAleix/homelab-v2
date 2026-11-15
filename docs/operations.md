@@ -1715,20 +1715,26 @@ last ended attempt. Missing or unreadable diffs are null; a diff over 2 MiB retu
 `"diff_base64": null, "diff_too_large": true`. An active later attempt does not replace
 the last ended attempt's diff.
 
-Only the API mounts `${HOMELAB_TASK_RUNS_PATH:-/srv/homelab/task-runs}` read-only,
-at `HOMELAB_TASK_RUNS_DIR` (default `/srv/homelab/task-runs`). Diff lookup uses only a
-single-part `run_id` recorded in Postgres, directly under that directory, and refuses
-symlink folders and files. **Deployment limitation:** the current host runner moves eval
-runs into the nested root-only layout described above. Those files are not accessible
-through this direct lookup or by the API's UID 10001, so they yield null diffs. Resolving
-the layout and access requires an owner decision before relying on node diff retrieval;
-this endpoint does not change host permissions or the runner.
+When keeping an eval attempt, the runner copies only the final round's diff to
+`/srv/homelab/task-runs/eval-diffs/<run_id>.patch`, using a temporary file and atomic
+rename. The folder is `root:10001`, mode `0750`; patches are `root:10001`, mode `0640`.
+Root and the API's group 10001 can read these diffs. Agent events, review logs and all
+other run-store content remain root-only. No diff written means no exported file;
+runs kept before this change are not backfilled.
 
-Node step after merge: **install; the owner sets HOMELAB_EVAL_TASK_KEY; then one submit
-and read** with a docs-only case. The orchestrator installs through the platform Compose
-restart, checks 503 before the owner sets the key, then checks 401 with a wrong fixture
-key and submits and reads the case with the owner's key without printing it. CI must be
-green and the owner reviews the Compose guard-file change before merge.
+Only the API mounts `${HOMELAB_TASK_RUNS_PATH:-/srv/homelab/task-runs}/eval-diffs`
+read-only, at `HOMELAB_EVAL_DIFFS_DIR` (default `/srv/homelab/task-runs/eval-diffs`).
+Diff lookup uses a single-part `run_id` recorded in Postgres and reads `<run_id>.patch`;
+symlink folders and files are refused. The API never mounts the whole run store.
+
+Node step after merge: **pull; install homelab-task-runner; restart both; one submit
+and read with its diff**. After `git pull --ff-only` in `/srv/homelab/homelab-v2`,
+inspect the installed-file diff, install the runner and create `eval-diffs` as shown
+in [Rebuilding the node](#rebuilding-the-node), restart `homelab-task-runner.service`,
+then restart `homelab.service` to rebuild the stack and apply the diff-only mount.
+Submit a small docs-only eval and confirm its read returns the diff, using the existing
+private eval key without printing it. CI must be green and the owner reviews the
+`node/` and Compose guard-file changes before merge.
 
 Read `sudo docker exec homelab-worker-1 homelab eval results --set T`.
 Each tab-separated line contains case, configuration hash, runs, passed, then mean steps,
@@ -1970,10 +1976,14 @@ SSH accounts work through Tailscale.
    sudo install -m 0644 -o root -g root node/opt/homelab-context/* /opt/homelab-context/
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-run /usr/local/sbin/homelab-task-run
    sudo install -m 0644 -o root -g root node/opt/homelab-task/Dockerfile /opt/homelab-task/Dockerfile
+   # Inspect the runner diff in the loop above before this host-file install.
    sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-runner /usr/local/sbin/homelab-task-runner
-   # Eval support: install the runner above, restart homelab.service to apply the additive
-   # schema and rebuild the worker, then restart homelab-task-runner.service. Submit one
-   # eval task on a scratch repository and read homelab eval results before normal use.
+   # Create the diff-only bind source before starting the API; leave the run store root-only.
+   sudo install -d -m 0750 -o root -g 10001 /srv/homelab/task-runs/eval-diffs
+   # After updating the runner and Compose: restart both, then submit one small eval
+   # and read it back through GET /v1/tasks/eval/<id> with its diff.
+   # sudo systemctl restart homelab-task-runner.service
+   # sudo systemctl restart homelab.service
    # Both scripts must be updated together for CLI worker routes. The task image is unchanged.
    # CLI routes need the installed homelab-fence command and its Codex login; do not
    # copy that login or credentials into this tree or the task image. Its existing work/runs
