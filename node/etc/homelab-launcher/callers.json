@@ -6,5 +6,5 @@
     "usage"
   ],
   "21010": ["cli-run", "bundle", "usage"],
-  "21011": ["chat", "cli-run"]
+  "21011": ["chat", "cli-run", "bundle"]
 }
