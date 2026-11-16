@@ -14,6 +14,24 @@ class Refused(Exception):
     """Input that will not be accepted. The message carries no task content."""
 
 
+class RunError(Exception):
+    """A run refusal with a public code and no caller content."""
+
+    def __init__(
+        self,
+        status: int,
+        code: str,
+        *,
+        status_reason: str | None = None,
+        message: str | None = None,
+    ):
+        self.status = status
+        self.code = code
+        self.status_reason = status_reason
+        self.message = message
+        super().__init__(code)
+
+
 def apply_schema(connection: Any) -> None:
     connection.execute(Path(__file__).with_name("schema.sql").read_text())
 

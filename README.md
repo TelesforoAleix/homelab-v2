@@ -64,6 +64,13 @@ a [configuration folder](configurations/README.md). Only an eval-marked task can
 exact-purpose token; ordinary client keys, chat and bot callers cannot use the eval route.
 The existing task request and time limits apply; unknown model IDs fail upstream.
 
+The [version-one run API](docs/run-api.md) accepts application-owned, idempotent ticket writes
+and eval runs on loopback. A root-owned key file holds bearer digests, scopes and each key's
+repository/default-branch map; other applications cannot read a run. Runs share the existing
+Postgres task queue, report attempts and usage, and support ordered dependencies and queued
+cancellation. Read mode and requests containing `limits` return `409 role_not_available` before
+storage. The legacy eval endpoints keep their response shapes and use the same key file.
+
 A [read-only code context server](docs/operations.md#code-context-server) gives Mac coding agents
 symbol navigation over SSH. It runs Serena without network access against separate,
 periodically refreshed copies of configured repositories on the encrypted volume.
@@ -113,7 +120,7 @@ Running the stack needs a provisioned node; see the [operator runbook](docs/oper
 | `src/homelab/models/` | Purpose discovery and model clients |
 | `src/homelab/knowledge/` | LlamaIndex ingestion and retrieval |
 | `src/homelab/jobs/` | Procrastinate tasks and worker |
-| `src/homelab/tasks/` | Coding task tables and the submit, claim and finish commands |
+| `src/homelab/tasks/` | Run/task records and the submit, claim and finish commands |
 | `config/litellm.yaml` | Model purposes and routes |
 | `node/` | Host files at their installed paths (table entries are merged) |
 | `mac/` | Usage profiles, measurements, model router and action listener |

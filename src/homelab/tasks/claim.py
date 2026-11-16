@@ -14,6 +14,7 @@ from typing import Any
 import psycopg
 
 from homelab.settings import get_settings
+from homelab.tasks.runs import claimed_goal, lock, lock_task
 from homelab.tasks.store import QUEUE
 
 FIELDS = (
@@ -46,6 +47,7 @@ def claim(connection: Any) -> dict[str, Any] | None:
             ).fetchone()
             if job_id is None:
                 return None
+            linked = lock_task(connection, args["task_id"])
             row = connection.execute(
                 f"SELECT status, {', '.join(FIELDS)} FROM homelab_tasks WHERE id = %s FOR UPDATE",
                 (args["task_id"],),
@@ -57,6 +59,8 @@ def claim(connection: Any) -> dict[str, Any] | None:
                 )
                 continue
             task = dict(zip(FIELDS, row[1:], strict=True))
+            if linked:
+                task["goal"] = claimed_goal(connection, task["id"])
             connection.execute(
                 """UPDATE homelab_tasks SET status = 'running', started_at = now(),
                    updated_at = now() WHERE id = %s""",
@@ -95,6 +99,10 @@ def slice_stopped(connection: Any, name: str) -> bool:
 def recover(connection: Any) -> int:
     """Return everything a dead runner held to the queue; only a starting runner calls this."""
     with connection.transaction():
+        if connection.execute(
+            "SELECT 1 FROM homelab_runs WHERE status = 'running' LIMIT 1"
+        ).fetchone():
+            lock(connection)
         jobs = connection.execute(
             "SELECT id FROM procrastinate_jobs WHERE queue_name = %s AND status = 'doing'",
             (QUEUE,),
