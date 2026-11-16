@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from homelab.api.run_contract import Message, RunRequest
-from homelab.api.run_keys import RunError, authorize, load_keys
+from homelab.api.run_keys import ApplicationKey, RunError, authorize, load_keys
 from homelab.settings import get_settings
 from homelab.tasks import runs as store
 from homelab.tasks.executors import Executor, load_executors
@@ -45,17 +45,6 @@ def configure_job(**options):
     return submit_app.configure_task(JOB, queue=QUEUE, **options)
 
 
-def repository_default(application: str, repository: str) -> str | None:
-    """Deployment policy is deny-by-default, independently of bearer scopes."""
-    with connect() as connection:
-        result = connection.execute(
-            """SELECT default_branch FROM homelab_run_repositories
-               WHERE application = %s AND repository = %s""",
-            (application, repository),
-        ).fetchone()
-    return result[0] if result else None
-
-
 def selected(body: RunRequest) -> Executor:
     if body.eval:
         name = body.eval.configuration
@@ -63,15 +52,15 @@ def selected(body: RunRequest) -> Executor:
     return executors()[body.role][body.level][0]
 
 
-def create(application: str, body: RunRequest, **kwargs):
+def create(identity: ApplicationKey, body: RunRequest, **kwargs):
     with connect() as connection:
         return store.create(
             connection,
-            application,
+            identity.application,
             body,
             selected(body),
             configure_job=configure_job,
-            validate_repository=repository_default,
+            repositories=identity.repositories,
             **kwargs,
         )
 
@@ -102,7 +91,12 @@ def identifier(value: str) -> UUID:
 
 
 def failure(error: RunError):
-    return JSONResponse({"error": error.code}, status_code=error.status)
+    content = {"error": error.code}
+    if error.status_reason is not None:
+        content["status_reason"] = error.status_reason
+    if error.message is not None:
+        content["message"] = error.message
+    return JSONResponse(content, status_code=error.status)
 
 
 def response(content, status_code=200):
@@ -114,9 +108,9 @@ async def post_run(request: Request):
     try:
         identity = authorize(request, "runs:write")
         body = parse(RunRequest, await request_bytes(request))
-        if body.eval:
-            authorize(request, "runs:eval")
-        record, created = await run_in_threadpool(create, identity.application, body)
+        if body.eval and "runs:eval" not in identity.scopes:
+            raise RunError(403, "scope_required")
+        record, created = await run_in_threadpool(create, identity, body)
         return response({"run_id": record["id"]}, 201 if created else 200)
     except RunError as error:
         return failure(error)

@@ -17,9 +17,18 @@ class Refused(Exception):
 class RunError(Exception):
     """A run refusal with a public code and no caller content."""
 
-    def __init__(self, status: int, code: str):
+    def __init__(
+        self,
+        status: int,
+        code: str,
+        *,
+        status_reason: str | None = None,
+        message: str | None = None,
+    ):
         self.status = status
         self.code = code
+        self.status_reason = status_reason
+        self.message = message
         super().__init__(code)
 
 

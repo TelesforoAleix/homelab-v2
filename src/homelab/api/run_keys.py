@@ -6,22 +6,29 @@ import hashlib
 import hmac
 import stat
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import Request
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import Field, StringConstraints, TypeAdapter, ValidationError
 
 from homelab.tasks.store import RunError
 from homelab.tasks.submit import Strict
 
 KEY_FILE = Path("/etc/homelab/run-keys.json")
 Scope = Literal["runs:write", "runs:read", "runs:eval"]
+Repository = Annotated[
+    str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+]
+DefaultBranch = Annotated[
+    str, StringConstraints(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+]
 
 
 class ApplicationKey(Strict):
     application: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._:-]+$")
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     scopes: list[Scope]
+    repositories: dict[Repository, DefaultBranch]
 
 
 def parse_keys(raw: bytes) -> list[ApplicationKey]:

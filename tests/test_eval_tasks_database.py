@@ -8,7 +8,7 @@ import procrastinate
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
-from homelab.api import eval_tasks, runs
+from homelab.api import eval_tasks, run_keys, runs
 from homelab.jobs.app import app as jobs_app
 from tests.test_eval_tasks import body
 from tests.test_task_store import connection  # noqa: F401
@@ -21,14 +21,19 @@ def test_submit_with_open_job_app_and_rollback(connection, monkeypatch):  # noqa
     monkeypatch.setattr(jobs_app.connector, "_pool_externally_set", False)
     url = connection.info.dsn
     monkeypatch.setattr(runs, "get_settings", lambda: SimpleNamespace(database_url=url))
-    monkeypatch.setattr(runs, "repository_default", lambda application, repository: "main")
+    identity = run_keys.ApplicationKey(
+        application="factory",
+        sha256="0" * 64,
+        scopes=["runs:write", "runs:read", "runs:eval"],
+        repositories={"example/repo": "main"},
+    )
     plan = eval_tasks.parse_submission(json.dumps(body()).encode())
     failed_plan = eval_tasks.parse_submission(json.dumps(body(attempt="case-2")).encode())
 
     async def exercise():
         async with AsyncConnectionPool(url, open=False) as pool:
             async with jobs_app.open_async(pool):
-                response = await asyncio.to_thread(eval_tasks.create_task, plan)
+                response = await asyncio.to_thread(eval_tasks.create_task, plan, identity)
                 assert response.status_code == 201
                 task_id = json.loads(response.body)["task"]
                 assert connection.execute(
@@ -48,7 +53,7 @@ def test_submit_with_open_job_app_and_rollback(connection, monkeypatch):  # noqa
                     FOR EACH ROW EXECUTE FUNCTION reject_eval_job()
                 """)
                 with pytest.raises(procrastinate.exceptions.ConnectorException):
-                    await asyncio.to_thread(eval_tasks.create_task, failed_plan)
+                    await asyncio.to_thread(eval_tasks.create_task, failed_plan, identity)
                 assert connection.execute("SELECT count(*) FROM homelab_tasks").fetchone() == (1,)
                 assert connection.execute("SELECT count(*) FROM procrastinate_jobs").fetchone() == (
                     1,

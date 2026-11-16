@@ -16,7 +16,7 @@ from starlette.concurrency import run_in_threadpool
 
 from homelab.api import runs
 from homelab.api.run_contract import RunRequest, Work
-from homelab.api.run_keys import RunError
+from homelab.api.run_keys import ApplicationKey, RunError
 from homelab.api.run_keys import authorize as run_authorize
 from homelab.settings import get_settings
 from homelab.tasks.store import Refused
@@ -70,7 +70,7 @@ def parse_submission(raw: bytes) -> TaskFile:
         raise Refused(f"{where or 'body'}: {first['msg']}") from None
 
 
-def create_task(plan: TaskFile, application: str = "factory") -> JSONResponse:
+def create_task(plan: TaskFile, identity: ApplicationKey) -> JSONResponse:
     attempt = plan.slice.removeprefix("eval:")
     task = plan.tasks[0]
     # The plan has already passed the historical alias validation. Construct the
@@ -93,7 +93,7 @@ def create_task(plan: TaskFile, application: str = "factory") -> JSONResponse:
         ),
         eval=task.eval,
     )
-    record, created = runs.create(application, body, legacy_attempt=attempt, title=task.title)
+    record, created = runs.create(identity, body, legacy_attempt=attempt, title=task.title)
     if created:
         return JSONResponse({"task": record["task_id"]}, status_code=201)
     return JSONResponse(
@@ -108,7 +108,7 @@ async def post_eval(request: Request):
         return identity
     try:
         plan = parse_submission(await runs.request_bytes(request))
-        return await run_in_threadpool(create_task, plan, identity.application)
+        return await run_in_threadpool(create_task, plan, identity)
     except RunError as error:
         return runs.failure(error)
     except Refused as error:

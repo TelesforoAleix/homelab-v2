@@ -737,10 +737,11 @@ dependency has a row and no job.
 
 `python -m homelab.jobs.schema`, the worker's start step, applies `src/homelab/tasks/schema.sql`
 after Procrastinate's schema. Every statement is idempotent, and a failure stops the worker
-starting. There are four tables:
+starting. The coding-task and run records use five tables:
 
 | Table | One row per | Holds |
 |---|---|---|
+| `homelab_runs` | application-owned run | request hash, goal, metadata, executor/hash, task link, status, change revision |
 | `homelab_roles` | role | `routes`: an ordered JSON list; the next entry is one tier up |
 | `homelab_tasks` | task | the file's fields, status, reason, timestamps |
 | `homelab_task_attempts` | attempt of a task | number, role, route, status, why it ended, run id, check exit code |
@@ -748,7 +749,7 @@ starting. There are four tables:
 
 A route is `{"kind": "litellm", "purpose": ...}` or `{"kind": "cli", "tool": ..., "model": ...}`.
 Start inserts `worker`, `ticket-reviewer` and `side-job` if they are missing, each with one route
-to `task-worker`, and leaves existing rows alone. Provider and model names live only in the table,
+to `task-worker`, and leaves existing rows alone. Today's worker routes live in this table,
 which is edited directly; a trigger keeps `updated_at` true. Attempts and traces copy their role
 and route, so history survives an edit. Runs compare in plain SQL:
 
@@ -756,6 +757,48 @@ and route, so history survives an edit. Runs compare in plain SQL:
 SELECT role, route, kind, count(*), sum(output_tokens), sum(cost_usd), avg(seconds)
 FROM homelab_task_traces GROUP BY role, route, kind;
 ```
+
+### Run API
+
+`POST /v1/runs` creates an application-owned version-one run or returns its existing id for the
+same `request_id` and validated request. A changed request returns `409 request_conflict`.
+`GET /v1/runs/{id}` reads its executor/hash, attempts, state, times and metrics;
+`GET /v1/runs` lists changes by an application-scoped cursor or looks up a request id.
+The [run guide](docs/run-api.md) describes the wire format and provisioning.
+
+The API alone mounts `/etc/homelab/run-keys.json` read-only. Each root-owned entry contains an
+application, bearer SHA-256, scopes and `repositories`, a map from `owner/name` to default branch.
+Write/read/eval calls require their `runs:*` scopes; a key never inherits another key's repository
+policy, even within one application. A new submission for an unlisted repository returns 403;
+a branch equal to its listed default or `main` returns 409. Another application's run is 404.
+No repository policy lives in Postgres. API startup validates the file and
+`config/executors.yaml`; malformed data prevents start. The executor table maps each role and
+level to an ordered list of Pi configurations or CLI harnesses; the first entry and its hash
+are recorded without changing `homelab_roles`.
+
+A ticket write or eval becomes one ordinary task, deferred through Procrastinate in the run's
+transaction. `after` request ids become task dependencies; a non-`done` predecessor cancels its
+queued descendants with `predecessor`. Unrelated active runs of the application exclude another
+write on that branch. Each run-linked task stores an empty goal; claim resolves the sole copy
+in `homelab_runs.goal` and adds assets in memory. Request metadata and queue arguments never
+copy that goal. Database triggers synchronize status, attempts and usage changes. Bridge writers
+and cursor reads take a transaction lock before locking run/task rows, so revision watermarks
+cannot skip a late commit. Unlinked legacy tasks keep their existing queue behavior.
+
+Queued cancellation records `cancelled_by_client` and cancels descendants; cancellation after
+claim returns `409 not_resumable`. Messages also return `not_resumable` because today's runner
+cannot resume a conversation. Slice, cut and review requests without an eval mark return
+`409 role_not_available`. Read mode and any supplied `limits` return 409 with
+`status_reason:role_not_available` and a message that they arrive with the execution service,
+leaving no run, task or job. History is recorded while the host keeps its full single-branch
+clone. Delivered commits remain empty and final messages null until supplied by an executor.
+Goals, assets and final messages are never logged.
+
+The legacy `/v1/tasks/eval` routes use the same scoped key file and create runs while retaining
+their response shapes and duplicate-attempt semantics. Independent eval attempts may share a
+branch; new submissions still require its repository/default-branch policy. Factory's existing
+unlinked eval tasks remain readable and deduplicated. Eval tasks continue using the host's
+existing diff export and never push. No host runner, launcher or gateway change is needed.
 
 ## Jobs
 

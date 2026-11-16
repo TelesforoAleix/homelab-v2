@@ -204,11 +204,3 @@ CREATE OR REPLACE TRIGGER homelab_run_attempt_changed
 CREATE OR REPLACE TRIGGER homelab_run_trace_changed
     AFTER INSERT OR UPDATE ON homelab_task_traces
     FOR EACH ROW EXECUTE FUNCTION homelab_run_attempt_changed();
-
--- Root/operator provisioning supplies repository policy; an absent row grants no access.
-CREATE TABLE IF NOT EXISTS homelab_run_repositories (
-    application text NOT NULL,
-    repository text NOT NULL,
-    default_branch text NOT NULL,
-    PRIMARY KEY (application, repository)
-);

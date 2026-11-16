@@ -76,6 +76,18 @@ class RunRequest(Strict):
             raise ValueError("invalid contract version")
         return value
 
+    @model_validator(mode="before")
+    @classmethod
+    def supported_execution(cls, value):
+        if isinstance(value, dict) and (value.get("mode") == "read" or "limits" in value):
+            raise RunError(
+                409,
+                "role_not_available",
+                status_reason="role_not_available",
+                message="Read mode and per-run limits arrive with the execution service.",
+            )
+        return value
+
     @model_validator(mode="after")
     def constraints(self) -> RunRequest:
         if self.mode == "write" and self.branch is None:

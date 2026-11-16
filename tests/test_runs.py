@@ -50,16 +50,12 @@ def api(connection, monkeypatch, tmp_path):  # noqa: F811
     monkeypatch.setattr(
         eval_tasks, "psycopg", SimpleNamespace(connect=lambda *a, **kw: nullcontext(connection))
     )
-    monkeypatch.setattr(
-        runs,
-        "repository_default",
-        lambda application, repo: "trunk" if repo == "example/repo" else None,
-    )
     keys = [
         {
             "application": application,
             "sha256": hashlib.sha256(key.encode()).hexdigest(),
             "scopes": scopes,
+            "repositories": {"example/repo": "trunk"},
         }
         for application, key, scopes in [
             ("factory", "factory-fixture", ["runs:write", "runs:read", "runs:eval"]),
@@ -301,26 +297,27 @@ def test_legacy_alias_uses_run_store_and_application_ownership(api):
     "changes",
     [
         {"mode": "read"},
+        {"mode": "read", "branch": None},
+        {"limits": {}},
+        {"limits": None},
+        {"limits": []},
+        {"limits": {"requests": None, "minutes": None, "usd": None}},
+        {"limits": {"requests": 0}},
         {"limits": {"requests": 1}},
+        {"limits": {"requests": 101}},
         {"limits": {"minutes": 1}},
         {"limits": {"usd": 0.01}},
     ],
 )
-def test_unavailable_policy_never_queues_a_writer(api, changes):
+def test_execution_service_requests_are_refused_without_records(api, changes, caplog):
     response = post(body(**changes))
-    assert response.status_code == 201
-    result = CLIENT.get(f"/v1/runs/{response.json()['run_id']}", headers=HEADERS).json()
-    assert result["status"] == "failed"
-    assert result["status_reason"] == "no_executor_available"
-    assert claim.claim(api) is None
-    assert api.execute("SELECT count(*) FROM procrastinate_jobs").fetchone() == (0,)
-
-
-def test_limits_cannot_raise_configuration_budget(api):
-    response = post(body(limits={"requests": 101}))
-    assert response.status_code == 422
-    assert response.json() == {"error": "invalid_limits"}
-    assert api.execute("SELECT count(*) FROM homelab_runs").fetchone() == (0,)
+    assert response.status_code == 409
+    result = response.json()
+    assert result["error"] == result["status_reason"] == "role_not_available"
+    assert "execution service" in result["message"]
+    for table in ("homelab_runs", "homelab_tasks", "procrastinate_jobs"):
+        assert api.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)
+    assert MARKER not in response.text + caplog.text
 
 
 @pytest.mark.parametrize("status", ["failed", "escalated"])
@@ -385,34 +382,58 @@ def test_eval_accepts_configuration_folder_name(api):
     assert claim.claim(api)["eval_configuration"] == "base"
 
 
-def test_real_repository_policy_is_application_scoped(api, monkeypatch):
-    monkeypatch.undo()
-    # Use a real second connection with the fixture's private schema.
-    monkeypatch.setattr(runs, "get_settings", lambda: SimpleNamespace(database_url=api.info.dsn))
-    assert runs.repository_default("factory", "example/repo") is None
-    api.execute(
-        """INSERT INTO homelab_run_repositories VALUES ('factory', 'example/repo', 'trunk')"""
+def test_repository_policy_is_per_key_and_not_stored_in_postgres(api, monkeypatch):
+    keys = run_keys.load_keys()
+    restricted = keys[0].model_copy(
+        update={
+            "sha256": hashlib.sha256(b"restricted-fixture").hexdigest(),
+            "repositories": {"different/repo": "main"},
+        }
     )
-    assert runs.repository_default("factory", "example/repo") == "trunk"
-    assert runs.repository_default("other", "example/repo") is None
+    monkeypatch.setattr(run_keys, "load_keys", lambda: [*keys, restricted])
+    response = post(headers={"Authorization": "Bearer restricted-fixture"})
+    assert response.status_code == 403
+    assert response.json()["error"] == "repository_not_allowed"
+    assert api.execute("SELECT count(*) FROM homelab_runs").fetchone() == (0,)
+    assert api.execute("SELECT to_regclass('homelab_run_repositories')").fetchone() == (None,)
+    assert post().status_code == 201
 
 
-def test_nondefault_main_is_not_misreported_as_the_default(api):
+def test_nondefault_main_is_also_refused_without_a_record(api):
     response = post(body(branch="main"))
-    assert response.status_code == 201
-    record = CLIENT.get(f"/v1/runs/{response.json()['run_id']}", headers=HEADERS).json()
-    assert record["status_reason"] == "no_executor_available"
-    assert claim.claim(api) is None
+    assert response.status_code == 409
+    assert response.json() == {"error": "branch_is_default"}
+    for table in ("homelab_runs", "homelab_tasks", "procrastinate_jobs"):
+        assert api.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)
+
+
+@pytest.mark.parametrize(
+    "changes, error",
+    [
+        ({"repository": "unknown/repo"}, "repository_not_allowed"),
+        ({"branch": "trunk"}, "branch_is_default"),
+        ({"branch": "main"}, "branch_is_default"),
+    ],
+)
+def test_alias_uses_the_key_repository_policy(api, changes, error):
+    from tests.test_eval_tasks import body as eval_body
+
+    response = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=eval_body(**changes))
+    assert response.status_code == (403 if error == "repository_not_allowed" else 409)
+    assert response.json()["error"] == error
+    for table in ("homelab_runs", "homelab_tasks", "procrastinate_jobs"):
+        assert api.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)
 
 
 def test_alias_preserves_historical_submission_validation(api):
     from tests.test_eval_tasks import body as eval_body
 
-    response = CLIENT.post(
-        "/v1/tasks/eval", headers=HEADERS, json=eval_body(branch="main", goal="g" * 200_001)
-    )
+    response = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=eval_body(goal="g" * 200_001))
     assert response.status_code == 201
-    assert api.execute("SELECT status, branch FROM homelab_tasks").fetchone() == ("queued", "main")
+    assert api.execute("SELECT status, branch FROM homelab_tasks").fetchone() == (
+        "queued",
+        "eval/case-1",
+    )
 
 
 def test_alias_isolates_applications_with_eval_scope(api, monkeypatch):

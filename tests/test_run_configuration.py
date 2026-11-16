@@ -64,10 +64,18 @@ def test_configuration_hash_matches_documented_manifest():
     "document",
     [
         {},
-        [{"application": "factory", "sha256": "secret", "scopes": []}],
-        [{"application": "factory", "sha256": "a" * 64, "scopes": ["admin"]}],
-        [{"application": "factory", "sha256": "a" * 64, "scopes": [], "key": "secret"}],
-        [{"application": "factory", "sha256": "a" * 64, "scopes": []}] * 2,
+        [{"application": "factory", "sha256": "secret", "scopes": [], "repositories": {}}],
+        [{"application": "factory", "sha256": "a" * 64, "scopes": ["admin"], "repositories": {}}],
+        [
+            {
+                "application": "factory",
+                "sha256": "a" * 64,
+                "scopes": [],
+                "repositories": {},
+                "key": "secret",
+            }
+        ],
+        [{"application": "factory", "sha256": "a" * 64, "scopes": [], "repositories": {}}] * 2,
     ],
 )
 def test_invalid_key_file_redacts_content(document):
@@ -79,6 +87,7 @@ def test_invalid_key_file_redacts_content(document):
 def test_key_file_example_is_dummy_and_api_only():
     keys = run_keys.parse_keys(Path("docs/run-keys.example.json").read_bytes())
     assert keys[0].sha256 == "0" * 64
+    assert keys[0].repositories == {"owner/scratch-repo": "main"}
     services = yaml.safe_load(Path("compose.yaml").read_text())["services"]
     mounts = services["api"]["volumes"]
     assert {
@@ -134,3 +143,27 @@ def test_duplicate_executor_rows_are_refused(tmp_path):
     path.write_text(Path("config/executors.yaml").read_text() + "\nticket: {}\n")
     with pytest.raises(ValueError, match="executor"):
         load_executors(path)
+
+
+@pytest.mark.parametrize(
+    "repositories",
+    [
+        None,
+        [],
+        {"invalid": "main"},
+        {"owner/repo": ""},
+        {"owner/repo": 1},
+        {"owner/repo": {"default_branch": "main"}},
+    ],
+)
+def test_invalid_repository_policy_is_refused(repositories):
+    document = [
+        {
+            "application": "factory",
+            "sha256": "0" * 64,
+            "scopes": ["runs:write"],
+            "repositories": repositories,
+        }
+    ]
+    with pytest.raises(ValueError, match="invalid run key file"):
+        run_keys.parse_keys(json.dumps(document).encode())

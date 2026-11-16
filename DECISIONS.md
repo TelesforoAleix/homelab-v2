@@ -881,3 +881,33 @@ input accept for TCP 8110 from `172.18.0.0/16`, trusting that platform subnet wi
 adding another port or source. The listener address, lack of a key, and IPv6 rules stay
 unchanged. Tailnet peers remain gated by Tailscale policy; platform containers use the
 source-subnet rule. This extends the reachability recorded in the 2026-10-20 decision.
+
+**2026-11-16 — Run keys carry repository policy.** Each root-owned key-file entry includes its
+own repository-to-default-branch map beside application identity, digest and scopes. The API
+uses the authenticated entry rather than merging permissions across keys for an application.
+Postgres stores runs and task history, with no repository-policy table. Run ownership remains
+application-wide, so key rotation does not change which application owns existing records.
+The listed default branch and `main` are refused before a new run is written; the host retains
+its independent remote default-branch guard.
+
+**2026-11-16 — Runs reuse today's task queue and own their goal once.** Each supported run becomes
+one task and a Procrastinate job in the same transaction. The task's goal is empty and claim
+resolves `homelab_runs.goal`; assets are added to its ticket in memory. A request fingerprint
+compares validated content without copying the goal into JSON or queue arguments. The host
+protocol and `homelab_roles` remain unchanged. Rollback must drain or stop queued run-linked
+tasks before restoring claim code that cannot resolve their goals.
+
+**2026-11-16 — Run change cursors serialize with bridge writes.** A sequence alone can allocate
+a revision before its transaction commits, letting a reader skip that late commit. Bridge
+writers and feed reads therefore share a Postgres transaction lock, acquired before task/run
+row locks. Triggers update revisions for task, attempt and usage changes. The cursor carries
+an application-scoped revision and reads at most 100 records in change order. Ordinary unlinked
+tasks keep their existing concurrency.
+
+**2026-11-16 — Unsupported execution requests fail before storage.** Read mode and any supplied
+`limits` are refused with 409, `status_reason:role_not_available`, and an execution-service
+message, without a run or task. Today's executor cannot enforce those policies across attempts
+and review. Cancellation after claim returns `not_resumable`; queued cancellation still works.
+The history hint is recorded while the runner keeps its complete single-branch clone. Its
+finish protocol reports no delivered commit SHAs or final message, so those fields remain
+empty/null rather than inferred. These boundaries preserve the existing host executor.

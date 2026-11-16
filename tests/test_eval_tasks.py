@@ -47,7 +47,6 @@ def settings(monkeypatch, tmp_path):
     settings = Settings(_env_file=None, eval_task_key=KEY, eval_diffs_dir=tmp_path)
     monkeypatch.setattr(eval_tasks, "get_settings", lambda: settings)
     monkeypatch.setattr(runs, "get_settings", lambda: settings)
-    monkeypatch.setattr(runs, "repository_default", lambda application, repository: "main")
     monkeypatch.setattr(
         run_keys,
         "load_keys",
@@ -58,6 +57,7 @@ def settings(monkeypatch, tmp_path):
                         "application": "factory",
                         "sha256": hashlib.sha256(KEY.encode()).hexdigest(),
                         "scopes": ["runs:write", "runs:read", "runs:eval"],
+                        "repositories": {"example/repo": "main"},
                     }
                 ]
             ).encode()
@@ -161,16 +161,17 @@ def stub_database(monkeypatch, task=(1, "done", "eval_kept"), attempts=()):
 def test_submit_maps_to_the_run_store(monkeypatch):
     captured = []
 
-    def create(application, document, **kwargs):
-        captured.append((application, document, kwargs))
+    def create(identity, document, **kwargs):
+        captured.append((identity, document, kwargs))
         return {"task_id": 42}, True
 
     monkeypatch.setattr(runs, "create", create)
     response = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=body())
     assert response.status_code == 201
     assert response.json() == {"task": 42}
-    application, document, options = captured[0]
-    assert application == "factory"
+    identity, document, options = captured[0]
+    assert identity.application == "factory"
+    assert identity.repositories == {"example/repo": "main"}
     assert document.branch == "eval/case-1"
     assert document.eval.model_dump() == body()["eval"]
     assert options == {"legacy_attempt": "case-1", "title": "Docs case"}

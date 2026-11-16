@@ -1702,12 +1702,16 @@ identifier has 1–96 lower-case letters, digits, dots, hyphens or underscores, 
 letter or digit. `pi/eval-deepseek-v4.1-flash` inherits `pi/base` and its 100 requests/30 minutes.
 
 
-The loopback platform API at `127.0.0.1:8000` also offers two keyed routes for an
-external eval runner. The owner sets `HOMELAB_EVAL_TASK_KEY` privately after merge;
-this key is passed only to the API service. Both routes require
-`Authorization: Bearer <key>`. With the setting unset or empty, both return
-`503 {"error":"Eval tasks are not configured"}`. A missing or incorrect bearer key
-returns `401 {"error":"Eval task key required"}`. Existing `/v1/manage/*` reads stay open.
+The loopback platform API at `127.0.0.1:8000` offers the [version-one run API](run-api.md)
+and retains two compatible eval routes. All use the root-owned `/etc/homelab/run-keys.json`,
+mounted read-only into the API. Entries carry application identity, bearer digests, scopes and
+each key's repository/default-branch map. Factory's entry hashes the unchanged existing
+`HOMELAB_EVAL_TASK_KEY`; that environment value no longer authorizes requests directly.
+Both eval routes require `Authorization: Bearer <key>` with `runs:eval`, plus `runs:write`
+for POST or `runs:read` for GET. An unavailable key file returns
+`503 {"error":"Eval tasks are not configured"}` at runtime; startup refuses a missing or malformed
+file. A missing or incorrect bearer key returns `401 {"error":"Eval task key required"}`.
+Existing `/v1/manage/*` reads stay open.
 
 `POST /v1/tasks/eval` accepts exactly one task:
 
@@ -1727,8 +1731,10 @@ returns `401 {"error":"Eval task key required"}`. Existing `/v1/manage/*` reads 
 ```
 
 The caller creates and pushes the case's starting commit, including its pinned tests,
-on its `eval/<something>` branch before submission. The endpoint uses the CLI's task
-models and submission transaction, with position 1 and slice `eval:<attempt>`.
+on its `eval/<something>` branch before submission. The endpoint validates the historical
+CLI task-body format, creates a run and queues one task at position 1 with slice
+`eval:<application>:<attempt>`. New submissions require a repository listed on that key and
+refuse `main` or the listed default branch.
 `attempt` follows the same 1–64 character naming rule as the eval mark. A successful
 submission returns `201 {"task":123}`. Reusing an attempt, including across repositories,
 returns `409 {"error":"Attempt already submitted","task":123}`. Refused bodies return
@@ -1736,7 +1742,8 @@ returns `409 {"error":"Attempt already submitted","task":123}`. Refused bodies r
 are refused. The example commit is a placeholder; supply the actual start commit.
 
 `GET /v1/tasks/eval/123` returns `task`, `status`, `reason`, `attempts`, and
-`diff_base64`; an unknown task or one whose slice does not start with `eval:` returns 404.
+`diff_base64`; an unknown, non-eval or other application's task returns 404. Factory's
+pre-upgrade `eval:<attempt>` tasks remain readable and deduplicated.
 Each attempt includes `number`, `status`, `reason`, `started_at`, `ended_at`,
 `configuration_hash`, and `usage` (`steps`, `fresh_tokens`, `cached_tokens`,
 `output_tokens`, `cost_usd`). Usage sums all the attempt's traces, including reviews;
@@ -1758,14 +1765,12 @@ read-only, at `HOMELAB_EVAL_DIFFS_DIR` (default `/srv/homelab/task-runs/eval-dif
 Diff lookup uses a single-part `run_id` recorded in Postgres and reads `<run_id>.patch`;
 symlink folders and files are refused. The API never mounts the whole run store.
 
-Node step after merge: **pull; install homelab-task-runner; restart both; one submit
-and read with its diff**. After `git pull --ff-only` in `/srv/homelab/homelab-v2`,
-inspect the installed-file diff, install the runner and create `eval-diffs` as shown
-in [Rebuilding the node](#rebuilding-the-node), restart `homelab-task-runner.service`,
-then restart `homelab.service` to rebuild the stack and apply the diff-only mount.
-Submit a small docs-only eval and confirm its read returns the diff, using the existing
-private eval key without printing it. CI must be green and the owner reviews the
-`node/` and Compose guard-file changes before merge.
+For node provisioning, follow [the run API steps](run-api.md#node-steps-after-merge-and-owner-approval):
+prepare rollback, generate the key-file digest and repository policy without printing credentials,
+pull and restart the platform, then verify the unchanged Factory calls and one new ticket run.
+The run API needs no host-script installation. Existing diff-folder permissions and the
+read-only mount above stay in place. CI must be green and the owner reviews the executor-table
+and Compose guard-file changes before merge.
 
 Read `sudo docker exec homelab-worker-1 homelab eval results --set T`.
 Each tab-separated line contains case, configuration hash, runs, passed, then mean steps,
@@ -1807,7 +1812,7 @@ sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-dump node/usr/l
 
 ## Rebuilding the node
 
-Provision the run API's root-owned digest file and per-application repository policy using
+Provision the run API's root-owned digest file with each key's repository policy using
 [Run API and node provisioning](run-api.md#node-steps-after-merge-and-owner-approval). Preserve
 Factory's existing bearer key; the API alone receives the read-only key-file mount.
 

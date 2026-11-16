@@ -52,16 +52,6 @@ def fingerprint(body) -> str:
 
 def available(body, executor: Executor) -> bool:
     """Do not queue a writer for an execution policy today's host cannot honor."""
-    limits = executor.limits()
-    for name, requested in body.limits.model_dump(exclude_none=True).items():
-        if name in limits and requested > limits[name]:
-            raise RunError(422, "invalid_limits")
-    if body.mode == "read" or body.branch == "main":
-        return False
-    if any(value is not None for value in body.limits.model_dump().values()):
-        # The host applies configuration limits per attempt, with no per-run budget
-        # input. Even equal values cannot promise a cap across retries and review.
-        return False
     return body.eval is not None or executor.configuration == "pi/base"
 
 
@@ -72,7 +62,7 @@ def create(
     executor: Executor,
     *,
     configure_job,
-    validate_repository,
+    repositories: dict[str, str],
     legacy_attempt: str | None = None,
     title: str | None = None,
 ):
@@ -92,14 +82,11 @@ def create(
             ).fetchone()
             if previous:
                 return {"task_id": previous[0]}, False
-        default = (
-            body.branch if legacy_attempt else validate_repository(application, body.repository)
-        )
-        if not legacy_attempt:
-            if default is None:
-                raise RunError(403, "repository_not_allowed")
-            if body.mode == "write" and body.branch == default:
-                raise RunError(409, "branch_is_default")
+        default = repositories.get(body.repository)
+        if default is None:
+            raise RunError(403, "repository_not_allowed")
+        if body.mode == "write" and body.branch in {"main", default}:
+            raise RunError(409, "branch_is_default")
         if body.role != "ticket" and body.eval is None:
             raise RunError(409, "role_not_available")
         predecessors = []

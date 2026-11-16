@@ -85,13 +85,13 @@ and populates the existing task eval fields. The runner then keeps its change as
 never calls its push step. GET includes `diff_base64` from the existing read-only eval export
 mount, with the same 2 MiB bound and symlink/path checks as the legacy endpoint.
 
-The current bridge cannot enforce read-only execution or explicit per-run limits over retries
-and review. Such requests are persisted as `failed/no_executor_available`, with one failed
-task and no queue job. A requested limit above the selected Pi configuration's request or
-minute limit returns `422 invalid_limits` without a record. The executor table's shape is
-unchanged; configuration limits come from its referenced `configuration.json`. No USD cap
-is invented. A non-baseline table selection for a non-eval ticket also fails without a job,
-because today's host always selects its baseline configuration for that path.
+Read mode and any request containing `limits` are refused at create with HTTP 409,
+`error:role_not_available`, `status_reason:role_not_available`, and the message
+"Read mode and per-run limits arrive with the execution service." This includes an empty
+`limits` object or explicit null: omit the field for today's executor. The refusal leaves no
+run, task or queue job. The executor table's shape is unchanged; its referenced Pi configuration
+supplies today's execution limits. A non-baseline table selection for a non-eval ticket fails
+without a job because today's host always selects its baseline configuration for that path.
 
 The host clones the selected branch's complete single-branch history for either history hint.
 Null `allowed_files` uses the existing sandbox's unrestricted default; a null check uses
@@ -115,27 +115,35 @@ Malformed files fail startup; a file becoming unavailable at runtime fails autho
 Do not replace it with a plaintext key file. Rotation may add another digest for the same
 application, then remove the old one; keep the owner and mode when replacing the file.
 
-The shape is a JSON list of `{application, sha256, scopes}`. The initial entry is `factory`, the
-SHA-256 of the existing `HOMELAB_EVAL_TASK_KEY`, and scopes `runs:write`, `runs:read`, `runs:eval`.
-The [checked-in example](run-keys.example.json) contains only an all-zero dummy digest. The API
-does not fall back to its environment key for authorization.
+The shape is a JSON list of `{application, sha256, scopes, repositories}`. `repositories` maps
+each allowed `owner/name` directly to its default branch, for example
+`{"owner/scratch-repo":"main"}`. Each key has its own policy: another key for the same application
+does not extend its repository permissions. An empty map denies every repository. There is no
+Postgres repository-policy table.
 
-Repository access for new run requests is deny-by-default. An operator provisions
-`homelab_run_repositories(application, repository, default_branch)` in Postgres. A missing row
-returns `403 repository_not_allowed`; a write to the configured default branch returns
-`409 branch_is_default`. Keep default branches current when changing repository settings. The
-host's independent remote default-branch guard still applies before execution. The host also
-refuses a branch named `main` when it is not the default; such a run has no available executor.
+The initial entry is `factory`, the SHA-256 of the existing `HOMELAB_EVAL_TASK_KEY`, scopes
+`runs:write`, `runs:read`, `runs:eval`, and the owner's approved repository/default-branch map.
+The [checked-in example](run-keys.example.json) contains only an all-zero dummy digest and a
+placeholder repository. The API does not fall back to its environment key for authorization.
+
+A new submission for a repository absent from the authenticated key's map returns
+`403 repository_not_allowed`; a branch equal to its listed default branch or `main` returns
+`409 branch_is_default`. Refusals leave no run, task or job. Keep each map current when changing
+repository settings. The host's independent remote default-branch guard still applies before
+execution. Rotated keys must carry their intended repository policy explicitly. If the host
+file is replaced atomically, restart the API to remount the new inode; edits to the existing
+mounted inode are read on the next request.
 
 `/v1/tasks/eval` authorizes through this same key file, requiring write/eval for POST and
 read/eval for GET. It creates a run and returns the original `201 {task:<integer>}` response;
 a duplicate attempt still returns `409 {error:"Attempt already submitted",task:<integer>}`,
 even if the retry's content changes. Its GET shape, attempts, usage and diff are unchanged.
-To preserve existing clients, the alias retains its historical submission validation and
-allows independent eval attempts on the same branch. Its slice names include the application.
+The alias retains its historical task-body validation and allows independent eval attempts
+on the same branch. New submissions share the authenticated key's repository/default-branch
+checks. Its slice names include the application.
 Factory's pre-upgrade `eval:<attempt>` tasks remain readable and deduplicated; no other
-application can use that compatibility path. New run repository/branch exclusion rules apply
-to `/v1/runs`, rather than changing historical alias behavior.
+application can use that compatibility path. The `branch_busy` exclusion applies to `/v1/runs`;
+independent legacy eval attempts keep their existing scheduling behavior.
 
 ## Node steps after merge and owner approval
 
@@ -151,7 +159,9 @@ capability boundaries above before approving this deployment.
    No table or volume deletion is needed. Cancelled/failed requests need new request ids to run
    again. Existing unlinked task rows do not need conversion.
 2. While the old API still runs, create the key file on the node from its existing environment,
-   without printing either key or digest. Run as root, with no shell tracing:
+   without printing either key or digest. Replace the example map below with every approved
+   Factory repository and its actual default branch before running. Run as root, with no shell
+   tracing; the script refuses an unchanged placeholder:
 
    ```sh
    sudo install -d -o root -g root -m 0755 /etc/homelab
@@ -161,6 +171,9 @@ capability boundaries above before approving this deployment.
    import os
    import subprocess
 
+   repositories = {"owner/scratch-repo": "main"}
+   if "owner/scratch-repo" in repositories:
+       raise SystemExit("Replace the placeholder repository policy; nothing written")
    raw = subprocess.check_output(["docker", "inspect", "homelab-api-1"])
    environment = json.loads(raw)[0]["Config"]["Env"]
    values = dict(item.split("=", 1) for item in environment if "=" in item)
@@ -168,7 +181,8 @@ capability boundaries above before approving this deployment.
    if not key:
        raise SystemExit("Existing eval key is unavailable; nothing written")
    entries = [{"application": "factory", "sha256": hashlib.sha256(key.encode()).hexdigest(),
-               "scopes": ["runs:write", "runs:read", "runs:eval"]}]
+               "scopes": ["runs:write", "runs:read", "runs:eval"],
+               "repositories": repositories}]
    fd = os.open("/etc/homelab/run-keys.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
    with os.fdopen(fd, "w") as stream:
        os.fchown(stream.fileno(), 0, 0)
@@ -182,24 +196,13 @@ capability boundaries above before approving this deployment.
    the installed file into a transcript. Keep the existing bearer key for Factory unchanged.
 3. In `/srv/homelab/homelab-v2`, pull by hand with `git pull --ff-only`; then
    `sudo systemctl restart homelab.service` builds and starts the images. The worker's existing
-   schema start step installs the additive run tables, indexes and triggers. A malformed table
+   schema start step installs the additive run table, indexes and triggers. A malformed table
    or unreadable key file prevents the API from starting; inspect metadata-only service logs.
-4. Provision each Factory repository and its actual default branch. For example, replace the
-   public placeholders below before running against the node's Postgres:
-
-   ```sh
-   docker compose exec -T postgres psql -U homelab -d homelab <<'SQL'
-   INSERT INTO homelab_run_repositories (application, repository, default_branch)
-   VALUES ('factory', 'owner/scratch-repo', 'main')
-   ON CONFLICT (application, repository) DO UPDATE SET default_branch = EXCLUDED.default_branch;
-   SQL
-   ```
-
-5. Confirm `/health`, and use Factory's unchanged bearer key to GET a known existing
+4. Confirm `/health`, and use Factory's unchanged bearer key to GET a known existing
    `/v1/tasks/eval/<id>` and submit/read a scratch eval through the legacy calls. Confirm the
    response shape, completed diff and absence of a push. Do not print authorization headers,
    goals, assets or final messages into service logs or the deployment transcript.
-6. Submit one scratch `ticket` write through `/v1/runs`, without explicit limits, on an existing
+5. Submit one scratch `ticket` write through `/v1/runs`, without explicit limits, on an existing
    non-default branch. Poll to completion on today's runner; confirm one task/job, the actual
    attempt hash and usage, and the delivered change on the scratch branch. Repeat the identical
    request and confirm the same id with HTTP 200 and no second job. Do not declare the rollout
