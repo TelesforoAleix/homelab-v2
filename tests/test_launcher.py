@@ -574,7 +574,7 @@ def test_exact_line_limit_and_fragmentation():
 
 def test_excess_ancillary_descriptors_are_closed(env):
     with socket_pair() as (client, server), open("/dev/null", "wb") as output:
-        socket.send_fds(client, [b"{}\n"], [output.fileno()] * 3)
+        socket.send_fds(client, [b"{}\n"], [output.fileno()] * 4)
         received = []
         try:
             with pytest.raises(launcher.Refused, match="invalid_descriptors"):
@@ -813,6 +813,7 @@ def test_configuration_and_initial_callers(monkeypatch):
         "0": list(PROFILES),
         "21010": ["cli-run", "bundle", "usage"],
         "21011": ["chat", "cli-run", "bundle"],
+        "21020": ["task", "cli-run", "bundle", "usage"],
     }
     callers = installed
     assert launcher.load_configuration() == (PROFILES, installed)
@@ -1037,7 +1038,7 @@ def test_probe_configuration_restored_even_on_failure(tmp_path, monkeypatch, cap
     def client(uid, request, expected):
         cases.append((uid, request, expected))
         configured = json.loads((probe.LAUNCHER_CONFIG / "callers.json").read_text())
-        assert configured["21998"] == list(PROFILES)
+        assert configured["21998"] == ["cli-run", "chat", "bundle", "usage"]
         if expected.get("error") == "image_not_approved":
             assert (probe.LAUNCHER_CONFIG / "images").read_text() != images
         return not failed

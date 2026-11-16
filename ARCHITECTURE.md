@@ -552,6 +552,16 @@ Every container is non-root (the working copy's owner, never root), has no capab
 processes, and a wall-clock limit. It mounts only the working copy, and it uses Docker's `none`
 log driver, because the daemon's `json-file` default would keep prompts and code on disk.
 
+The root socket launcher also exposes these five layouts as the `task` profile for root and
+uid 21020 (`homelab-runs`). It selects one work-folder identifier under `/srv/homelab/task-work`,
+uses that folder's non-root uid/gid, and resolves approved `homelab-task:2` to its immutable id.
+Each shape fixes Docker options and the entry command. Bounded arguments and per-shape
+allow-listed environment values supply in-container task data; they never select host paths,
+images, networks, mounts or Docker flags. Agent/review stdin is a passed descriptor, and
+content goes only to the caller's output descriptors. The existing host runner still starts
+containers directly. The [launcher contract and node probe](docs/operations.md#task-launcher-profile)
+describe the new boundary; no execution service is deployed by this change.
+
 Prepare's only way out is `package-proxy`, a tinyproxy on the internal `homelab-packages` network,
 reached through `HTTPS_PROXY`. The proxy is that network's only other member and the only part with
 an outside route, its own `homelab-package-egress`. It allows `CONNECT` to port 443 of `pypi.org`,

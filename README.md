@@ -53,6 +53,9 @@ Solid parts are built; dashed parts are planned.
 [Coding tasks](docs/operations.md#coding-tasks-in-a-container) run one at a time on the node:
 `homelab-task-run` gives a ticket to the Pi agent in an isolated container on one working copy,
 then judges the result with a pinned check. Separate containers prepare, work, check and commit.
+The [fixed container launcher](docs/operations.md#install-the-fixed-fence-launcher) also offers
+these task shapes to uid 21020 (`homelab-runs`), alongside its Factory profiles. The host task
+runner continues to start its own containers; it does not use the new profile yet.
 Only the agent reaches LiteLLM, on `homelab-tasks`, with a one-run token for its purpose and a
 request budget; prepare reaches only the package indexes, through a proxy.
 Tasks are [submitted](ARCHITECTURE.md#task-store) as a file to a durable store and queue in

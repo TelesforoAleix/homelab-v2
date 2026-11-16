@@ -3,8 +3,10 @@
     "cli-run",
     "chat",
     "bundle",
-    "usage"
+    "usage",
+    "task"
   ],
   "21010": ["cli-run", "bundle", "usage"],
-  "21011": ["chat", "cli-run", "bundle"]
+  "21011": ["chat", "cli-run", "bundle"],
+  "21020": ["task", "cli-run", "bundle", "usage"]
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Socket-activated, identifier-only launcher for the fixed CLI fence profiles."""
+"""Socket-activated launcher for fixed fence and task container shapes."""
 
 import concurrent.futures
 import contextlib
@@ -62,6 +62,70 @@ LAYOUTS = {
         "timeout": None,
     },
     "usage": {"network": "none", "mounts": {"codex-login": "/login:ro"}, "timeout": None},
+}
+
+TASK_WORK_ROOT = Path("/srv/homelab/task-work")
+TASK_IMAGE = "homelab-task:2"
+TASK_STRING_LIMIT = 32768
+TASK_ARGUMENT_LIMIT = 256
+TASK_DATA_LIMIT = 48 * 1024
+TASK_MODEL_ENV = [
+    "HOMELAB_TASK_TOKEN", "HOMELAB_TASK_PURPOSE", "HOMELAB_PI_MODELS", "HOMELAB_PI_SETTINGS"
+]
+TASK_SHAPES = {
+    "prepare": {
+        "network": "homelab-packages",
+        "mounts": {"work": "/work:rw", "git": "/work/.git:ro"},
+        "stdin": False,
+        "environment": [
+            "HTTPS_PROXY=http://package-proxy:8888", "UV_HTTP_TIMEOUT=120", "HOMELAB_PI_VERSION"
+        ],
+        "entrypoint": None,
+        "entry": ["sh", "-c"],
+    },
+    "agent": {
+        "network": "homelab-tasks",
+        "mounts": {"work": "/work:rw", "git": "/work/.git:ro", "venv": "/work/.venv:ro"},
+        "stdin": True,
+        "environment": TASK_MODEL_ENV,
+        "entrypoint": None,
+        "entry": ["sh", "-c"],
+    },
+    "review": {
+        "network": "homelab-tasks",
+        "mounts": {"work": "/work:ro"},
+        "stdin": True,
+        "environment": TASK_MODEL_ENV,
+        "entrypoint": None,
+        "entry": ["sh", "-c"],
+    },
+    "check": {
+        "network": "none",
+        "mounts": {"work": "/work:rw", "git": "/work/.git:ro", "venv": "/work/.venv:ro"},
+        "stdin": False,
+        "environment": ["UV_NO_SYNC", "PYTHONPYCACHEPREFIX"],
+        "entrypoint": None,
+        "entry": ["sh", "-c"],
+    },
+    "commit": {
+        "network": "none",
+        "mounts": {"work": "/work:rw", "venv": "/work/.venv:ro"},
+        "stdin": False,
+        "environment": ["PATH=/usr/bin:/bin", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL"],
+        "entrypoint": "/usr/bin/python3",
+        "entry": ["-I", "-c"],
+    },
+}
+TASK_PROFILE = {
+    "image": TASK_IMAGE,
+    "limits": {"memory": "8g", "memory_swap": "8g", "cpus": "2", "pids": 512},
+    "user": "work-owner (non-root)",
+    "tmpfs": [
+        "/tmp:rw,exec,nosuid,nodev,size=4g,mode=1777",
+        "/home/task:rw,exec,nosuid,nodev,size=4g,uid=<uid>,gid=<gid>,mode=0700",
+    ],
+    "shapes": TASK_SHAPES,
+    "timeout": None,
 }
 
 # Executed only inside the fence image. No host read of login file contents.
@@ -187,12 +251,14 @@ def protected_read(path, mode):
 
 def load_configuration():
     profiles = decode_json(protected_read(CONFIG / "profiles.json", 0o644))
-    if type(profiles) is not dict or set(profiles) != set(LAYOUTS):
+    if type(profiles) is not dict or set(profiles) != {*LAYOUTS, "task"}:
         raise Refused("invalid_configuration")
     for name, layout in LAYOUTS.items():
         # The builders own the machinery; metadata cannot silently widen their contract.
         if profiles[name] != {"image": fence.IMAGE, "limits": LIMITS, **layout}:
             raise Refused("invalid_configuration")
+    if profiles["task"] != TASK_PROFILE:
+        raise Refused("invalid_configuration")
     callers = decode_json(protected_read(CONFIG / "callers.json", 0o644))
     if type(callers) is not dict:
         raise Refused("invalid_configuration")
@@ -243,10 +309,82 @@ def usage_arguments(image):
     ]
 
 
+def bounded_task_string(value, reason):
+    try:
+        if type(value) is str and "\x00" not in value:
+            size = len(value.encode("utf-8"))
+            if size <= TASK_STRING_LIMIT:
+                return size
+    except UnicodeError:
+        pass
+    raise Refused(reason)
+
+
+def task_arguments(request):
+    fields(request, ("op", "profile", "run_id", "work_id", "shape", "env", "arguments"))
+    shape = request["shape"]
+    if type(shape) is not str or shape not in TASK_SHAPES:
+        raise Refused("unknown_shape")
+    layout = TASK_SHAPES[shape]
+    environment = request["env"]
+    allowed = {name for name in layout["environment"] if "=" not in name}
+    if type(environment) is not dict or environment.keys() != allowed:
+        raise Refused("invalid_environment")
+    size = sum(bounded_task_string(value, "invalid_environment") for value in environment.values())
+    arguments = request["arguments"]
+    if type(arguments) is not list or not 1 <= len(arguments) <= TASK_ARGUMENT_LIMIT:
+        raise Refused("invalid_arguments")
+    size += sum(bounded_task_string(value, "invalid_arguments") for value in arguments)
+    if size > TASK_DATA_LIMIT:
+        raise Refused("task_data_too_large")
+    name = "homelab-launcher-task-" + identifier(request["run_id"])
+    work = TASK_WORK_ROOT / identifier(request["work_id"])
+    with directory(work) as fd:
+        info = os.fstat(fd)
+        uid, gid = info.st_uid, info.st_gid
+    if uid == 0:
+        raise Refused("invalid_owner")
+    # All task copies have real .git directories, including commit/review where
+    # .git is covered by the work mount. No work-copy content is read on the host.
+    with directory(work / ".git"):
+        pass
+    if "venv" in layout["mounts"]:
+        with directory(work / ".venv"):
+            pass
+    args = [
+        "docker", "run", "--rm", "--name", name, "--pull", "never", "--init",
+        "--user", f"{uid}:{gid}", "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges", "--read-only",
+        "--tmpfs", TASK_PROFILE["tmpfs"][0],
+        "--tmpfs", TASK_PROFILE["tmpfs"][1].replace("<uid>", str(uid)).replace("<gid>", str(gid)),
+        "--memory", "8g", "--memory-swap", "8g", "--cpus", "2", "--pids-limit", "512",
+        "--log-driver", "none", "--network", layout["network"], "--workdir", "/work",
+    ]
+    sources = {"work": work, "git": work / ".git", "venv": work / ".venv"}
+    for role, mount in layout["mounts"].items():
+        destination, mode = mount.split(":")
+        args += [
+            "--mount",
+            f"type=bind,src={sources[role]},dst={destination}"
+            + (",readonly" if mode == "ro" else ""),
+        ]
+    if layout["stdin"]:
+        args.append("--interactive")
+    for variable in layout["environment"]:
+        args += ["--env", variable]
+    if layout["entrypoint"]:
+        args += ["--entrypoint", layout["entrypoint"]]
+    # Caller data only follows the immutable image and fixed entry. It can never
+    # supply a Docker option, bind source, network, image or host command.
+    return [*args, approved_image(TASK_IMAGE), *layout["entry"], *arguments], name
+
+
 def run_arguments(request, profiles):
     profile = request.get("profile")
     if type(profile) is not str or profile not in profiles:
         raise Refused("unknown_profile")
+    if profile == "task":
+        return task_arguments(request)
     common = ("op", "profile", "run_id")
     if profile in ("cli-run", "chat"):
         fields(
@@ -343,10 +481,10 @@ def receive(connection, descriptors):
     data = bytearray()
     while b"\n" not in data:
         chunk, received, flags, _ = socket.recv_fds(
-            connection, MAX_LINE + 1 - len(data), 2, socket.MSG_CMSG_CLOEXEC
+            connection, MAX_LINE + 1 - len(data), 3, socket.MSG_CMSG_CLOEXEC
         )
         descriptors.extend(received)
-        if flags & (socket.MSG_CTRUNC | socket.MSG_TRUNC) or len(descriptors) > 2:
+        if flags & (socket.MSG_CTRUNC | socket.MSG_TRUNC) or len(descriptors) > 3:
             raise Refused("invalid_descriptors")
         if not chunk:
             raise Refused("incomplete_request")
@@ -435,11 +573,18 @@ class Launcher:
             raise Refused("invalid_fields")
         operation = request["op"]
         if operation == "run":
-            if len(descriptors) != 2:
+            task_stdin = request.get("profile") == "task" and request.get("shape") in (
+                "agent", "review"
+            )
+            if len(descriptors) != 2 + task_stdin:
                 raise Refused("invalid_descriptors")
-            for fd in descriptors:
+            for fd in descriptors[:2]:
                 if fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY:
                     raise Refused("invalid_descriptors")
+            if task_stdin and (
+                fcntl.fcntl(descriptors[2], fcntl.F_GETFL) & os.O_ACCMODE == os.O_WRONLY
+            ):
+                raise Refused("invalid_descriptors")
             profile = request.get("profile")
             if type(profile) is not str or profile not in self.profiles:
                 raise Refused("unknown_profile")
@@ -457,21 +602,23 @@ class Launcher:
                     raise Refused("run_exists") from None
                 self.active.add(name)
             code = 125
+            task_environment = {"PATH": os.defpath, **request["env"]} if profile == "task" else None
             try:
                 try:
                     code = subprocess.run(
                         args,
-                        stdin=subprocess.DEVNULL,
+                        stdin=descriptors[2] if task_stdin else subprocess.DEVNULL,
                         stdout=descriptors[0],
                         stderr=descriptors[1],
                         check=False,
                         timeout=self.profiles[profile]["timeout"],
+                        **({"env": task_environment} if profile == "task" else {}),
                     ).returncode
                 except subprocess.TimeoutExpired:
                     code = 124
                 finally:
-                    # Chat retains the CLI's forced cleanup even on timeout/start failure.
-                    if profile == "chat":
+                    # Task/chat cleanup also covers a failed or interrupted Docker client.
+                    if profile in ("chat", "task"):
                         try:
                             if self.container_exists(name):
                                 self.docker("rm", "-f", name)
