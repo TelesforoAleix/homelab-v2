@@ -1914,3 +1914,79 @@ def test_compaction_result_usage_is_added_to_assistant_usage():
     summary = runner.summarize_events(ROOT / "tests/fixtures/task-events/compaction-usage.jsonl")
     assert summary["compactions"] == 1
     assert summary["tokens"] == {"fresh": 14, "output": 24, "cached": 34, "cache_write": 44}
+
+
+@pytest.mark.parametrize(
+    "purpose", ["eval/deepseek/deepseek-v4.1-flash", "eval/a_1/b.2-3", "task-worker"]
+)
+def test_eval_purpose_rule_accepts(purpose):
+    assert runner.PURPOSE.fullmatch(purpose)
+
+
+@pytest.mark.parametrize(
+    "purpose",
+    [
+        "eval/",
+        "eval/a/",
+        "eval//b",
+        "eval/a/b/c",
+        "eval/A/b",
+        "eval/a/B",
+        "eval/a/" + "b" * 97,
+        "ordinary/model",
+        "ordinary_name",
+    ],
+)
+def test_eval_purpose_rule_refuses(purpose):
+    assert not runner.PURPOSE.fullmatch(purpose)
+
+
+def test_unmarked_task_cannot_issue_eval_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "TOKENS", tmp_path)
+    with pytest.raises(runner.Refused, match="eval purpose requires an eval mark"):
+        runner.issue_token("token", "eval/a/b", 60, 100)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("review", [False, True])
+def test_unmarked_eval_purpose_refused_before_image(repo, tmp_path, monkeypatch, review):
+    monkeypatch.setattr(runner, "image_digest", lambda image: pytest.fail("image inspected"))
+    with pytest.raises(runner.Refused, match="eval purpose requires an eval mark"):
+        runner.run(
+            arguments(
+                repo,
+                tmp_path,
+                **({"review_purpose": "eval/a/b"} if review else {"purpose": "eval/a/b"}),
+            )
+        )
+
+
+def test_eval_configuration_runs_with_exact_grant_and_cost(repo, tmp_path, monkeypatch):
+    steps = Steps(tmp_path, monkeypatch, repo)
+    steps.billed["agent"] = [line(0.125)]
+    purpose = "eval/deepseek/deepseek-v4.1-flash"
+    args = runner.parse(
+        [
+            "--working-copy",
+            str(repo),
+            "--ticket",
+            arguments(repo, tmp_path).ticket,
+            "--check",
+            "pytest",
+            "--configuration",
+            str(ROOT / "configurations/pi/eval-deepseek-v4.1-flash"),
+            "--eval-mark",
+            json.dumps(
+                {"set": "T", "case": "example", "configuration": "eval-deepseek-v4.1-flash"}
+            ),
+        ]
+    )
+    runner.run(args)
+    _, record = only_run(steps)
+    assert record["purpose"] == purpose
+    assert record["time_limit_minutes"] == 30
+    assert steps.calls["agent"]["env"]["HOMELAB_TASK_PURPOSE"] == purpose
+    assert record["configuration_hash"] == runner.load_configuration(args.configuration)[2]
+    assert record["cost_usd"] == 0.125
+    assert steps.granted["agent"][0]["purposes"] == [purpose]
+    assert steps.granted["agent"][0]["max_requests"] == 100

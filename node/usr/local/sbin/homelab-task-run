@@ -53,7 +53,9 @@ TMPFS = "4g"
 OUTPUT_LIMIT = 256 * 1024 * 1024
 TOKEN_GRACE_SECONDS = 60
 MAX_REQUESTS = 100
-PURPOSE = re.compile(r"[a-z0-9][a-z0-9.-]{0,63}\Z")
+PURPOSE = re.compile(
+    r"(?:[a-z0-9][a-z0-9.-]{0,63}|eval/[a-z0-9][a-z0-9._-]{0,95}/[a-z0-9][a-z0-9._-]{0,95})\Z"
+)
 CHECK_STARTED = "homelab-task-run: check started"
 COMMIT_MESSAGE = ".task-commit-message"
 BUDGET_SPENT = "request budget is spent"
@@ -452,7 +454,20 @@ def total_cost(costs):
     return sum(costs)
 
 
-def issue_token(token, purpose, seconds, max_requests):
+def valid_eval_mark(mark):
+    return (
+        isinstance(mark, dict)
+        and set(mark) == {"set", "case", "configuration"}
+        and all(
+            isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", value)
+            for value in mark.values()
+        )
+    )
+
+
+def issue_token(token, purpose, seconds, max_requests, *, eval_mark=None):
+    if purpose.startswith("eval/") and not valid_eval_mark(eval_mark):
+        raise Refused("eval purpose requires an eval mark")
     path = TOKENS / hashlib.sha256(token.encode()).hexdigest()
     temporary = path.with_suffix(".tmp")
     temporary.write_text(
@@ -587,6 +602,7 @@ class Context:
     worker_costs: list = field(default_factory=list)
     last_cost: object = None
     configuration: object = None
+    eval_mark: object = None
 
 
 def suffix(number):
@@ -598,7 +614,13 @@ def ask_model(context, step, purpose, max_requests, script, prompt, files, *, re
     """One Pi container with a token of its own, removed when the container ends."""
     token = secrets.token_urlsafe(32)
     context.issued.append(token)
-    grant = issue_token(token, purpose, context.seconds + TOKEN_GRACE_SECONDS, max_requests)
+    grant = issue_token(
+        token,
+        purpose,
+        context.seconds + TOKEN_GRACE_SECONDS,
+        max_requests,
+        eval_mark=context.eval_mark,
+    )
     name = f"{context.name}-{step}"
     config = context.configuration
     if config is not None and not reviewing:
@@ -1024,6 +1046,14 @@ def run(args):
         args.time_limit = config["limits"]["minutes"]
     if "--max-requests" not in explicit and hasattr(args, "_explicit"):
         args.max_requests = config["limits"]["requests"]
+    eval_mark = getattr(args, "eval_mark", None)
+    if eval_mark is not None and not valid_eval_mark(eval_mark):
+        raise Refused("invalid eval mark")
+    if any(
+        isinstance(purpose, str) and purpose.startswith("eval/")
+        for purpose in (args.purpose, args.review_purpose)
+    ) and not valid_eval_mark(eval_mark):
+        raise Refused("eval purpose requires an eval mark")
     IMAGE = config["image"]
     digest = image_digest(IMAGE)
     IMAGE = digest
@@ -1103,6 +1133,7 @@ def run(args):
         f"homelab-task-{run_id.lower()}", folder, (copy, uid, gid), args.time_limit * 60
     )
     context.configuration = config
+    context.eval_mark = eval_mark
     if args.cli_model is not None:
         record["tokens"] = dict.fromkeys(("fresh", "output", "cached", "cache_write"), 0)
         record.pop("cost_usd")
@@ -1387,6 +1418,7 @@ def parse(argv):
     parser = argparse.ArgumentParser(prog="homelab-task-run", description=__doc__.splitlines()[0])
     parser.add_argument("--configuration", type=Path, default=DEFAULT_CONFIGURATION)
     parser.add_argument("--configuration-commit", help=argparse.SUPPRESS)
+    parser.add_argument("--eval-mark", type=json.loads, help=argparse.SUPPRESS)
     parser.add_argument("--working-copy", required=True)
     parser.add_argument("--ticket", required=True, help="file holding the ticket")
     parser.add_argument("--check", required=True, help="done-check shell command")

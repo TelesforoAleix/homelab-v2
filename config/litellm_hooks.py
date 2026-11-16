@@ -312,11 +312,14 @@ def mac_load_failed(purpose, exception):
 
 
 def route(purpose):
-    """Only configured Mac patterns expand; no global wildcard or mutable route table."""
+    """Resolve configured purposes and the eval catalogue wildcard."""
     if not isinstance(purpose, str):
         return None, {}, {}
     if purpose in model_specs and "*" not in purpose:
         return purpose, model_specs[purpose], model_info[purpose]
+    if purpose.startswith("eval/") and "eval/*" in model_specs:
+        spec = model_specs["eval/*"]
+        return "eval/*", {**spec, "model": "openai/" + purpose[5:]}, model_info["eval/*"]
     for pattern, spec in model_specs.items():
         if not pattern.endswith("-*") or "connect_timeout" not in model_info[pattern]:
             continue
@@ -424,7 +427,7 @@ def task_budget_spent(key, grant):
     return count > grant["max_requests"]
 
 
-async def task_refusal(request):
+async def task_refusal(request, *, eval_purpose=None):
     """The whole contract for the task network; None lets the request continue as usual."""
 
     def refuse(reason, status, message):
@@ -433,6 +436,8 @@ async def task_refusal(request):
 
     scheme, _, key = request.headers.get("authorization", "").partition(" ")
     grant = task_grant(key) if scheme.lower() == "bearer" and key else None
+    if eval_purpose is not None and (grant is None or eval_purpose not in grant["purposes"]):
+        return refuse("eval_grant", 403, "This eval purpose requires a matching live task token")
     if grant is None:
         return refuse("token", 401, "A valid task token is required")
     if request.method != "POST" or request.url.path != "/v1/chat/completions":
@@ -504,8 +509,31 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request, call_next):
         task_key = None
-        if from_task_network(request):
-            if (refusal := await task_refusal(request)) is not None:
+        eval_purpose = None
+        content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        if request.method == "POST" and content_type not in {
+            "multipart/form-data",
+            "application/x-www-form-urlencoded",
+        }:
+            try:
+                if request.url.path == "/v1/videos":
+                    from video_jobs import read_body
+
+                    # Preserve the native video size bound before inspecting its model.
+                    request._body = await read_body(request)
+                body = await request.json()
+                purpose = body.get("model") if isinstance(body, dict) else None
+                if isinstance(purpose, str) and purpose.startswith("eval/"):
+                    eval_purpose = purpose
+            except OverflowError:
+                scheme, _, key = request.headers.get("authorization", "").partition(" ")
+                if scheme.lower() != "bearer" or not key.strip():
+                    return error_response(401, "Bearer client key required")
+                return error_response(413, "Video request exceeds 48 MiB")
+            except (ValueError, UnicodeError):
+                pass
+        if from_task_network(request) or eval_purpose is not None:
+            if (refusal := await task_refusal(request, eval_purpose=eval_purpose)) is not None:
                 return refusal
             task_key = request.headers["authorization"].partition(" ")[2]
 
@@ -596,6 +624,15 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                     response = error_response(400, "Expected a JSON object")
                 else:
                     purpose = body.get("model")
+                    if (
+                        isinstance(purpose, str)
+                        and purpose.startswith("eval/")
+                        and eval_purpose is None
+                    ):
+                        if (
+                            refusal := await task_refusal(request, eval_purpose=purpose)
+                        ) is not None:
+                            return refusal
                     if isinstance(purpose, str) and purpose in media_models:
                         if (
                             model_info[purpose]["mode"] == "image_upscale"
@@ -618,7 +655,7 @@ class ModelEndpointMiddleware(BaseHTTPMiddleware):
                         # Audit purpose stays bounded even for refused arbitrary model ids.
                         event["purpose"] = key[:-2] if key.endswith("-*") else key
                         event["requested_model"] = purpose
-                        if not key.endswith("-*"):
+                        if not key.endswith("*"):
                             event["real_model"] = spec["model"].split("/", 1)[1]
                     image_entry = info.get("mode") == "image_generation"
                     published = profile_fields(info) if image_entry else set()

@@ -300,7 +300,13 @@ def run(unset=False):
                     headers = {"Authorization": "Bearer arbitrary-client-key"}
                     response = client.get("/v1/models", headers=headers)
                     assert response.status_code == 200
-                    assert sorted(row["id"] for row in response.json()["data"]) == [
+                    # LiteLLM expands eval/* from its bundled public OpenAI catalogue on discovery.
+                    # The grant check still gates every expanded name.
+                    assert sorted(
+                        row["id"]
+                        for row in response.json()["data"]
+                        if not row["id"].startswith("eval/")
+                    ) == [
                         "chat",
                         "chat:high",
                         "chat:xhigh",
@@ -316,7 +322,7 @@ def run(unset=False):
                         "translate",
                         "vision",
                         "vision:xhigh",
-                    ]
+                    ], response.text
                     assert REAL_CHAT not in response.text and REAL_EMBED not in response.text
                     calls = 1
                     response = client.get("/v1/model/info", headers=headers)
@@ -1068,6 +1074,30 @@ def run(unset=False):
                     (tokens / hashlib.sha256(task_key.encode()).hexdigest()).write_text(
                         json.dumps({"purposes": ["task-worker"], "expires_at": time.time() + 60})
                     )
+                    # Native wildcard must strip only eval/, including arbitrary catalogue ids.
+                    eval_purpose = "eval/deepseek/deepseek-v4.1-flash"
+                    eval_body = {
+                        "model": eval_purpose,
+                        "messages": [{"role": "user", "content": CONTENT}],
+                    }
+                    assert (
+                        client.post(
+                            "/v1/chat/completions", headers=headers, json=eval_body
+                        ).status_code
+                        == 403
+                    )
+                    eval_key = token_hex(24)
+                    (tokens / hashlib.sha256(eval_key.encode()).hexdigest()).write_text(
+                        json.dumps({"purposes": [eval_purpose], "expires_at": time.time() + 60})
+                    )
+                    response = client.post(
+                        "/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {eval_key}"},
+                        json=eval_body,
+                    )
+                    assert response.status_code == 200, response.text
+                    assert requests[-1][1]["model"] == "deepseek/deepseek-v4.1-flash"
+                    calls += 1
                     task_client = TestClient(app, client=("10.253.87.9", 50000))
                     task_headers = {"Authorization": f"Bearer {task_key}"}
                     task_chat = {

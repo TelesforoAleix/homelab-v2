@@ -320,6 +320,16 @@ def run_ticket(task, copy, purpose, review_purpose, feedback, *, cli=None, numbe
             )
         else:
             configuration, configuration_commit = configuration_snapshot(Path(temporary))
+        if task.get("eval_set") is not None:
+            # Let homelab-task-run load the selected configuration's purpose.
+            index = command.index("--purpose")
+            del command[index : index + 2]
+            command += [
+                "--eval-mark",
+                json.dumps(
+                    {"set": task["eval_set"], "case": task["eval_case"], "configuration": name}
+                ),
+            ]
         command += [
             "--configuration",
             str(configuration),

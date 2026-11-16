@@ -1693,6 +1693,15 @@ push key. Other endings and retries keep their existing reasons. Every run folde
 `/srv/homelab/task-runs/eval/<set>/<case>/<configuration hash>/<run id>/`, root-only.
 An unmarked task keeps its ordinary behavior.
 
+Eval configurations may name `eval/<provider>/<model>` through the single `eval/*` route.
+The configuration purpose selects the worker model for eval tasks; ordinary tasks continue
+using their role route. Only an eval-marked run can issue such a token. Every client network,
+including loopback, requires a live task token with that exact name: client keys receive 403.
+There is no model list or added limit; unknown model IDs fail at Vercel. Each provider/model
+identifier has 1–96 lower-case letters, digits, dots, hyphens or underscores, beginning with a
+letter or digit. `pi/eval-deepseek-v4.1-flash` inherits `pi/base` and its 100 requests/30 minutes.
+
+
 The loopback platform API at `127.0.0.1:8000` also offers two keyed routes for an
 external eval runner. The owner sets `HOMELAB_EVAL_TASK_KEY` privately after merge;
 this key is passed only to the API service. Both routes require
@@ -1797,6 +1806,30 @@ sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-dump node/usr/l
 ```
 
 ## Rebuilding the node
+
+For eval catalogue routing updates, install both task scripts together and rebuild the gateway
+from the merged checkout. Wait for the task runner to be idle, then run on the node:
+
+```bash
+cd /srv/homelab/homelab-v2
+git pull --ff-only
+sudo diff -u /usr/local/sbin/homelab-task-run node/usr/local/sbin/homelab-task-run
+sudo diff -u /usr/local/sbin/homelab-task-runner node/usr/local/sbin/homelab-task-runner
+# Review both diffs (diff exits 1 when files differ) before copying.
+sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-run /usr/local/sbin/homelab-task-run
+sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-runner /usr/local/sbin/homelab-task-runner
+sudo systemctl restart homelab.service
+sudo systemctl restart homelab-task-runner.service
+```
+
+The gateway configuration and hooks are mounted from the checkout; no host copy or unit change
+is needed. After restart, submit one eval through the keyed endpoint with configuration
+`eval-deepseek-v4.1-flash`, confirm it completes and records `cost_usd`, and check its retained
+`run.json` purpose and configuration hash. With an existing client key, request
+`eval/deepseek/deepseek-v4.1-flash` and confirm 403. Run a normal `task-worker` task and `chat`
+request as regression checks. Use existing private credentials without printing or changing them.
+To roll back, restore both scripts and gateway config/hooks from the preceding commit, review
+the diffs, reinstall both scripts and restart the same two services; no stored data changes.
 
 The installed task scripts use configurations from merged `origin/main` for queued runs; no
 configuration installation is needed. After changing either script, compare it with the installed

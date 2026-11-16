@@ -21,6 +21,7 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
         "embed-large-bulk-*",
         "grade",
         "task-worker",
+        "eval/*",
         "translate",
         "vision",
         "vision-*",

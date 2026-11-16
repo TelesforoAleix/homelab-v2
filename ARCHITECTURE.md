@@ -387,6 +387,13 @@ transforms string/list-of-string input and removes the field. Invalid roles and 
 input with roles receive 400. Without the field the input is unchanged. The repository's
 own callers, index and answer endpoint retain plain embeddings.
 
+The native LiteLLM wildcard `eval/*` maps `eval/<provider>/<model>` to
+`openai/<provider>/<model>` at the same Vercel endpoint and with the same key as named chat
+routes. No catalogue allowlist is kept. Unknown IDs fail upstream. On every client network,
+the gateway refuses an `eval/…` request with HTTP 403 unless a live task token lists that
+exact purpose. Accepted requests use the existing task endpoint restriction, request counter
+and cost recording. Refusals log a reason without tokens or content.
+
 The route table also offers `chat`, `chat:high` and `chat:xhigh`
 through Vercel AI Gateway's `deepseek/deepseek-v4.1-flash`, at low, medium and high reasoning
 effort respectively, and `embed` through the unchanged local `llama-nemotron-embed-1b-v2`.
@@ -622,6 +629,12 @@ its fetched commit; that commit is recorded with the run. Manual runs default to
 the stack checkout and can select another folder with `--configuration`. Explicit purpose and
 limit options override configuration defaults; the review keeps its own restricted tools and route.
 Prompt files are public and their content is never logged by the host scripts.
+An eval-marked queued task uses the selected configuration's purpose instead of the worker
+role's purpose; the host runner passes its set, case and configuration mark to the run.
+The run refuses any eval purpose without a valid mark, both before execution and when issuing
+a token. Eval purpose identifiers are lower-case letters/digits plus `.`, `-`, `_`, start with
+a letter/digit, and have 1–96 characters each; the other purpose rule is unchanged.
+The token format, reviewer route, 100-request default and configuration minutes are unchanged.
 
 **The store.** Postgres has no host port, so the runner uses `docker exec homelab-worker-1 python -m
 homelab.tasks.claim` and `homelab.tasks.finish`, as the image-cost timer does. Claiming calls
