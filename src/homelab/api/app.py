@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StrictBool, StrictInt, ValidationError, field_validator
 
 from homelab import __version__
-from homelab.api import eval_tasks, image_costs
+from homelab.api import eval_tasks, image_costs, runs
 from homelab.jobs.app import app as jobs_app
 from homelab.jobs.tasks import ingest_brain
 from homelab.knowledge.index import build_stores
@@ -132,6 +132,7 @@ def answer_from_chunks(question: str, chunks: list[Chunk]) -> KnowledgeAnswerRes
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     configure_logging()
+    await to_thread(runs.startup)
     await to_thread(image_costs.migrate)
     async with jobs_app.open_async():
         yield
@@ -139,6 +140,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Home Lab", version=__version__, lifespan=lifespan)
 app.include_router(eval_tasks.router)
+app.include_router(runs.router)
 
 
 @app.get("/v1/images/cost")

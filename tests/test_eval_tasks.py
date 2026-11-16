@@ -1,6 +1,8 @@
 """The eval write key gates both routes, without exposing task input on refusal."""
 
 import base64
+import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import UTC, datetime
@@ -12,11 +14,10 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from homelab.api import eval_tasks
+from homelab.api import eval_tasks, run_keys, runs
 from homelab.api.app import app
 from homelab.settings import Settings
 from homelab.tasks import finish
-from homelab.tasks.store import Refused
 from tests.test_task_store import connection  # noqa: F401
 
 # Deliberately fake; no test uses an installed key.
@@ -45,12 +46,33 @@ def body(**changes):
 def settings(monkeypatch, tmp_path):
     settings = Settings(_env_file=None, eval_task_key=KEY, eval_diffs_dir=tmp_path)
     monkeypatch.setattr(eval_tasks, "get_settings", lambda: settings)
+    monkeypatch.setattr(runs, "get_settings", lambda: settings)
+    monkeypatch.setattr(runs, "repository_default", lambda application, repository: "main")
+    monkeypatch.setattr(
+        run_keys,
+        "load_keys",
+        lambda: run_keys.parse_keys(
+            json.dumps(
+                [
+                    {
+                        "application": "factory",
+                        "sha256": hashlib.sha256(KEY.encode()).hexdigest(),
+                        "scopes": ["runs:write", "runs:read", "runs:eval"],
+                    }
+                ]
+            ).encode()
+        ),
+    )
     return settings
 
 
 @pytest.mark.parametrize("key", [None, ""])
 @pytest.mark.parametrize("method, path", [("post", "/v1/tasks/eval"), ("get", "/v1/tasks/eval/1")])
 def test_disabled_without_key(monkeypatch, method, path, key):
+    def unavailable():
+        raise ValueError("run key file unavailable")
+
+    monkeypatch.setattr(run_keys, "load_keys", unavailable)
     monkeypatch.setenv("HOMELAB_EVAL_TASK_KEY", key or "")
     settings = Settings(_env_file=None)
     assert settings.eval_task_key.get_secret_value() == ""
@@ -136,47 +158,36 @@ def stub_database(monkeypatch, task=(1, "done", "eval_kept"), attempts=()):
     return calls
 
 
-def test_submit_uses_shared_models_and_submit(monkeypatch):
-    stub_database(monkeypatch, task=None)
-    plans = []
-    monkeypatch.setattr(eval_tasks, "submit", lambda db, plan, **kwargs: plans.append(plan) or [42])
+def test_submit_maps_to_the_run_store(monkeypatch):
+    captured = []
+
+    def create(application, document, **kwargs):
+        captured.append((application, document, kwargs))
+        return {"task_id": 42}, True
+
+    monkeypatch.setattr(runs, "create", create)
     response = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=body())
     assert response.status_code == 201
     assert response.json() == {"task": 42}
-    (plan,) = plans
-    assert plan.slice == "eval:case-1"
-    assert plan.branch == "eval/case-1"
-    (task,) = plan.tasks
-    assert task.position == 1
-    assert task.eval.model_dump() == body()["eval"]
+    application, document, options = captured[0]
+    assert application == "factory"
+    assert document.branch == "eval/case-1"
+    assert document.eval.model_dump() == body()["eval"]
+    assert options == {"legacy_attempt": "case-1", "title": "Docs case"}
 
 
 def test_repeat_returns_original_even_if_other_fields_change(monkeypatch):
-    stub_database(monkeypatch, task=(42,))
+    monkeypatch.setattr(runs, "create", lambda *a, **kw: ({"task_id": 42}, False))
     response = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=body(repository="other/repo"))
     assert response.status_code == 409
     assert response.json() == {"error": "Attempt already submitted", "task": 42}
-
-
-def test_concurrent_duplicate_is_409(monkeypatch):
-    rows = iter([Rows([]), Rows([(42,)])])
-    database = SimpleNamespace(execute=lambda *args: next(rows))
-    monkeypatch.setattr(eval_tasks.psycopg, "connect", lambda *a, **kw: nullcontext(database))
-
-    def concurrent_submit(*args, **kwargs):
-        raise Refused("this slice already has a task at one of these positions")
-
-    monkeypatch.setattr(eval_tasks, "submit", concurrent_submit)
-    response = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=body())
-    assert response.status_code == 409
-    assert response.json()["task"] == 42
 
 
 def test_non_eval_or_unknown_task_is_404(monkeypatch):
     calls = stub_database(monkeypatch, task=None)
     response = CLIENT.get("/v1/tasks/eval/1", headers=HEADERS)
     assert response.status_code == 404
-    assert "slice LIKE 'eval:%%'" in calls[0][0]
+    assert "t.slice LIKE 'eval:%%'" in calls[0][0]
 
 
 def attempt(number, *, ended=True, run_id="run-1", usage=(3, 10, 4, 6, Decimal("0.25"))):
@@ -299,6 +310,7 @@ def test_submit_and_read_postgres(connection, monkeypatch, settings):  # noqa: F
     monkeypatch.setattr(
         eval_tasks, "psycopg", SimpleNamespace(connect=lambda *a, **kw: nullcontext(connection))
     )
+    monkeypatch.setattr(runs, "connect", lambda: nullcontext(connection))
     response = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=body())
     assert response.status_code == 201
     task_id = response.json()["task"]
@@ -306,7 +318,7 @@ def test_submit_and_read_postgres(connection, monkeypatch, settings):  # noqa: F
         "SELECT slice, eval_set, eval_case, eval_configuration FROM homelab_tasks WHERE id = %s",
         (task_id,),
     ).fetchone()
-    assert row == ("eval:case-1", "T", "docs", "base")
+    assert row == ("eval:factory:case-1", "T", "docs", "base")
     assert connection.execute("SELECT count(*) FROM homelab_tasks").fetchone() == (1,)
     assert connection.execute("SELECT count(*) FROM procrastinate_jobs").fetchone() == (1,)
     response = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=body())
@@ -352,7 +364,7 @@ def test_submit_and_read_postgres(connection, monkeypatch, settings):  # noqa: F
     connection.execute("UPDATE homelab_task_traces SET cost_usd = NULL WHERE kind = 'review'")
     result = CLIENT.get(f"/v1/tasks/eval/{task_id}", headers=HEADERS).json()
     assert result["attempts"][0]["usage"]["cost_usd"] is None
-    connection.execute("UPDATE homelab_tasks SET slice = 'ordinary'")
+    connection.execute("UPDATE homelab_tasks SET eval_set = NULL")
     assert CLIENT.get(f"/v1/tasks/eval/{task_id}", headers=HEADERS).status_code == 404
 
 

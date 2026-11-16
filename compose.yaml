@@ -90,6 +90,12 @@ services:
       - ${HOMELAB_BRAIN_PATH:-/srv/homelab/brain}:/data/brain:ro
       - ${HOMELAB_CORPUS_PATH:-/srv/homelab/homelab-v2-data/originals/corpus}:/data/corpus:ro
       - ${HOMELAB_TASK_RUNS_PATH:-/srv/homelab/task-runs}/eval-diffs:${HOMELAB_EVAL_DIFFS_DIR:-/srv/homelab/task-runs/eval-diffs}:ro
+      - type: bind
+        source: /etc/homelab/run-keys.json
+        target: /etc/homelab/run-keys.json
+        read_only: true
+        bind:
+          create_host_path: false
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:

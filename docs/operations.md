@@ -1807,6 +1807,10 @@ sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-dump node/usr/l
 
 ## Rebuilding the node
 
+Provision the run API's root-owned digest file and per-application repository policy using
+[Run API and node provisioning](run-api.md#node-steps-after-merge-and-owner-approval). Preserve
+Factory's existing bearer key; the API alone receives the read-only key-file mount.
+
 For eval catalogue routing updates, install both task scripts together and rebuild the gateway
 from the merged checkout. Wait for the task runner to be idle, then run on the node:
 

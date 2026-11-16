@@ -15,6 +15,7 @@ from pydantic import Field, TypeAdapter, ValidationError, model_validator
 
 from homelab.jobs.tasks import run_coding_task
 from homelab.settings import get_settings
+from homelab.tasks.runs import lock_task
 from homelab.tasks.store import Refused
 from homelab.tasks.submit import Strict
 
@@ -199,12 +200,14 @@ def end_task(connection: Any, event: EndTask) -> list[int]:
 
 def record(connection: Any, event: BeginAttempt | EndAttempt | EndTask) -> list[int]:
     """Apply one event; returns the ids of the tasks it released."""
-    if isinstance(event, EndTask):
-        return end_task(connection, event)
-    if isinstance(event, BeginAttempt):
-        begin_attempt(connection, event)
-    else:
-        end_attempt(connection, event)
+    with connection.transaction():
+        lock_task(connection, event.task_id)
+        if isinstance(event, EndTask):
+            return end_task(connection, event)
+        if isinstance(event, BeginAttempt):
+            begin_attempt(connection, event)
+        else:
+            end_attempt(connection, event)
     return []
 
 

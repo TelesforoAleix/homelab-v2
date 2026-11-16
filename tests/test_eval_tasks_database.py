@@ -8,15 +8,20 @@ import procrastinate
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
-from homelab.api import eval_tasks
+from homelab.api import eval_tasks, runs
 from homelab.jobs.app import app as jobs_app
 from tests.test_eval_tasks import body
 from tests.test_task_store import connection  # noqa: F401
 
 
 def test_submit_with_open_job_app_and_rollback(connection, monkeypatch):  # noqa: F811
+    # Procrastinate retains an externally supplied pool after close_async. Keep this
+    # test's pool local to the test rather than leaking it into later CLI checks.
+    monkeypatch.setattr(jobs_app.connector, "_async_pool", None)
+    monkeypatch.setattr(jobs_app.connector, "_pool_externally_set", False)
     url = connection.info.dsn
-    monkeypatch.setattr(eval_tasks, "get_settings", lambda: SimpleNamespace(database_url=url))
+    monkeypatch.setattr(runs, "get_settings", lambda: SimpleNamespace(database_url=url))
+    monkeypatch.setattr(runs, "repository_default", lambda application, repository: "main")
     plan = eval_tasks.parse_submission(json.dumps(body()).encode())
     failed_plan = eval_tasks.parse_submission(json.dumps(body(attempt="case-2")).encode())
 
@@ -30,7 +35,7 @@ def test_submit_with_open_job_app_and_rollback(connection, monkeypatch):  # noqa
                     "SELECT slice, eval_set, eval_case, eval_configuration "
                     "FROM homelab_tasks WHERE id = %s",
                     (task_id,),
-                ).fetchall() == [("eval:case-1", "T", "docs", "base")]
+                ).fetchall() == [("eval:factory:case-1", "T", "docs", "base")]
                 assert connection.execute(
                     "SELECT task_name, queue_name, args FROM procrastinate_jobs"
                 ).fetchall() == [("run_coding_task", "tasks", {"task_id": task_id})]

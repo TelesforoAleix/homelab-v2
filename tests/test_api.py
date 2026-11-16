@@ -17,6 +17,7 @@ from tests.test_retrieve import fixture_index
 
 def test_application_logging_is_configured_at_startup(monkeypatch):
     monkeypatch.setattr("homelab.api.app.image_costs.migrate", lambda: None)
+    monkeypatch.setattr("homelab.api.app.runs.startup", lambda: None)
 
     @asynccontextmanager
     async def fake_open():

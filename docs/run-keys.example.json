@@ -1,0 +1,7 @@
+[
+  {
+    "application": "factory",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "scopes": ["runs:write", "runs:read", "runs:eval"]
+  }
+]

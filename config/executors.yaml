@@ -1,0 +1,37 @@
+ticket:
+  light:
+    - configuration: pi/base
+  standard:
+    - configuration: pi/base
+  strong:
+    - configuration: pi/base
+slice:
+  light:
+    - {harness: codex, model: gpt-6-luna, effort: low}
+    - {harness: claude, model: sonnet}
+  standard:
+    - {harness: codex, model: gpt-6.1-terra, effort: medium}
+    - {harness: claude, model: sonnet}
+  strong:
+    - {harness: codex, model: gpt-6.1-sol, effort: high}
+    - {harness: claude, model: opus}
+cut:
+  light:
+    - {harness: codex, model: gpt-6.1-sol, effort: high}
+    - {harness: claude, model: opus}
+  standard:
+    - {harness: codex, model: gpt-6.1-sol, effort: high}
+    - {harness: claude, model: opus}
+  strong:
+    - {harness: codex, model: gpt-6.1-sol, effort: high}
+    - {harness: claude, model: opus}
+review:
+  light:
+    - {harness: codex, model: gpt-6.1-sol, effort: high}
+    - {harness: claude, model: opus}
+  standard:
+    - {harness: codex, model: gpt-6.1-sol, effort: high}
+    - {harness: claude, model: opus}
+  strong:
+    - {harness: codex, model: gpt-6.1-sol, effort: high}
+    - {harness: claude, model: opus}
