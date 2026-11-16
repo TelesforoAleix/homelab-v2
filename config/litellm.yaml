@@ -26,7 +26,7 @@ model_list:
       reasoning_effort: low
   - model_name: task-worker
     litellm_params:
-      model: openai/deepseek/deepseek-v4.1-flash
+      model: openai/deepseek/deepseek-v4-flash
       api_base: https://ai-gateway.vercel.sh/v1
       api_key: os.environ/HOMELAB_GATEWAY_API_KEY
       reasoning_effort: low

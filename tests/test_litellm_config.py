@@ -44,7 +44,10 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
             "reasoning_effort": effort,
         }
     assert rows["frontline"] == rows["chat"]
-    assert rows["task-worker"] == rows["chat"]
+    assert rows["task-worker"] == {
+        **rows["chat"],
+        "model": "openai/deepseek/deepseek-v4-flash",
+    }
     assert rows["embed"] == {
         "model": "openai/llama-nemotron-embed-1b-v2",
         "api_base": "http://llama-embed:8080/v1",

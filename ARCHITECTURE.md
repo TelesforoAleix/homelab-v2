@@ -505,7 +505,8 @@ is 400 or more) to `task_cost_dir`, one file per token hash, mounted read-write 
 holding nothing else. A write that fails logs one line and never fails the request; refused
 requests and other networks write nothing. The token itself exists only in
 the runner's memory and the agent container's environment. The `task-worker` purpose has
-exactly `chat`'s model and effort; it is an ordinary purpose to any other client.
+`deepseek/deepseek-v4-flash` through Vercel AI Gateway with low reasoning effort; it is an
+ordinary purpose to any other client.
 There is no master key, LiteLLM-managed database, UI or virtual key configuration.
 HTTP middleware exposes `GET /v1/models`, `GET /v1/model/info`, `GET /v1/images/cost`,
 `POST /v1/chat/completions`, `POST /v1/embeddings`, `POST /v1/images/edits`,
