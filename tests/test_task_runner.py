@@ -1080,16 +1080,35 @@ def test_eval_keeps_every_attempt_and_never_pushes(monkeypatch, tmp_path, ended)
 
 def test_eval_uses_the_tasks_configuration(monkeypatch, tmp_path):
     seen = []
+    commands = []
     monkeypatch.setattr(
         runner,
         "configuration_snapshot",
         lambda folder, name: (seen.append(name) or folder / name, "a" * 40),
     )
-    monkeypatch.setattr(runner, "invoke_ticket", lambda *args: {"ended": "run_refused"})
+    monkeypatch.setattr(
+        runner,
+        "invoke_ticket",
+        lambda task, feedback, command, *args: commands.append(command) or {"ended": "run_refused"},
+    )
     monkeypatch.setenv("HOMELAB_TASK_AUTHOR_NAME", "Fixture")
     monkeypatch.setenv("HOMELAB_TASK_AUTHOR_EMAIL", "fixture@example.invalid")
-    runner.run_ticket(task(eval_set="T", eval_configuration="other"), tmp_path, "p", "r", None)
+    runner.run_ticket(
+        task(eval_set="T", eval_case="example", eval_configuration="other"),
+        tmp_path,
+        "p",
+        "r",
+        None,
+    )
     assert seen == ["pi/other"]
+    command = commands[0]
+    assert "--purpose" not in command
+    assert json.loads(command[command.index("--eval-mark") + 1]) == {
+        "set": "T",
+        "case": "example",
+        "configuration": "other",
+    }
+    assert command[command.index("--review-purpose") + 1] == "r"
 
 
 @pytest.fixture

@@ -59,6 +59,11 @@ Tasks are [submitted](ARCHITECTURE.md#task-store) as a file to a durable store a
 Postgres. The [task runner](ARCHITECTURE.md#task-runner), a host service, runs them with retries
 across routes, and pushes each one's commit to its slice branch. Pi worker setups live in public `configurations/pi/`; each run records the configuration file hashes, image digest and source commit. The runner fetches configurations from merged `origin/main` in its own clone.
 
+Eval tasks may select `eval/<provider>/<model>` through one `eval/*` gateway route by naming
+a [configuration folder](configurations/README.md). Only an eval-marked task can receive its
+exact-purpose token; ordinary client keys, chat and bot callers cannot use the eval route.
+The existing task request and time limits apply; unknown model IDs fail upstream.
+
 A [read-only code context server](docs/operations.md#code-context-server) gives Mac coding agents
 symbol navigation over SSH. It runs Serena without network access against separate,
 periodically refreshed copies of configured repositories on the encrypted volume.

@@ -2,6 +2,7 @@
 
 import ast
 import logging
+import sys
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -22,6 +23,9 @@ def hook(monkeypatch):
 
 
 def load_hook(monkeypatch):
+    from homelab.api import video_jobs
+
+    monkeypatch.setitem(sys.modules, "video_jobs", video_jobs)
     monkeypatch.setenv("CONFIG_FILE_PATH", str(ROOT / "config/litellm.yaml"))
     source = ast.parse((ROOT / "config/litellm_hooks.py").read_text())
     source.body = [

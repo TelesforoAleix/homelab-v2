@@ -475,3 +475,87 @@ def test_the_cost_folder_is_one_compose_mounts_writable():
         if name != "litellm"
         for volume in service.get("volumes", [])
     )
+
+
+@pytest.mark.parametrize("peer", [TASK_PEER, OTHER_PEER, ("127.0.0.1", 50000)])
+@pytest.mark.parametrize("state", ["missing", "client", "wrong", "expired", "matching"])
+def test_eval_requires_exact_live_grant_everywhere(hook, tmp_path, peer, state, caplog):
+    purpose = "eval/deepseek/deepseek-v4.1-flash"
+    if state in {"wrong", "expired", "matching"}:
+        grant(
+            tmp_path,
+            purposes=[purpose if state != "wrong" else "task-worker"],
+            expires_at=time() - 1 if state == "expired" else time() + 60,
+        )
+    http, reached = client(hook, peer)
+    headers = (
+        {}
+        if state == "missing"
+        else (BEARER if state != "client" else {"authorization": "Bearer client-key"})
+    )
+    with caplog.at_level(logging.INFO, logger="homelab.models"):
+        response = http.post(
+            "/v1/chat/completions", headers=headers, json={**CHAT, "model": purpose}
+        )
+    assert response.status_code == (200 if state == "matching" else 403)
+    assert len(reached) == (1 if state == "matching" else 0)
+    if state != "matching":
+        assert "task_refused reason=eval_grant status=403" in caplog.text
+
+
+def test_eval_route_resolves_without_changing_named_routes(hook):
+    purpose = "eval/unknown/not-in-a-private-list"
+    key, spec, _ = hook.route(purpose)
+    assert key == "eval/*"
+    assert spec == {
+        "model": "openai/unknown/not-in-a-private-list",
+        "api_base": "https://ai-gateway.vercel.sh/v1",
+        "api_key": "os.environ/HOMELAB_GATEWAY_API_KEY",
+    }
+    for name, original in hook.model_specs.items():
+        if "*" not in name:
+            assert hook.route(name) == (name, original, hook.model_info[name])
+
+
+@pytest.mark.parametrize("peer", [TASK_PEER, OTHER_PEER])
+def test_eval_budget_and_billing_follow_task_contract(hook, tmp_path, peer):
+    purpose = "eval/deepseek/deepseek-v4.1-flash"
+    grant(tmp_path, purposes=[purpose], max_requests=1)
+    http = replying(hook, streamed(sse(USAGE)), peer=peer)
+    body = {**CHAT, "model": purpose}
+    assert http.post("/v1/chat/completions", headers=BEARER, json=body).status_code == 200
+    assert costs_of(hook) == [{"cost_usd": 2.07e-05}]
+    assert http.post("/v1/chat/completions", headers=BEARER, json=body).status_code == 429
+    assert costs_of(hook) == [{"cost_usd": 2.07e-05}]
+
+
+@pytest.mark.parametrize(
+    "path", ["/v1/embeddings", "/v1/images/generations", "/v1/videos", "/chat/completions"]
+)
+def test_eval_is_guarded_before_other_endpoints(hook, path):
+    http, reached = client(hook, OTHER_PEER)
+    response = http.post(
+        path, headers={"authorization": "Bearer client-key"}, json={"model": "eval/a/b"}
+    )
+    assert response.status_code == 403
+    assert reached == []
+
+
+def test_eval_form_with_client_key_is_refused(hook, monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from starlette.datastructures import FormData
+
+    @asynccontextmanager
+    async def form(request):
+        yield FormData({"model": "eval/a/b"})
+
+    monkeypatch.setattr(Request, "form", form)
+    http, reached = client(hook, OTHER_PEER)
+    response = http.post(
+        "/v1/images/edits",
+        data={"model": "eval/a/b"},
+        headers={"authorization": "Bearer client-key"},
+    )
+    assert response.status_code == 403
+    assert reached == []
