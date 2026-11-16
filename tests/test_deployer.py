@@ -945,7 +945,7 @@ def test_main_terminal_entrypoint(env, monkeypatch, capsys):
 
 
 def test_shipped_configuration_and_test_application():
-    assert (REPO / "node/etc/homelab-deployer/automatic").read_bytes() == b""
+    assert (REPO / "node/etc/homelab-deployer/automatic").read_bytes() == b"factory\n"
     assert json.loads((REPO / "node/etc/homelab-deployer/callers.json").read_text()) == {
         "0": ["install", "rollback"],
         "21010": ["install"],
@@ -1089,7 +1089,7 @@ def test_shipped_files_load_with_deployer_validation(monkeypatch):
     monkeypatch.setattr(d, "protected_read", read)
     callers, automatic = d.configuration()
     assert callers == {"0": ["install", "rollback"], "21010": ["install"]}
-    assert automatic == set()
+    assert automatic == {"factory"}
     manifest = d.manifest("factory")
     assert manifest["repository"] == "TelesforoAleix/factory"
     assert manifest["services"] == ["ui", "intake", "sessions", "runner"]

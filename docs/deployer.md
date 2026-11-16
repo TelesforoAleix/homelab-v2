@@ -3,7 +3,8 @@
 `homelab-deployer` is a socket-activated root helper using only Python's standard library.
 It deploys an application image from a full, lowercase 40-character commit SHA on `main`.
 The shipped manifests cover `test-app` and Factory; the platform stack still uses its
-existing manual Compose deployment. Every node install still needs the owner's go.
+existing manual Compose deployment. Factory accepts automatic socket install requests;
+guard changes still require the owner's approving GitHub review.
 
 An install verifies the manifest and GitHub ancestry, downloads a bounded tarball without
 checking out Git, and compares guard-file hashes and executable bits with the installed
@@ -128,8 +129,11 @@ subset of `install` and `rollback`, without duplicates. The shipped file permits
 operations and `factory-runner` (21010) only `install`. An unlisted uid or operation returns
 `unknown caller`; terminal commands still require root.
 The application must also appear in `/etc/homelab-deployer/automatic`, one name per line,
-for either socket operation, for every caller including root. This file ships empty: every
-listed socket caller receives `waits for the owner`. Editing it is itself a guard change.
+for either socket operation, for every caller including root. The shipped file lists
+`factory`, so its runner can request an install after each merge.
+Other applications return `waits for the owner`. Guard-path changes still require the
+owner's approving GitHub review. To disable Factory automation, delete the `factory` line
+and install the file as root:root 0644. Editing the file is itself a guard change.
 Neither membership in the socket group nor access to the socket grants permission to deploy. No sudoers rule is added.
 
 The launcher callers file permits uid 0 its existing profiles, `factory-runner` (21010)
@@ -199,8 +203,7 @@ the tests fake GitHub and Docker.
 For the Factory platform update, run `sudo homelab-dump` and verify today's
 `<database>-<date>.dump` for every non-template database, then run
 `sudo homelab-restore-check` and require `ok`. Send a socket install request from an
-unlisted uid and require `unknown caller`. Leave `automatic` empty: enabling Factory
-automation is a later owner action. No Factory deployment is required for these checks.
+unlisted uid and require `unknown caller`. No Factory deployment is required for these checks.
 
 The original deployer node acceptance step is: install an owner-reviewed good `test-app`
 commit; install an owner-reviewed commit whose `health` source says `unhealthy` and observe automatic rollback;
@@ -209,7 +212,7 @@ then interrupt the active terminal helper after its intent appears and restart
 service alone does not interrupt a separate terminal command. Both test
 commits must already be on `main`; changing this fixture under `node/` requires owner review.
 Check the JSON records, retained tags and notification on double failure without displaying
-the token or application content. Leave `automatic` empty throughout. These are node checks,
+the token or application content. These are node checks,
 not assertions that fake-backed local tests can establish.
 
 ## Roll back the helper
