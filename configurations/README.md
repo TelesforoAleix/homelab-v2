@@ -26,5 +26,6 @@ Only tasks submitted with an eval mark may receive an eval-purpose token. Queued
 use their configuration's purpose, with the existing request and minute limits; the reviewer
 keeps its role route. Every gateway request for `eval/…` needs a live task token granting that
 exact purpose, including from loopback and other client networks. Client keys cannot use it.
-`pi/eval-deepseek-v4.1-flash` tests whether this route reaches the same model as `pi/base`'s
-`task-worker`; it inherits all other settings and its 100-request, 30-minute limits.
+`pi/eval-deepseek-v4-flash` tests the same `deepseek/deepseek-v4-flash` model as
+`pi/base`'s `task-worker`; it inherits all other settings and its 100-request, 30-minute
+limits. `pi/eval-deepseek-v4.1-flash` remains available for the earlier model.

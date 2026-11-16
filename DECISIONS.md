@@ -911,3 +911,8 @@ and review. Cancellation after claim returns `not_resumable`; queued cancellatio
 The history hint is recorded while the runner keeps its complete single-branch clone. Its
 finish protocol reports no delivered commit SHAs or final message, so those fields remain
 empty/null rather than inferred. These boundaries preserve the existing host executor.
+
+**2026-11-16 — The task worker uses DeepSeek v4 Flash.** The owner moved `task-worker`
+from `deepseek/deepseek-v4.1-flash` to `deepseek/deepseek-v4-flash` after v4.1 Flash
+stalled until timeout on Pi requests carrying its system prompt and tools, although plain chat
+still answered. Results from `pi/base` before and after the move are not comparable.
