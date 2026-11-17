@@ -96,13 +96,15 @@ def prepare(record, folder, *, cancelled=lambda: False):
             json.dumps({"base": document["base_commit"], "branch": branch, "schema": SCHEMA}),
         ],
     }
-    code, stopped = launcher.capture(
-        checkout,
-        folder / "checkout.out",
-        folder / "checkout.err",
-        GIT_SECONDS,
-        cancelled=cancelled,
-    )
+    with tempfile.TemporaryFile() as source:
+        code, stopped = launcher.capture(
+            checkout,
+            folder / "checkout.out",
+            folder / "checkout.err",
+            GIT_SECONDS,
+            stdin=source,
+            cancelled=cancelled,
+        )
     if code != 0 or stopped != "exited":
         raise Refused("sandbox_error")
     return work_id

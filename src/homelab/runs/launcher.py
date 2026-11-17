@@ -19,12 +19,18 @@ class Refused(Exception):
 class LostLauncher(BaseException):
     """Stop could not be confirmed; never continue to another task or attempt."""
 
+    def __init__(self, run_id):
+        super().__init__("launcher_stop_failed")
+        self.run_id = run_id
+
 
 def stop_run(run_id):
     try:
         request({"op": "stop", "run_id": run_id})
-    except Refused:
-        raise LostLauncher("launcher_stop_failed") from None
+    except Refused as error:
+        if str(error) == "unknown_run":
+            return
+        raise LostLauncher(run_id) from None
 
 
 def request(value, descriptors=(), *, timeout=30):
@@ -39,7 +45,13 @@ def request(value, descriptors=(), *, timeout=30):
             with connection.makefile("rb") as stream:
                 answer = json.loads(stream.readline(65537))
         if not isinstance(answer, dict) or answer.get("ok") is not True:
-            raise Refused("launcher_refused")
+            raise Refused(
+                "unknown_run"
+                if value.get("op") == "stop"
+                and isinstance(answer, dict)
+                and answer.get("error") == "unknown_run"
+                else "launcher_refused"
+            )
         return answer
     except (OSError, ValueError):
         raise Refused("launcher_unavailable") from None

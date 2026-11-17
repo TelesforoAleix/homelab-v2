@@ -127,7 +127,11 @@ class Service:
                         else time.time() + 3600
                     )
                     result.update(slices.waiting_state(reset))
-            except Exception as error:
+            except (Exception, launcher.LostLauncher) as error:
+                if isinstance(error, launcher.LostLauncher):
+                    launcher.stop_run(error.run_id)
+                    with launcher.mutex:
+                        launcher.active.discard(error.run_id)
                 # Only exception classes and fixed status reasons enter logs.
                 logger.warning("whole-run failed id=%s error=%s", saved["id"], type(error).__name__)
                 result = {

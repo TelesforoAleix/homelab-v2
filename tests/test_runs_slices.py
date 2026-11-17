@@ -372,3 +372,172 @@ def test_waiting_final_mentioning_rate_limit_is_a_client_step(tmp_path, monkeypa
     assert result["status"] == "waiting"
     assert result["status_reason"] == "client_step"
     assert result["resume_at"] is None
+
+
+def test_requests_match_launcher_stdin_contract(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from homelab.runs import cli, launcher, task_run
+
+    profiles = json.loads(Path("node/etc/homelab-launcher/profiles.json").read_text())
+    required = {name for name, spec in profiles["task"]["shapes"].items() if spec["stdin"]}
+    seen = set()
+
+    def capture(request, out, err, seconds, *, stdin=None, **kwargs):
+        if request["profile"] == "task" and request["shape"] in required:
+            assert stdin is not None and stdin.readable()
+            seen.add(request["shape"])
+        if request["profile"] == "cli-run":
+            assert (stdin is not None) == (request.get("stdin") is True)
+            seen.add("cli-run-input" if stdin else "cli-run-no-input")
+        out.write_text("")
+        err.write_text("")
+        return 0, "exited"
+
+    monkeypatch.setattr(launcher, "capture", capture)
+    monkeypatch.setattr(launcher, "request", lambda *a, **kw: {"ok": True})
+    monkeypatch.setattr(slices, "installation_token", lambda _: "token")
+    monkeypatch.setattr(slices, "remote_refs", lambda *a: ("main", {"main": "a" * 40}))
+    record = {
+        "id": SimpleNamespace(hex="a" * 32),
+        "request": {
+            "repository": "a/b",
+            "branch": "slice/a",
+            "base_commit": "a" * 40,
+            "mode": "write",
+        },
+    }
+    slices.prepare(record, tmp_path)
+    context = SimpleNamespace(
+        folder=tmp_path,
+        seconds=10,
+        owner=(tmp_path, 1, 1),
+        name="test",
+        issued=[],
+        configuration=None,
+        eval_mark=False,
+        worker_costs=[],
+    )
+    cli.transfer(context, "test", "cli", "export")
+    prompt = tmp_path / "prompt"
+    prompt.write_text("prompt")
+    monkeypatch.setattr(task_run, "issue_token", lambda *a, **kw: tmp_path / "grant")
+    monkeypatch.setattr(task_run, "read_cost", lambda *a: None)
+    for reviewing in (False, True):
+        task_run.ask_model(
+            context, "step", "purpose", 1, "script", prompt, ("out", "err"), reviewing=reviewing
+        )
+    slices.claude_probe(tmp_path)
+    turn = {
+        "request": {"mode": "read"},
+        "executor": executor().selection(),
+        "work_id": "run-test",
+        "session_id": None,
+    }
+    slices.execute_turn(turn, "prompt", tmp_path, "turn")
+    assert required == seen & required
+    assert {"cli-run-input", "cli-run-no-input"} <= seen
+
+
+def test_stop_unknown_run_is_safe_but_other_refusals_are_not(monkeypatch):
+    from homelab.runs import launcher
+
+    def refuse(code):
+        def request(*args, **kwargs):
+            raise launcher.Refused(code)
+
+        return request
+
+    monkeypatch.setattr(launcher, "request", refuse("unknown_run"))
+    launcher.stop_run("missing")
+    monkeypatch.setattr(launcher, "request", refuse("launcher_refused"))
+    with pytest.raises(launcher.LostLauncher):
+        launcher.stop_run("live")
+
+
+@pytest.mark.parametrize("stage", ["prepare", "turn", "delivery"])
+@pytest.mark.parametrize("error_type", ["refused", "lost"])
+def test_launcher_failure_fails_only_current_run(tmp_path, monkeypatch, stage, error_type):
+    from contextlib import nullcontext
+
+    from homelab.runs import launcher, slice_loop
+
+    completed = []
+    stopped = []
+    monkeypatch.setattr(slice_loop.usage, "choose", lambda *a: (executor(), 0))
+    monkeypatch.setattr(slice_loop.store, "begin", lambda *a: None)
+    monkeypatch.setattr(slice_loop.store, "prompt", lambda *a: "prompt")
+    monkeypatch.setattr(slice_loop.store, "prepared", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        slice_loop.store, "complete", lambda conn, saved, result, *a: completed.append(result)
+    )
+    monkeypatch.setattr(slice_loop.store, "sweep", lambda *a, **kw: None)
+    monkeypatch.setattr(launcher, "request", lambda *a, **kw: None)
+    monkeypatch.setattr(launcher, "stop_run", stopped.append)
+
+    def fail():
+        if error_type == "lost":
+            raise launcher.LostLauncher("step")
+        raise launcher.Refused("launcher_refused")
+
+    def prepare(*a, **kw):
+        if stage == "prepare":
+            fail()
+        return "run-work"
+
+    def turn(*a, **kw):
+        if stage == "turn":
+            fail()
+        if stage == "delivery":
+            slices.deliver(*a[:1], a[2])
+        return {"status": "done"}, None, [], {}
+
+    monkeypatch.setattr(slices, "prepare", prepare)
+    monkeypatch.setattr(slices, "execute_turn", turn)
+    monkeypatch.setattr(slices, "deliver", lambda *a, **kw: fail())
+    service = slice_loop.Service(lambda: nullcontext(None), tmp_path, lambda: None)
+    saved = {
+        "id": SimpleNamespace(hex="a" * 32),
+        "session_id": None,
+        "harness_started": False,
+        "request": {"role": "slice", "level": "standard"},
+        "copy_ready": False,
+        "turn_id": "turn",
+        "executor": None,
+    }
+    try:
+        service.run(saved)
+        assert completed[-1]["status"] == "failed"
+        assert completed[-1]["status_reason"] == "sandbox_error"
+        assert stopped == (["step"] if error_type == "lost" else [])
+        monkeypatch.setattr(slices, "prepare", lambda *a, **kw: "run-work")
+        monkeypatch.setattr(
+            slices, "execute_turn", lambda *a, **kw: ({"status": "done"}, None, [], {})
+        )
+        service.run(saved)
+        assert completed[-1]["status"] == "done"
+    finally:
+        service.close()
+
+
+def test_stop_decodes_unknown_run_response(tmp_path, monkeypatch):
+    import socket
+    import threading
+
+    from homelab.runs import launcher
+
+    path = str(tmp_path / "launcher.sock")
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(path)
+    server.listen()
+    monkeypatch.setattr(launcher, "SOCKET", path)
+
+    def respond():
+        with server, server.accept()[0] as connection:
+            connection.recv(4096)
+            connection.sendall(b'{"ok":false,"error":"unknown_run"}\n')
+
+    thread = threading.Thread(target=respond)
+    thread.start()
+    launcher.stop_run("missing")
+    thread.join()

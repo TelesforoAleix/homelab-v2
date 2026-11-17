@@ -1026,3 +1026,9 @@ copy readiness and `resumable`, without deleting the harness login’s session. 
 conversation can accept a later message, prepare the branch afresh and resume that session
 with the original executor. Pending messages and usage resets still gate additional turns.
 Incomplete preparations are tracked before clone so their failures can be cleaned up.
+
+**2026-11-17 — Confirm a lost launcher's stop before another run.** A whole-run worker
+retries the stop for the affected launcher run before recording a sandbox failure. An
+`unknown_run` stop is confirmation that no launcher run remains. If stopping still cannot
+be confirmed, the existing service-level fail-closed path remains in force, preventing a
+new claim while a container may still be live. Other workers are not stopped by this retry.
