@@ -54,18 +54,18 @@ Solid parts are built; dashed parts are planned.
 `homelab-task-run` gives a ticket to the Pi agent in an isolated container on one working copy,
 then judges the result with a pinned check. Separate containers prepare, work, check and commit.
 The [fixed container launcher](docs/operations.md#install-the-fixed-fence-launcher) also offers
-these task shapes to uid 21020 (`homelab-runs`), alongside its Factory profiles. The host task
-runner continues to start its own containers. The platform image also contains an
-[unprivileged `runs` service](docs/operations.md#runs-service-installed-disabled), installed under
-the opt-in Compose `runs` profile and disabled. It uses the launcher for every container and
-repository-scoped GitHub App tokens for clones and pushes; the host runner remains the only active
-runner. Whole-slice CLI turns, write/read cuts, read-only reviews, conversation resumes and
-usage fallback are installed behind the separate, empty-by-default `HOMELAB_RUN_ROLES` setting.
+these task shapes to uid 21020 (`homelab-runs`), alongside its Factory profiles. The platform
+image contains an [unprivileged `runs` service](docs/operations.md#runs-service), which starts
+with the platform and uses the launcher for every container and repository-scoped GitHub App
+tokens for clones and pushes. The old host runner is stopped and disabled; it remains installed
+only as the rollback until its removal. Whole-slice CLI turns, write/read cuts, read-only reviews,
+conversation resumes and usage fallback are enabled through `HOMELAB_RUN_ROLES=slice,cut,review`.
 Ended CLI copies are removed through the launcher immediately on failure/cancellation and
 after three days otherwise; later messages prepare a fresh branch copy and retain the harness
 session. The [node rehearsal](docs/operations.md#runs-rehearsal-on-the-node) temporarily enables
-the roles and restores the old runner afterwards. A [switch procedure](docs/operations.md#switch-to-runs)
-checks delivery and rollback; a tmpfiles rule recreates the shared lock at boot.
+the roles and restores the old runner afterwards. The switch was completed on 2026-11-17;
+the [switch procedure](docs/operations.md#switch-to-runs) and rollback steps remain valid until
+the old runner is removed. A tmpfiles rule recreates the shared lock at boot.
 Only the agent reaches LiteLLM, on `homelab-tasks`, with a one-run token for its purpose and a
 request budget; prepare reaches only the package indexes, through a proxy.
 Tasks are [submitted](ARCHITECTURE.md#task-store) as a file to a durable store and queue in
@@ -78,12 +78,13 @@ exact-purpose token; ordinary client keys, chat and bot callers cannot use the e
 The existing task request and time limits apply; unknown model IDs fail upstream.
 
 The [version-one run API](docs/run-api.md) accepts application-owned, idempotent ticket writes
-and eval runs on loopback. A root-owned key file holds bearer digests, scopes and each key's
+and eval runs on loopback. The `runs` execution service starts with the platform, with slice, cut
+and review roles enabled. A root-owned key file holds bearer digests, scopes and each key's
 repository/default-branch map; other applications cannot read a run. Runs share the existing
 Postgres task store and queues, report attempts and usage, and support ordered dependencies and queued
-cancellation. Slice, cut and review roles, including their read mode, return
-`409 role_not_available` unless explicitly enabled; requests containing `limits` still return
-409 before storage. The legacy eval endpoints keep their response shapes and use the same key file.
+cancellation. The enabled slice, cut and review roles include their documented read modes;
+requests containing `limits` still return `409` before storage. The legacy eval endpoints keep
+their response shapes and use the same key file.
 
 A [read-only code context server](docs/operations.md#code-context-server) gives Mac coding agents
 symbol navigation over SSH. It runs Serena without network access against separate,
@@ -135,7 +136,7 @@ Running the stack needs a provisioned node; see the [operator runbook](docs/oper
 | `src/homelab/knowledge/` | LlamaIndex ingestion and retrieval |
 | `src/homelab/jobs/` | Procrastinate tasks and worker |
 | `src/homelab/tasks/` | Run/task records and the submit, claim and finish commands |
-| `src/homelab/runs/` | Installed, disabled container task runner and launcher client |
+| `src/homelab/runs/` | Container task runner started with the platform and launcher client |
 | `config/litellm.yaml` | Model purposes and routes |
 | `node/` | Host files at their installed paths (table entries are merged) |
 | `mac/` | Usage profiles, measurements, model router and action listener |
