@@ -59,8 +59,12 @@ runner continues to start its own containers. The platform image also contains a
 [unprivileged `runs` service](docs/operations.md#runs-service-installed-disabled), installed under
 the opt-in Compose `runs` profile and disabled. It uses the launcher for every container and
 repository-scoped GitHub App tokens for clones and pushes; the host runner remains the only active
-runner. Whole-slice CLI turns, read-only cut/review runs, conversation resumes and usage fallback
-are installed behind the separate, empty-by-default `HOMELAB_RUN_ROLES` setting.
+runner. Whole-slice CLI turns, write/read cuts, read-only reviews, conversation resumes and
+usage fallback are installed behind the separate, empty-by-default `HOMELAB_RUN_ROLES` setting.
+Ended CLI copies are removed through the launcher immediately on failure/cancellation and
+after three days otherwise; later messages prepare a fresh branch copy and retain the harness
+session. The [node rehearsal](docs/operations.md#runs-rehearsal-on-the-node) temporarily enables
+the roles and restores the old runner afterwards.
 Only the agent reaches LiteLLM, on `homelab-tasks`, with a one-run token for its purpose and a
 request budget; prepare reaches only the package indexes, through a proxy.
 Tasks are [submitted](ARCHITECTURE.md#task-store) as a file to a durable store and queue in

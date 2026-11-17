@@ -135,9 +135,8 @@ def test_repository_lock_prevents_overlapping_roles(enabled):
     assert slices.claim(enabled)["request_id"] == "another"
 
 
-@pytest.mark.parametrize("role", ["cut", "review"])
-def test_cut_and_review_require_read_mode(enabled, role):
-    response = post(body(role=role))
+def test_review_requires_read_mode(enabled):
+    response = post(body(role="review"))
     assert response.status_code == 422
     assert enabled.execute("SELECT count(*) FROM homelab_runs").fetchone()[0] == 0
 
@@ -270,6 +269,7 @@ def test_dispatcher_never_starts_more_than_two_cli_runs(monkeypatch, tmp_path):
         yield object()
 
     monkeypatch.setattr(slices, "claim", lambda _: {"id": len(started)})
+    monkeypatch.setattr(slices, "sweep", lambda _, **kw: 0)
     service = Service(database, tmp_path, lambda: None)
 
     def run(saved):
@@ -378,3 +378,217 @@ def test_unavailable_usage_readings_wait_without_spending_a_turn(enabled, monkey
         assert saved["attempts"] == [] and not saved["resumable"]
     finally:
         service.close()
+
+
+def test_write_cut_is_accepted(enabled):
+    submitted(enabled, role="cut")
+    assert slices.claim(enabled)["request"]["mode"] == "write"
+
+
+def test_removed_copy_can_resume_with_same_session(enabled, monkeypatch):
+    from homelab.runs import launcher
+
+    run_id = submitted(enabled)
+    saved = slices.claim(enabled)
+    slices.begin(enabled, saved, saved["executor"])
+    slices.prepared(enabled, run_id, "run-" + run_id.hex)
+    slices.complete(enabled, saved, {"status": "done", "resumable": True}, "session", [], {})
+    monkeypatch.setattr(launcher, "request", lambda request: None)
+    assert slices.sweep(enabled, now=datetime.now(UTC) + timedelta(days=4)) == 1
+    assert not api_runs.read("factory", run_id)["resumable"]
+    message = {"contract": 1, "message_id": "fresh", "text": "Continue"}
+    assert (
+        CLIENT.post(f"/v1/runs/{run_id}/messages", headers=HEADERS, json=message).status_code == 200
+    )
+    resumed = slices.claim(enabled)
+    assert not resumed["copy_ready"] and resumed["session_id"] == "session"
+
+
+@pytest.mark.parametrize("state", ["done", "question", "waiting", "escalated"])
+def test_cancel_after_copy_removed_disables_fresh_resume(enabled, monkeypatch, state):
+    from homelab.runs import launcher
+
+    run_id = submitted(enabled)
+    saved = slices.claim(enabled)
+    slices.begin(enabled, saved, saved["executor"])
+    slices.prepared(enabled, run_id, "run-" + run_id.hex)
+    slices.complete(enabled, saved, {"status": state, "resumable": True}, "session", [], {})
+    monkeypatch.setattr(launcher, "request", lambda request: None)
+    assert slices.sweep(enabled, now=datetime.now(UTC) + timedelta(days=4)) == 1
+    response = CLIENT.post(f"/v1/runs/{run_id}/cancel", headers=HEADERS)
+    assert response.status_code == 200 and response.json()["status"] == "cancelled"
+    message = {"contract": 1, "message_id": "after-cancel", "text": "Continue"}
+    assert (
+        CLIENT.post(f"/v1/runs/{run_id}/messages", headers=HEADERS, json=message).status_code == 409
+    )
+
+
+def test_sweep_keeps_busy_record_and_uses_last_turn_end(enabled, monkeypatch):
+    from homelab.runs import launcher
+
+    run_id = submitted(enabled)
+    saved = slices.claim(enabled)
+    slices.begin(enabled, saved, saved["executor"])
+    slices.prepared(enabled, run_id, "run-" + run_id.hex)
+    slices.complete(enabled, saved, {"status": "question", "resumable": True}, "session", [], {})
+    monkeypatch.setattr(launcher, "request", lambda request: None)
+    # A newer administrative finished timestamp does not extend the last turn's life.
+    enabled.execute("UPDATE homelab_task_attempts SET ended_at = now() - interval '4 days'")
+    assert slices.sweep(enabled) == 1
+    message = {"contract": 1, "message_id": "answer", "text": "Continue"}
+    assert (
+        CLIENT.post(f"/v1/runs/{run_id}/messages", headers=HEADERS, json=message).status_code == 200
+    )
+    assert slices.sweep(enabled, now=datetime.now(UTC) + timedelta(days=4)) == 0
+
+
+def test_service_reprepares_removed_copy_and_resumes_session(enabled, monkeypatch, tmp_path):
+    from homelab.runs import slices as execute
+    from homelab.runs.slice_loop import Service
+    from homelab.runs.usage import Reading
+
+    run_id = submitted(enabled)
+    saved = slices.claim(enabled)
+    slices.begin(enabled, saved, saved["executor"])
+    work_id = "run-" + run_id.hex
+    slices.prepared(enabled, run_id, work_id)
+    slices.complete(enabled, saved, {"status": "done", "resumable": True}, "session", [], {})
+    monkeypatch.setattr(execute.launcher, "request", lambda request: None)
+    assert slices.sweep(enabled, now=datetime.now(UTC) + timedelta(days=4)) == 1
+    message = {"contract": 1, "message_id": "answer", "text": "Continue"}
+    assert (
+        CLIENT.post(f"/v1/runs/{run_id}/messages", headers=HEADERS, json=message).status_code == 200
+    )
+    prepares, turns = [], []
+
+    def prepare(record, folder, **kwargs):
+        prepares.append(record["id"])
+        return work_id
+
+    def turn(record, *args, **kwargs):
+        turns.append((record["session_id"], record["executor"]))
+        return {"status": "done", "resumable": True}, "session", [], {}
+
+    monkeypatch.setattr(execute, "prepare", prepare)
+    monkeypatch.setattr(execute, "execute_turn", turn)
+    monkeypatch.setattr(
+        execute, "codex_usage", lambda *a, **k: Reading(0, time.time() + 3600, time.time())
+    )
+
+    @contextmanager
+    def database():
+        yield enabled
+
+    service = Service(database, tmp_path, lambda: None)
+    try:
+        service.run(slices.claim(enabled))
+        assert prepares == [run_id]
+        assert turns == [("session", saved["executor"])]
+    finally:
+        service.close()
+
+
+def test_removed_escalated_copy_keeps_branch_exclusion_and_dependency_resume(enabled, monkeypatch):
+    from homelab.runs import launcher
+
+    run_id = submitted(enabled)
+    saved = slices.claim(enabled)
+    slices.begin(enabled, saved, saved["executor"])
+    slices.prepared(enabled, run_id, "run-" + run_id.hex)
+    slices.complete(enabled, saved, {"status": "escalated", "resumable": True}, "session", [], {})
+    monkeypatch.setattr(launcher, "request", lambda request: None)
+    assert slices.sweep(enabled, now=datetime.now(UTC) + timedelta(days=4)) == 1
+    assert post(body(role="slice", request_id="other")).status_code == 409
+    submitted(enabled, request_id="dependent", after=["ticket-1"])
+    message = {"contract": 1, "message_id": "answer", "text": "Continue"}
+    assert (
+        CLIENT.post(f"/v1/runs/{run_id}/messages", headers=HEADERS, json=message).status_code == 200
+    )
+    assert slices.claim(enabled)["id"] == run_id
+
+
+def test_removal_does_not_admit_two_pending_messages_at_usage_reset(enabled, monkeypatch):
+    from homelab.runs import launcher
+
+    run_id = submitted(enabled)
+    saved = slices.claim(enabled)
+    slices.begin(enabled, saved, saved["executor"])
+    slices.prepared(enabled, run_id, "run-" + run_id.hex)
+    slices.complete(
+        enabled,
+        saved,
+        {
+            "status": "waiting",
+            "status_reason": "usage_limit",
+            "resumable": True,
+            "resume_at": datetime.now(UTC) + timedelta(days=5),
+        },
+        "session",
+        [],
+        {},
+    )
+    monkeypatch.setattr(launcher, "request", lambda request: None)
+    assert slices.sweep(enabled, now=datetime.now(UTC) + timedelta(days=4)) == 1
+    endpoint = f"/v1/runs/{run_id}/messages"
+    message = {"contract": 1, "message_id": "one", "text": "Continue"}
+    assert CLIENT.post(endpoint, headers=HEADERS, json=message).status_code == 200
+    assert CLIENT.post(endpoint, headers=HEADERS, json=message).status_code == 200
+    assert (
+        CLIENT.post(endpoint, headers=HEADERS, json={**message, "message_id": "two"}).status_code
+        == 409
+    )
+    assert slices.claim(enabled) is None
+
+
+def test_failed_prepare_removes_partial_copy_immediately(enabled, monkeypatch, tmp_path):
+    from homelab.runs import slices as execute
+    from homelab.runs.slice_loop import Service
+    from homelab.runs.usage import Reading
+
+    run_id = submitted(enabled)
+    operations = []
+    monkeypatch.setattr(execute.launcher, "request", operations.append)
+    monkeypatch.setattr(
+        execute, "codex_usage", lambda *a, **k: Reading(0, time.time() + 3600, time.time())
+    )
+
+    def prepare(*args, **kwargs):
+        raise execute.Refused("sandbox_error")
+
+    monkeypatch.setattr(execute, "prepare", prepare)
+
+    @contextmanager
+    def database():
+        yield enabled
+
+    service = Service(database, tmp_path, lambda: None)
+    try:
+        service.run(slices.claim(enabled))
+        assert api_runs.read("factory", run_id)["status"] == "failed"
+        assert operations == [{"op": "cli-remove", "work_id": "run-" + run_id.hex}] * 2
+        record = enabled.execute("SELECT work_id, copy_ready FROM homelab_runs").fetchone()
+        assert record == (None, False)
+    finally:
+        service.close()
+
+
+def test_push_refused_completes_failed_run_with_contract_reason(enabled):
+    run_id = submitted(enabled)
+    saved = slices.claim(enabled)
+    slices.begin(enabled, saved, saved["executor"])
+    slices.complete(
+        enabled,
+        saved,
+        {"status": "failed", "status_reason": "push_refused", "resumable": False},
+        "session",
+        [],
+        {},
+    )
+    result = api_runs.read("factory", run_id)
+    assert result["status"] == "failed" and result["status_reason"] == "push_refused"
+    assert result["commits"] == [] and not result["resumable"]
+    assert result["attempts"][0]["status"] == "failed"
+    assert result["attempts"][0]["outcome"] == "push_refused"
+    assert enabled.execute("SELECT status FROM procrastinate_jobs").fetchone()[0] == "failed"
+    submitted(enabled, request_id="next", branch="slice/next")
+    assert slices.claim(enabled)["request_id"] == "next"

@@ -1,5 +1,6 @@
 """Transactional whole-run records. Procrastinate owns scheduling and repository exclusion."""
 
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import procrastinate
@@ -86,12 +87,12 @@ def begin(connection, saved, selected):
         saved.update(number=number, turn_id=turn_id, executor=executor.selection())
 
 
-def prepared(connection, run_id, work_id):
+def prepared(connection, run_id, work_id, *, ready=True):
     with connection.transaction():
         runs.lock(connection)
         connection.execute(
-            "UPDATE homelab_runs SET work_id = %s, copy_ready = true WHERE id = %s",
-            (work_id, run_id),
+            "UPDATE homelab_runs SET work_id = %s, copy_ready = %s WHERE id = %s",
+            (work_id, ready, run_id),
         )
 
 
@@ -264,7 +265,17 @@ def message(connection, application, run_id, body):
             (run_id, body.message_id),
         ).fetchone():
             return saved
-        if not saved["resumable"] or saved["status"] not in {
+        if not (
+            saved["resumable"]
+            or (
+                saved["session_id"]
+                and saved["work_id"] is None
+                and not connection.execute(
+                    "SELECT 1 FROM homelab_run_messages WHERE run_id = %s AND NOT consumed",
+                    (run_id,),
+                ).fetchone()
+            )
+        ) or saved["status"] not in {
             "question",
             "waiting",
             "done",
@@ -279,7 +290,7 @@ def message(connection, application, run_id, body):
             WHERE id <> %s AND application = %s AND request->>'repository' = %s
             AND request->>'branch' IS NOT DISTINCT FROM %s
             AND (status IN ('queued', 'running', 'question', 'waiting') OR
-                 (status = 'escalated' AND resumable))""",
+                 (status = 'escalated' AND (resumable OR session_id IS NOT NULL)))""",
                 (run_id, application, saved["request"]["repository"], saved["request"]["branch"]),
             ).fetchone()
         ):
@@ -361,3 +372,40 @@ def recover(connection):
                 cancel_descendants(connection, saved["id"])
             count += 1
     return count
+
+
+def sweep(connection, *, now=None, failed_only=False):
+    """Remove ended copies under the claim/message lock; busy folders retry later."""
+    from homelab.runs import launcher
+
+    now = now or datetime.now(UTC)
+    removed = 0
+    with connection.transaction():
+        runs.lock(connection)
+        candidates = connection.execute(
+            """SELECT id, work_id, status,
+                coalesce((SELECT max(ended_at) FROM homelab_task_attempts
+                          WHERE task_id = homelab_runs.task_id), finished_at)
+            FROM homelab_runs
+            WHERE work_id IS NOT NULL AND status NOT IN ('queued', 'running')
+                AND (NOT %s OR status IN ('failed', 'cancelled'))""",
+            (failed_only,),
+        ).fetchall()
+        for run_id, work_id, status, ended in candidates:
+            if status in {"queued", "running"}:
+                continue
+            if status not in {"failed", "cancelled"} and (
+                ended is None or ended > now - timedelta(days=3)
+            ):
+                continue
+            try:
+                launcher.request({"op": "cli-remove", "work_id": work_id})
+            except launcher.Refused:
+                continue
+            connection.execute(
+                """UPDATE homelab_runs SET work_id = NULL, copy_ready = false,
+                resumable = false WHERE id = %s""",
+                (run_id,),
+            )
+            removed += 1
+    return removed

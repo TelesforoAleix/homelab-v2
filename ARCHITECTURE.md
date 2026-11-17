@@ -823,7 +823,9 @@ only active runner; its two scripts and unit are unchanged.
 Whole-run work uses a separate Procrastinate `runs` queue, with a library repository lock
 and two worker slots across slice, cut and review. Tickets keep their serial `tasks` loop.
 `HOMELAB_RUN_ROLES=slice,cut,review` enables submission and dispatch; the API and service both
-receive the setting, whose Compose default is empty. Cut and review require read mode.
+receive the setting, whose Compose default is empty. Only review requires read mode; cut
+accepts write mode to commit failing tests, as well as read mode. Review tries Claude first
+(sonnet at light/standard, opus at strong), then Codex gpt-6.1-sol high.
 The later switch must enable both this setting and the Compose profile, after stopping the
 host runner and meeting the existing lock and directory prerequisites.
 
@@ -848,7 +850,7 @@ Weekly windows are recorded with the readings. Claude probes are lazy, at most h
 30 minutes of reading age, with the attempt time persisted even on probe failure. Exhausted
 choices become `waiting:usage_limit` with a scheduled Procrastinate retry at the earliest
 reset; an unknown reading retries in an hour. Once a harness starts, further turns retain its
-executor, session and copy, including after a usage-limit result.
+executor and session, including after a usage-limit result, and its copy until retention removes it.
 
 Whole-run records own their state independently of the ticket bridge. Question, escalation,
 client-step waiting and handover finals become resumable question, escalated, waiting and
@@ -856,7 +858,14 @@ done records. Message ids are durably unique per run and queue one additional tu
 assets, messages and final text never enter job arguments or logs. Successful write turns
 record delivered tips. On restart the launcher removes this caller's containers first, then
 running attempts end `failed:interrupted`. A run is queued once; a second interruption fails
-it and cancels queued descendants. Copies remain available for conversation resumes.
+it and cancels queued descendants. The whole-run loop removes failed/cancelled work/run
+pairs promptly through `cli-remove`; an hourly sweep removes other ended copies three days
+after their last turn ended. It holds the store lock against claims/messages and retries
+launcher refusals later, never removing an in-use copy. Copy readiness and `resumable` clear
+after removal, while the harness login retains the session. Later messages prepare the
+branch again and resume that session; cancellation, deduplication, branch exclusion and
+usage-reset gates still apply. Partial preparations are recorded before creation too.
+Public deny hits and unreadable deny lists end `failed:push_refused`, without matched content or paths.
 
 The Python runner uses the same task store and Procrastinate transactions directly over the
 API's database login. A session advisory lock `(157442, 1)` excludes another `runs`; legacy

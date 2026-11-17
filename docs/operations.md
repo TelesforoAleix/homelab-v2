@@ -1694,13 +1694,20 @@ The host's two task scripts and runner unit are unchanged.
 **Whole-slice, cut and review path.** `HOMELAB_RUN_ROLES` is a comma-separated subset of
 `slice,cut,review`, empty by default, passed independently to the API and `runs`. The API
 continues to reject those roles with `409 role_not_available` while empty. Enabling the
-setting alone starts nothing: the Compose `runs` profile is the second switch. Cut and
-review require `mode: read`; slice supports either mode. Explicit `limits` remain unsupported.
+setting alone starts nothing: the Compose `runs` profile is the second switch. Review
+requires `mode: read`; slice and cut support either mode. A write cut can commit the ticket
+flow’s failing tests. Explicit `limits` remain unsupported.
 
 These roles use Procrastinate's separate `runs` queue, two CLI worker slots and repository
 locks, across all three roles. Tickets retain their independent one-at-a-time loop. Ordered
 dependencies and cancellation remain application-owned. Executor choice comes only from the
-role/level list in `config/executors.yaml`, never the caller. Codex's launcher `usage` reading
+role/level list in `config/executors.yaml`, never the caller.
+
+| Role | Light | Standard | Strong |
+|---|---|---|---|
+| `review` | Claude sonnet, then Codex gpt-6.1-sol high | Claude sonnet, then Codex gpt-6.1-sol high | Claude opus, then Codex gpt-6.1-sol high |
+
+Claude uses its default effort. Codex's launcher `usage` reading
 permits five-hour usage below 99%. Claude permits below 90% from a reading less than an hour
 old, or after the reset; its short probe is lazy, only when needed, after 30 minutes of age,
 and at most hourly. Weekly windows accompany both readings. Probe attempt times survive a
@@ -1736,16 +1743,27 @@ diff must be within `allowed_files` (null means unrestricted, empty means none) 
 `pinned_paths`, including deletions and rename sources. Refusal ends
 `failed: outside_allowed_files` before push. Delivery rechecks the authenticated remote
 default, scans every outgoing public commit with the deny list/canary, and pushes with a
-fresh App token and no force. A rewritten branch ends `failed: push_refused`.
+fresh App token and no force. Deny hits, an unreadable deny list and rewritten branches
+end `failed: push_refused`, without matched content, filenames or lines in the reason.
 
 Final kinds map to resumable states: `handover` to `done`, `question` to `question`,
 `escalation` to `escalated`, and `waiting` to `waiting: client_step`. A message resumes the
-same executor/session/copy and adds one attempt. `message_id` is unique per run, so retries
+same executor/session and retained copy and adds one attempt. `message_id` is unique per
+run, so retries
 add no extra turn. A completed run cannot resume onto a branch occupied by its successor.
 Usage waits resume automatically; client messages do not bypass that reset. Delivered tips
 are recorded in `commits`; final text is stored only in the application-owned run record.
 Transient CLI captures are removed with each private turn folder. Retained copies belong
-to the harness account, never to `runs`, and remain available for later messages.
+to the harness account, never to `runs`. The whole-run loop asks the launcher’s
+`cli-remove` to remove both work and run folders immediately on failure or cancellation
+(and retries on each queue poll), and sweeps other end states hourly, once three days have
+elapsed since the last turn ended. Queued/running copies are excluded; the store lock
+excludes a racing claim/message, and a launcher refusal means try later. Incomplete
+preparations are tracked for cleanup too. Removing a copy sets `resumable: false` and
+clears copy readiness, while keeping the harness session in its login. A later message to
+an uncancelled conversation queues `prepare` again from the branch, then resumes that
+session with its original executor. Cancellation still prevents messages. Usage-reset
+scheduling and message deduplication remain in force even after copy removal.
 
 At startup, launcher recovery removes this caller's task, CLI, bundle and usage containers
 before database recovery. Each interrupted attempt ends `failed: interrupted`; the run queues
@@ -1893,6 +1911,82 @@ The switch must also set `HOMELAB_RUN_ROLES=slice,cut,review` in the private nod
 and recreate the API and `runs` to pick it up. Rehearse real slices in that switch, after
 owner review. Leave both role setting and profile off during this installation; do not set
 `COMPOSE_PROFILES=runs` globally.
+
+### Runs rehearsal on the node
+
+After merging, the orchestrator runs this procedure as root in the merged checkout. It
+makes paid light-level turns, creates only random `rehearsal/` branches in the public
+platform repository and private Factory repository, and deletes those branches with the
+platform App’s repository-scoped token. Keep other submissions idle for the rehearsal.
+The key file contains the raw client key and must already be root-only with `runs:write`,
+`runs:read`, `runs:eval` and the repository policy described above. The script reads that
+file; neither commands nor output contain the key, goals, finals or session IDs.
+
+Meet the existing switch prerequisites above first, including the shared-directory modes
+and the live flock inode. No secret refresh or host-file installation is part of this
+rehearsal. In a root Bash shell run these commands. The roles are command-line overrides
+only; neither `HOMELAB_RUN_ROLES` nor `COMPOSE_PROFILES` is written to `.env`.
+
+```bash
+sudo -i
+cd /srv/homelab/homelab-v2
+set +x
+set -e
+# Pull by hand, then build the merged application images through the installed unit.
+git pull --ff-only
+systemctl restart homelab.service
+export HOMELAB_REHEARSAL_API_URL=http://127.0.0.1:8000
+read -rp 'Root-only client key file path: ' HOMELAB_REHEARSAL_KEY_FILE
+export HOMELAB_REHEARSAL_KEY_FILE
+export HOMELAB_REHEARSAL_POSTGRES_CONTAINER="$(docker compose ps --format '{{.Name}}' postgres)"
+export HOMELAB_REHEARSAL_DATABASE=homelab
+export HOMELAB_REHEARSAL_DATABASE_USER=homelab
+
+restore_runner() {
+    rehearsal_status=$?
+    trap - EXIT
+    # Stop and verify runs before allowing the host runner to start.
+    COMPOSE_PROFILES= docker compose --profile runs stop runs
+    test -z "$(COMPOSE_PROFILES= docker compose --profile runs ps --status running -q runs)"
+    HOMELAB_RUN_ROLES= COMPOSE_PROFILES= docker compose up -d --wait --wait-timeout 120 --no-deps --force-recreate api
+    systemctl start homelab-task-runner.service
+    test -z "$(COMPOSE_PROFILES= docker compose --profile runs ps --status running -q runs)"
+    systemctl is-active --quiet homelab-task-runner.service
+    unset HOMELAB_REHEARSAL_KEY_FILE HOMELAB_REHEARSAL_RUNS_CONTAINER
+    exit "$rehearsal_status"
+}
+trap restore_runner EXIT
+systemctl stop homelab-task-runner.service
+if systemctl is-active --quiet homelab-task-runner.service; then exit 1; fi
+HOMELAB_RUN_ROLES=slice,cut,review COMPOSE_PROFILES= docker compose --profile runs up -d --build --wait --wait-timeout 120 --no-deps --force-recreate api runs
+export HOMELAB_REHEARSAL_RUNS_CONTAINER="$(docker compose --profile runs ps --format '{{.Name}}' runs)"
+python3 tests/runs_rehearsal.py
+# The EXIT trap restores the API without roles, stops runs and starts the old runner,
+# on both success and failure. Keep this exit when using an interactive root shell.
+exit
+```
+
+Require eight `PASS:` lines and no `FAIL:`. Checks cover a single pushed slice commit,
+unchanged read-review tip, question/message idempotency with exactly two attempts and the
+same saved session, a private write cut with a failing test, allowed-path refusal, public
+canary refusal, ordinary ticket delivery and retained eval diff without a push, then
+cleanup. Session equality is verified with a read-only `psql` transaction through
+`HOMELAB_REHEARSAL_POSTGRES_CONTAINER`, selecting only that run’s `session_id`; the value
+never enters printed output. Cleanup separately reads only the numeric task IDs for this
+invocation’s ticket runs to check their `/srv/homelab/task-work` folders and containers. Database/user and the `runs` container are settings
+from the environment variables above. App credentials remain in `runs`; its token helper’s
+stdout is captured privately. No token is supplied in argv.
+
+The script stops at its first failed check and still tries all cleanup. Cleanup cancels
+its own runs so the loop removes their work/run pairs immediately; if necessary it stops
+only containers mounted on those exact random work IDs, waits for the service to settle,
+and checks that no associated folder or container remains. It attempts every created
+branch deletion even when another cleanup step fails. Ticket work copies are removed by
+the existing task path; eval records/diff exports retain the existing task retention.
+Any cleanup failure prints `FAIL:` and returns nonzero. Investigate it before a permanent
+switch; the restore commands still leave roles disabled and the old runner active. The
+script never changes enablement policy. If restoration itself fails, keep the old runner
+stopped until `runs` is confirmed stopped; repeat the restoration commands manually.
 
 The private clone probe needs an existing private repository/branch covered by the platform
 App and a fresh installation token restricted to that repository. Supply the token in a
