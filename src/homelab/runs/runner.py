@@ -348,9 +348,9 @@ def repository_is_private(repository):
         return False
 
 
-def private_content_check(task, copy, commit):
+def private_content_check(task, copy, commit, *, private=None):
     """Inspect each outgoing commit without emitting the inspected content."""
-    if repository_is_private(task["repository"]):
+    if private is True or (private is None and repository_is_private(task["repository"])):
         return None
     try:
         lines = DENY_LIST.read_text(encoding="utf-8").splitlines()
@@ -730,9 +730,25 @@ def run_lock_free():
 
 def recover():
     launcher.request({"op": "task-recover"})
+    from homelab.tasks import slices
+
+    with database() as session:
+        recovered = slices.recover(session)
+    logger.info("recovered whole-runs=%s", recovered)
     for path in WORK.iterdir():
         launcher.request({"op": "task-remove", "work_id": path.name})
     logger.info("recovered jobs=%s", store("claim", "--recover"))
+
+
+@contextlib.contextmanager
+def database():
+    with database_mutex:
+        if connection is None or connection.closed or connection.broken:
+            raise LostLock("runner_database_lost")
+        try:
+            yield connection
+        except psycopg.Error:
+            raise LostLock("runner_database_lost") from None
 
 
 def turn(state):
@@ -742,9 +758,15 @@ def turn(state):
     if not state["recovered"]:
         recover()
         state["recovered"] = True
+        if state.get("slices") is not None:
+            state["slices"].start()
     try:
         task = store("claim")
     except StoreUnavailable:
+        if state.get("slices") is not None:
+            # An ambiguous ticket claim cannot trigger recovery beside live CLI workers.
+            # Stop the service; the next lock holder recovers all queues together.
+            raise LostLock("runner_database_lost") from None
         # A lost answer may have claimed a task no one holds. Nothing runs now: recover again.
         state["recovered"] = False
         raise
@@ -791,6 +813,7 @@ def main(argv=None):
     for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(signum, terminate)
     stop = threading.Event()
+    service = None
     try:
         with psycopg.connect(
             get_settings().database_url,
@@ -807,6 +830,13 @@ def main(argv=None):
                     keeper = threading.Thread(target=keep_lock, args=(stop,), daemon=True)
                     keeper.start()
                     state = {"recovered": False}
+                    from homelab.tasks.runs import enabled_roles
+
+                    if enabled_roles():
+                        from homelab.runs.slice_loop import Service
+
+                        service = Service(database, RUNS, locking.legacy_inactive)
+                        state["slices"] = service
                     while True:
                         try:
                             worked = turn(state)
@@ -818,6 +848,8 @@ def main(argv=None):
                 finally:
                     # Keep both locks until all live launches have stopped.
                     stop.set()
+                    if service is not None:
+                        service.close()
                     launcher.stop_all()
     except (locking.Refused, LostLock, psycopg.Error) as error:
         logger.error(

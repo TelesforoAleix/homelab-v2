@@ -13,7 +13,6 @@ from typing import Annotated, Any, Literal
 import psycopg
 from pydantic import Field, TypeAdapter, ValidationError, model_validator
 
-from homelab.jobs.tasks import run_coding_task
 from homelab.settings import get_settings
 from homelab.tasks.runs import lock_task
 from homelab.tasks.store import Refused
@@ -191,9 +190,9 @@ def end_task(connection: Any, event: EndTask) -> list[int]:
             (event.task_id,),
         ).fetchall()
         for task_id, priority in rows:
-            run_coding_task.configure(connection=connection, priority=priority).defer(
-                task_id=task_id
-            )
+            from homelab.tasks.slices import release_task
+
+            release_task(connection, task_id, priority)
             released.append(task_id)
     return released
 

@@ -538,3 +538,70 @@ def test_service_entry_refuses_legacy_runner_before_recovery_or_claim(
     assert runner.main([]) == 2
     assert not database.queries
     assert "runner refused reason=legacy_runner_active" in caplog.text
+
+
+def test_ambiguous_ticket_claim_stops_before_recovery_beside_live_cli_workers(monkeypatch):
+    from homelab.runs import runner
+
+    def unavailable(*args, **kwargs):
+        raise runner.StoreUnavailable("database_error")
+
+    monkeypatch.setattr(runner, "run_lock_free", lambda: True)
+    monkeypatch.setattr(runner, "store", unavailable)
+    monkeypatch.setattr(runner, "recover", lambda: pytest.fail("live workers must stop first"))
+    state = {"recovered": True, "slices": object()}
+    with pytest.raises(runner.LostLock):
+        runner.turn(state)
+    assert state["recovered"]
+
+
+def test_recovery_removes_launcher_containers_before_recording_interruptions(tmp_path, monkeypatch):
+    from homelab.runs import runner
+    from homelab.tasks import slices
+
+    calls = []
+    monkeypatch.setattr(runner, "WORK", tmp_path)
+    monkeypatch.setattr(runner.launcher, "request", lambda r: calls.append(r["op"]))
+    monkeypatch.setattr(runner, "database", lambda: contextmanager(lambda: iter([None]))())
+    monkeypatch.setattr(slices, "recover", lambda _: calls.append("interrupt") or 1)
+    monkeypatch.setattr(runner, "store", lambda *a: calls.append("tickets") or 0)
+    runner.recover()
+    assert calls == ["task-recover", "interrupt", "tickets"]
+
+
+def test_whole_run_capture_without_deadline_still_stops_on_shutdown(tmp_path, monkeypatch):
+    import threading
+
+    from homelab.runs import launcher
+
+    entered, cancelled, stopped = threading.Event(), threading.Event(), threading.Event()
+
+    def request(value, descriptors=(), **kwargs):
+        if value["op"] == "stop":
+            stopped.set()
+        else:
+            assert kwargs["timeout"] is None
+            entered.set()
+            assert stopped.wait(5)
+        return {"ok": True, "exit_code": 0}
+
+    def cancel():
+        assert entered.wait(5)
+        cancelled.set()
+
+    monkeypatch.setattr(launcher, "request", request)
+    thread = threading.Thread(target=cancel)
+    thread.start()
+    try:
+        assert launcher.capture(
+            {"op": "run", "run_id": "whole-run"},
+            tmp_path / "out",
+            tmp_path / "err",
+            None,
+            cancelled=cancelled.is_set,
+        ) == (None, "interrupted")
+    finally:
+        cancelled.set()
+        stopped.set()
+        thread.join(5)
+    assert stopped.is_set() and not launcher.active

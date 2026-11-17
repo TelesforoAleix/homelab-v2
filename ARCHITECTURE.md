@@ -785,7 +785,8 @@ a branch equal to its listed default or `main` returns 409. Another application'
 No repository policy lives in Postgres. API startup validates the file and
 `config/executors.yaml`; malformed data prevents start. The executor table maps each role and
 level to an ordered list of Pi configurations or CLI harnesses; the first entry and its hash
-are recorded without changing `homelab_roles`.
+are recorded without changing `homelab_roles`. Whole-run dispatch replaces that initial choice
+with the first executor permitted by usage, before starting its first attempt.
 
 A ticket write or eval becomes one ordinary task, deferred through Procrastinate in the run's
 transaction. `after` request ids become task dependencies; a non-`done` predecessor cancels its
@@ -797,9 +798,10 @@ and cursor reads take a transaction lock before locking run/task rows, so revisi
 cannot skip a late commit. Unlinked legacy tasks keep their existing queue behavior.
 
 Queued cancellation records `cancelled_by_client` and cancels descendants; cancellation after
-claim returns `409 not_resumable`. Messages also return `not_resumable` because today's runner
+claim returns `409 not_resumable`. Ticket messages also return `not_resumable` because that path
 cannot resume a conversation. Slice, cut and review requests without an eval mark return
-`409 role_not_available`. Read mode and any supplied `limits` return 409 with
+`409 role_not_available` unless `HOMELAB_RUN_ROLES` enables the role (empty by default).
+Read mode for tickets/evals or disabled roles and any supplied `limits` return 409 with
 `status_reason:role_not_available` and a message that they arrive with the execution service,
 leaving no run, task or job. History is recorded while the host keeps its full single-branch
 clone. Delivered commits remain empty and final messages null until supplied by an executor.
@@ -817,6 +819,44 @@ The platform image contains `python -m homelab.runs`. Compose defines it as `run
 opt-in `runs` profile, uid 21020 with no capabilities, Docker socket, host helper or published
 port. Ordinary `homelab.service` starts do not enable it. The old host runner is still the
 only active runner; its two scripts and unit are unchanged.
+
+Whole-run work uses a separate Procrastinate `runs` queue, with a library repository lock
+and two worker slots across slice, cut and review. Tickets keep their serial `tasks` loop.
+`HOMELAB_RUN_ROLES=slice,cut,review` enables submission and dispatch; the API and service both
+receive the setting, whose Compose default is empty. Cut and review require read mode.
+The later switch must enable both this setting and the Compose profile, after stopping the
+host runner and meeting the existing lock and directory prerequisites.
+
+The launcher creates `run-<uuid>` work/run folders as uid 21000. No mirror is retained:
+each copy clones the existing branch or the remote default tip for a new branch, without
+hardlinks/templates/hooks. A repository-scoped App header reaches only the clone container's
+environment, without logins; offline checkout/configuration writes happen in a data container.
+`cli-run` alone mounts the harness logins. Its optional `read_only` flag protects all of `/work`
+while keeping `/run/factory` writable. Read turns return only their final message.
+Optional CLI stdin carries contract-bounded goals/assets in a regular-file descriptor,
+snapshotted and rendered into an anonymous memory file by the launcher. Prompt content never
+enters CLI argv or launcher records; existing two-descriptor callers are unchanged.
+Write turns stream a bundle through the launcher into private runner state. Independent Git
+checks require exactly `HEAD` and the requested branch at one tip, a valid bundle, descent
+from the pinned base, and a base-to-tip diff within allowed paths and outside pinned paths.
+An authenticated default-branch recheck and the public-repository deny-list scan precede a
+non-force App push. Rewritten remote history fails delivery.
+
+Executors come only from the ordered role/level catalogue. Codex permits a five-hour window
+below 99%; Claude permits below 90% with a reading less than an hour old, or a passed reset.
+Weekly windows are recorded with the readings. Claude probes are lazy, at most hourly, after
+30 minutes of reading age, with the attempt time persisted even on probe failure. Exhausted
+choices become `waiting:usage_limit` with a scheduled Procrastinate retry at the earliest
+reset; an unknown reading retries in an hour. Once a harness starts, further turns retain its
+executor, session and copy, including after a usage-limit result.
+
+Whole-run records own their state independently of the ticket bridge. Question, escalation,
+client-step waiting and handover finals become resumable question, escalated, waiting and
+done records. Message ids are durably unique per run and queue one additional turn; goals,
+assets, messages and final text never enter job arguments or logs. Successful write turns
+record delivered tips. On restart the launcher removes this caller's containers first, then
+running attempts end `failed:interrupted`. A run is queued once; a second interruption fails
+it and cancels queued descendants. Copies remain available for conversation resumes.
 
 The Python runner uses the same task store and Procrastinate transactions directly over the
 API's database login. A session advisory lock `(157442, 1)` excludes another `runs`; legacy

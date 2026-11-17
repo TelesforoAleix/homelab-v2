@@ -86,6 +86,7 @@ services:
       HOMELAB_MAC_EMBED_URL: ${HOMELAB_MAC_EMBED_URL:-http://127.0.0.1:9/v1}
       HOMELAB_EVAL_TASK_KEY: ${HOMELAB_EVAL_TASK_KEY:-}
       HOMELAB_EVAL_DIFFS_DIR: ${HOMELAB_EVAL_DIFFS_DIR:-/srv/homelab/task-runs/eval-diffs}
+      HOMELAB_RUN_ROLES: ${HOMELAB_RUN_ROLES:-}
     volumes:
       - ${HOMELAB_BRAIN_PATH:-/srv/homelab/brain}:/data/brain:ro
       - ${HOMELAB_CORPUS_PATH:-/srv/homelab/homelab-v2-data/originals/corpus}:/data/corpus:ro
@@ -130,6 +131,7 @@ services:
       HOMELAB_DATABASE_URL: postgresql://homelab:${HOMELAB_DB_PASSWORD}@postgres:5432/homelab
       HOMELAB_TASK_AUTHOR_NAME: ${HOMELAB_TASK_AUTHOR_NAME:-Home Lab}
       HOMELAB_TASK_AUTHOR_EMAIL: ${HOMELAB_TASK_AUTHOR_EMAIL:-home-lab@home-lab.invalid}
+      HOMELAB_RUN_ROLES: ${HOMELAB_RUN_ROLES:-}
       PYTHONDONTWRITEBYTECODE: "1"
     volumes:
       - type: bind

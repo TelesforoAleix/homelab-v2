@@ -181,7 +181,7 @@ def record(connection, saved: dict) -> dict:
         "attempts": history,
         "commits": saved["commits"],
         "metrics": metrics,
-        "resumable": False,
+        "resumable": saved["resumable"],
         "final_message": saved["final_message"],
         "resume_at": saved["resume_at"],
         **{name: saved[name] for name in ("created_at", "updated_at", "started_at", "finished_at")},
@@ -267,10 +267,19 @@ async def post_message(run_id: str, request: Request):
         identity = authorize(request, "runs:write")
         # Ownership precedes body parsing so another application's run always gets 404.
         await run_in_threadpool(read, identity.application, identifier(run_id))
-        parse(Message, await request_bytes(request))
-        raise RunError(409, "not_resumable")
+        message = parse(Message, await request_bytes(request))
+        return response(
+            await run_in_threadpool(messaging, identity.application, identifier(run_id), message)
+        )
     except RunError as error:
         return failure(error)
+
+
+def messaging(application, run_id, message):
+    from homelab.tasks.slices import message as submit_message
+
+    with connect() as connection:
+        return record(connection, submit_message(connection, application, run_id, message))
 
 
 def cancelling(application: str, run_id: UUID):

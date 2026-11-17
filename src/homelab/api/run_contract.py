@@ -10,6 +10,7 @@ from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from homelab.api.run_keys import RunError
 from homelab.tasks.executors import configuration_hash
+from homelab.tasks.runs import enabled_roles
 from homelab.tasks.submit import INT_MAX, EvalName, RepositoryPath, Strict
 
 RequestId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._:-]{1,64}$")]
@@ -79,7 +80,13 @@ class RunRequest(Strict):
     @model_validator(mode="before")
     @classmethod
     def supported_execution(cls, value):
-        if isinstance(value, dict) and (value.get("mode") == "read" or "limits" in value):
+        if not isinstance(value, dict):
+            return value
+        role = value.get("role")
+        read_available = (
+            isinstance(role, str) and role in enabled_roles() and value.get("eval") is None
+        )
+        if "limits" in value or (value.get("mode") == "read" and not read_available):
             raise RunError(
                 409,
                 "role_not_available",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from uuid import UUID, uuid4
 
 from psycopg.rows import dict_row
@@ -13,6 +14,16 @@ from homelab.tasks.executors import Executor
 from homelab.tasks.store import RunError
 
 ACTIVE = {"queued", "running", "question", "waiting"}
+HARNESS_ROLES = {"slice", "cut", "review"}
+HARNESS_QUEUE = "runs"
+
+
+def enabled_roles():
+    return HARNESS_ROLES & set(os.environ.get("HOMELAB_RUN_ROLES", "").split(","))
+
+
+def is_harness(request):
+    return request["role"] in HARNESS_ROLES and request.get("eval") is None
 
 
 def lock(connection) -> None:
@@ -52,7 +63,11 @@ def fingerprint(body) -> str:
 
 def available(body, executor: Executor) -> bool:
     """Do not queue a writer for an execution policy today's host cannot honor."""
-    return body.eval is not None or executor.configuration == "pi/base"
+    return (
+        body.eval is not None
+        or executor.configuration == "pi/base"
+        or (body.role in enabled_roles() and executor.harness is not None)
+    )
 
 
 def create(
@@ -87,8 +102,10 @@ def create(
             raise RunError(403, "repository_not_allowed")
         if body.mode == "write" and body.branch in {"main", default}:
             raise RunError(409, "branch_is_default")
-        if body.role != "ticket" and body.eval is None:
+        if body.role != "ticket" and body.eval is None and body.role not in enabled_roles():
             raise RunError(409, "role_not_available")
+        if body.eval is None and body.role in {"cut", "review"} and body.mode != "read":
+            raise RunError(422, "invalid_request")
         predecessors = []
         dependencies = []
         for request_id in body.after:
@@ -104,7 +121,8 @@ def create(
         active = connection.execute(
             """SELECT id FROM homelab_runs WHERE application = %s
                AND request->>'repository' = %s AND request->>'branch' = %s
-               AND status IN ('queued', 'running', 'question', 'waiting')""",
+               AND (status IN ('queued', 'running', 'question', 'waiting')
+                    OR (status = 'escalated' AND resumable))""",
             (application, body.repository, body.branch),
         ).fetchall()
         # Naming the last member of a chain also names its transitive predecessors.
@@ -122,7 +140,9 @@ def create(
         run_id = uuid4()
         request = body.model_dump()
         del request["work"]["goal"]
-        cancelled = any(p["status"] not in ACTIVE | {"done"} for p in predecessors)
+        cancelled = any(
+            p["status"] not in ACTIVE | {"done"} and not p["resumable"] for p in predecessors
+        )
         usable = True if legacy_attempt else available(body, executor)
         status = "cancelled" if cancelled else "queued" if usable else "failed"
         reason = "predecessor" if cancelled else None if usable else "no_executor_available"
@@ -178,7 +198,12 @@ def create(
         ).fetchone()[0]
         connection.execute("UPDATE homelab_runs SET task_id = %s WHERE id = %s", (task_id, run_id))
         if status == "queued" and all(p["status"] == "done" for p in predecessors):
-            configure_job(connection=connection, priority=body.priority).defer(task_id=task_id)
+            if is_harness(request):
+                from homelab.tasks.slices import enqueue
+
+                enqueue(connection, task_id, body.repository, body.priority)
+            else:
+                configure_job(connection=connection, priority=body.priority).defer(task_id=task_id)
         return row(connection, application, run_id), True
 
 
@@ -193,7 +218,8 @@ def cancel(connection, application: str, run_id: UUID):
             # writer as cancelled while it could still push.
             raise RunError(409, "not_resumable")
         if record["status"] not in ACTIVE:
-            return record
+            if not record["resumable"]:
+                return record
         connection.execute(
             """WITH RECURSIVE descendants AS (
                    SELECT id FROM homelab_runs WHERE id = %s
@@ -203,9 +229,10 @@ def cancel(connection, application: str, run_id: UUID):
                UPDATE homelab_runs SET status = 'cancelled',
                    status_reason = CASE WHEN id = %s THEN 'cancelled_by_client'
                                         ELSE 'predecessor' END,
-                   finished_at = clock_timestamp()
-               WHERE id IN (SELECT id FROM descendants) AND status = 'queued'""",
-            (run_id, run_id),
+                   finished_at = clock_timestamp(), resumable = false
+               WHERE id IN (SELECT id FROM descendants)
+                 AND (status = 'queued' OR (id = %s AND resumable AND status <> 'running'))""",
+            (run_id, run_id, run_id),
         )
         connection.execute(
             """UPDATE homelab_tasks t SET status = 'failed', reason = r.status_reason,
