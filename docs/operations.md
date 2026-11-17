@@ -1985,8 +1985,17 @@ After merge and owner review, the orchestrator executes these steps as root, in 
 on any failed check and resolve it before continuing. Keep submissions idle through the
 switch. The old unit stays installed and disabled for the next two weeks.
 
-1. Confirm with Factory that no slice turn is running; record Factory's current image identifier
-   for rollback and check that the recorded identifier is available for redeployment.
+1. Check that no Factory turn or fence run is running, then record Factory's current release
+   and check that its image is available for rollback:
+
+   ```bash
+   test -z "$(docker ps -q --filter name=^/factory-session-turn-)"
+   test -z "$(docker ps -q --filter name=^/homelab-fence-run-)"
+   python3 -c 'import json; print(json.load(open("/var/lib/homelab-deployer/factory.json"))["current"])' > /root/factory-before-runs-switch
+   grep -Eqx '[0-9a-f]{40}' /root/factory-before-runs-switch
+   docker image inspect "homelab-deployer-factory:$(cat /root/factory-before-runs-switch)" > /dev/null
+   ```
+
 2. Run [the rehearsal](#runs-rehearsal-on-the-node) unchanged. Require all eight checks,
    including cleanup, to print PASS; its trap restores the old runner.
 3. In a root Bash shell, stop and disable the old runner. Require an absent or unpopulated
@@ -2040,13 +2049,28 @@ switch. The old unit stays installed and disabled for the next two weeks.
 
 6. Install Factory's new image through its deployer using Factory's documented command.
    Check the deployer reports the intended image running and healthy.
-7. Gate the switch on Factory delivering one whole-slice slice and one ticket slice through
-   the platform. Check both deliveries and their resulting changes; investigate any failure
-   before accepting the switch.
+7. Record the gate start before Factory starts either delivery:
+
+   ```bash
+   date -u +%FT%TZ > /root/runs-switch-gate-start
+   ```
+
+   Have Factory deliver one whole-slice slice and one ticket slice through the platform,
+   then inspect the runs created since the gate started:
+
+   ```bash
+   cd /srv/homelab/homelab-v2
+   docker compose exec -T postgres psql -U homelab -d homelab -At -c "SELECT id, request->>'role', status, coalesce(status_reason, ''), cardinality(commits) FROM homelab_runs WHERE created_at >= '$(cat /root/runs-switch-gate-start)' ORDER BY created_at"
+   ```
+
+   Require every row to be `done` with an empty reason. The whole-slice slice must have a
+   `slice` row with one or more commits; the ticket slice must have a `cut` row and `ticket`
+   rows. A ticket run records zero commits even when it pushes, so do not require commits in
+   those rows. Check that Factory merged both slices' PRs. Investigate any failure before
+   accepting the switch.
 8. If rollback is needed, keep submissions idle and let active work finish. In a root Bash
    shell remove the two exact lines and restart the platform, stop `runs`, then restore the
-   old runner. Finally reinstall the recorded previous Factory image through its deployer
-   and check it is running and healthy:
+   old runner. Then restore Factory with the terminal command below:
 
    ```bash
    cd /srv/homelab/homelab-v2
@@ -2058,6 +2082,15 @@ switch. The old unit stays installed and disabled for the next two weeks.
    systemctl enable --now homelab-task-runner.service
    systemctl is-enabled --quiet homelab-task-runner.service
    systemctl is-active --quiet homelab-task-runner.service
+   ```
+
+   In a root terminal (connect with `ssh -t`; the deployer requires a terminal), roll back
+   Factory and check that its current release matches the recorded release. The deployer
+   prints one JSON result and exits nonzero on failure:
+
+   ```bash
+   homelab-deployer rollback factory
+   test "$(python3 -c 'import json; print(json.load(open("/var/lib/homelab-deployer/factory.json"))["current"])')" = "$(cat /root/factory-before-runs-switch)"
    ```
 
    The switch prerequisite ownership and modes may stay: the old runner runs as root. Preserve
