@@ -376,8 +376,9 @@ def test_readonly_node_probe_checks_both_actual_work_mount_modes(tmp_path, monke
     monkeypatch.setattr(probe, "exists", lambda _: False)
 
     def client(image, group, uid, request, name):
+        assert request["op"] in {"cli-create", "cli-remove"}
         requests.append(request)
-        return {"ok": True, "exit_code": 0} if request["op"] == "run" else {"ok": True}
+        return {"ok": True}
 
     def docker(*args):
         calls.append(args)
@@ -386,8 +387,11 @@ def test_readonly_node_probe_checks_both_actual_work_mount_modes(tmp_path, monke
     monkeypatch.setattr(probe, "client", client)
     monkeypatch.setattr(probe, "docker", docker)
     probe.readonly_probe()
-    runs = [request for request in requests if request["op"] == "run"]
+    run_calls = [args for args in calls if probe.RUN_CLIENT in args]
+    runs = [json.loads(args[-1]) for args in run_calls]
     assert len(runs) == 2
+    assert all(request["op"] == "run" for request in runs)
+    assert [request["op"] for request in requests] == ["cli-create", "cli-remove"] * 2
     assert "read_only" not in runs[0] and "stdin" not in runs[0]
     assert runs[1]["read_only"] is True and runs[1]["stdin"] is True
     assert [request["command"] for request in runs] == [
