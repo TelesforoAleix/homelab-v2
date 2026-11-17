@@ -417,7 +417,7 @@ class Rehearsal:
                 eval={"set": "rehearsal", "case": uuid4().hex, "configuration": "base"},
             )
         )
-        assert result["status"] == "done" and result["status_reason"] == "eval_kept"
+        assert result["status"] == "done" and result["status_reason"] is None
         assert (
             result["commits"] == []
             and isinstance(result.get("diff_base64"), str)

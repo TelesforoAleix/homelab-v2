@@ -1896,21 +1896,12 @@ The database login comes from the same `HOMELAB_DB_PASSWORD` interpolation as th
    `runner refused reason=legacy_runner_active`, with no recovery or claim. Verify again
    that no `runs` container is running. Leave the old runner enabled and active.
 
-**Later switch prerequisites, not part of this installation:** stop and disable the host
-runner first, verify its cgroup is absent/empty and all task containers have stopped, then
-prepare token/cost directories for uid 21020 and group 10001. Prepare
-`/run/lock/homelab-task-run.lock` as root:10001, mode 0640, without replacing a live
-lock inode. `runs` holds an exclusive flock through its read-only bind, so the unchanged
-root script also refuses concurrent manual runs. A missing/unreadable lock fails closed;
-recreate this ephemeral file after reboot before enabling `runs`. Tokens need owner 21020,
-group 10001, mode 0750; costs need owner 21020, group 10001, mode 0770. Final diff exports
-need owner 21020, group 10001, mode 0750 (files 0640). Do not change gateway configuration or
-mounts. Run the rehearsal before changing startup policy. The explicit enable command is
-`sudo docker compose --profile runs up -d runs`; ordinary service starts still exclude it.
-The switch must also set `HOMELAB_RUN_ROLES=slice,cut,review` in the private node environment
-and recreate the API and `runs` to pick it up. Rehearse real slices in that switch, after
-owner review. Leave both role setting and profile off during this installation; do not set
-`COMPOSE_PROFILES=runs` globally.
+**Switch prerequisites:** token and cost directories need owner 21020, group 10001,
+mode 0750 and 0770 respectively. Final diff exports need owner 21020, group 10001,
+mode 0750 (files 0640). The lock is root:10001, mode 0640. `runs` holds an exclusive
+flock through its read-only bind; a missing or unreadable lock fails closed. The tmpfiles
+rule below recreates it at boot without truncating or replacing an existing lock inode.
+Keep the profile and role setting off until the switch procedure.
 
 ### Runs rehearsal on the node
 
@@ -1988,6 +1979,90 @@ switch; the restore commands still leave roles disabled and the old runner activ
 script never changes enablement policy. If restoration itself fails, keep the old runner
 stopped until `runs` is confirmed stopped; repeat the restoration commands manually.
 
+### Switch to runs
+
+After merge and owner review, the orchestrator executes these steps as root, in order. Stop
+on any failed check and resolve it before continuing. Keep submissions idle through the
+switch. The old unit stays installed and disabled for the next two weeks.
+
+1. Confirm with Factory that no slice turn is running; record Factory's current image identifier
+   for rollback and check that the recorded identifier is available for redeployment.
+2. Run [the rehearsal](#runs-rehearsal-on-the-node) unchanged. Require all eight checks,
+   including cleanup, to print PASS; its trap restores the old runner.
+3. In a root Bash shell, stop and disable the old runner. Require an absent or unpopulated
+   cgroup and no running task containers:
+
+   ```bash
+   cd /srv/homelab/homelab-v2
+   systemctl stop homelab-task-runner.service
+   systemctl disable homelab-task-runner.service
+   ! systemctl is-active --quiet homelab-task-runner.service
+   ! systemctl is-enabled --quiet homelab-task-runner.service
+   cg=/sys/fs/cgroup/system.slice/homelab-task-runner.service/cgroup.events
+   test ! -e "$cg" || grep -qx 'populated 0' "$cg"
+   test -z "$(docker ps -q --filter name=homelab-task-)"
+   ```
+
+4. Review the installed-file diff, then install and apply the boot rule. A diff exit of 1
+   means differences; inspect them before continuing. Check the existing lock's inode and
+   permissions remain correct:
+
+   ```bash
+   if test -e /etc/tmpfiles.d/homelab-task-run.conf; then
+       diff -u /etc/tmpfiles.d/homelab-task-run.conf node/etc/tmpfiles.d/homelab-task-run.conf || test "$?" -eq 1
+   else
+       diff -u /dev/null node/etc/tmpfiles.d/homelab-task-run.conf || test "$?" -eq 1
+   fi
+   lock_inode=$(stat -c '%i' /run/lock/homelab-task-run.lock)
+   install -d -m 0755 -o root -g root /etc/tmpfiles.d
+   install -m 0644 -o root -g root node/etc/tmpfiles.d/homelab-task-run.conf /etc/tmpfiles.d/homelab-task-run.conf
+   systemd-tmpfiles --create /etc/tmpfiles.d/homelab-task-run.conf
+   test "$(stat -c '%i' /run/lock/homelab-task-run.lock)" = "$lock_inode"
+   test "$(stat -c '%u:%g %a' /run/lock/homelab-task-run.lock)" = '0:10001 640'
+   unset lock_inode
+   ```
+
+5. Back up the private environment file and append the two settings. Require neither setting
+   already exists, so rollback removes only these lines. Restart the platform and check the
+   service and the API's actual role parser (the API has no HTTP role-list endpoint):
+
+   ```bash
+   cd /srv/homelab/homelab-v2
+   ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?(COMPOSE_PROFILES|HOMELAB_RUN_ROLES)=' .env
+   test ! -e .env.before-runs-switch
+   cp -p .env .env.before-runs-switch
+   printf '\nCOMPOSE_PROFILES=runs\nHOMELAB_RUN_ROLES=slice,cut,review\n' >> .env
+   systemctl restart homelab.service
+   docker compose up -d --wait --wait-timeout 120 runs
+   test "$(docker inspect --format '{{.State.Status}} {{.State.Health.Status}}' "$(docker compose ps -q runs)")" = 'running healthy'
+   docker compose exec -T api python -c 'from homelab.tasks.runs import enabled_roles; assert set(enabled_roles()) == {"slice", "cut", "review"}; print("API roles: slice, cut, review")'
+   ```
+
+6. Install Factory's new image through its deployer using Factory's documented command.
+   Check the deployer reports the intended image running and healthy.
+7. Gate the switch on Factory delivering one whole-slice slice and one ticket slice through
+   the platform. Check both deliveries and their resulting changes; investigate any failure
+   before accepting the switch.
+8. If rollback is needed, keep submissions idle and let active work finish. In a root Bash
+   shell remove the two exact lines and restart the platform, stop `runs`, then restore the
+   old runner. Finally reinstall the recorded previous Factory image through its deployer
+   and check it is running and healthy:
+
+   ```bash
+   cd /srv/homelab/homelab-v2
+   sed -i '/^COMPOSE_PROFILES=runs$/d; /^HOMELAB_RUN_ROLES=slice,cut,review$/d' .env
+   ! grep -Eq '^(COMPOSE_PROFILES|HOMELAB_RUN_ROLES)=' .env
+   systemctl restart homelab.service
+   COMPOSE_PROFILES= docker compose --profile runs stop runs
+   test -z "$(COMPOSE_PROFILES= docker compose --profile runs ps --status running -q runs)"
+   systemctl enable --now homelab-task-runner.service
+   systemctl is-enabled --quiet homelab-task-runner.service
+   systemctl is-active --quiet homelab-task-runner.service
+   ```
+
+   The switch prerequisite ownership and modes may stay: the old runner runs as root. Preserve
+   the backup and run records. Do not start both runners together.
+
 The private clone probe needs an existing private repository/branch covered by the platform
 App and a fresh installation token restricted to that repository. Supply the token in a
 root shell with tracing off and silent input, never a command argument, env file or journal:
@@ -2020,9 +2095,7 @@ for the same reason. A failed socket probe prevents work; it does not grant a fa
 Rollback: stop/remove any optional `runs` container before starting the old runner. Leave the
 profile disabled, restore the previously installed launcher/metadata/unit after visible diffs,
 validate the unit, run `systemctl daemon-reload`, stop the launcher service and restart its socket, then
-restart the Factory socket clients. No task data or secrets need deletion. If a later switch
-changed shared-directory ownership, restore the original root:10001 token/cost/export modes
-before re-enabling the host runner (0750/0770/0750 respectively). Preserve private new run
+restart the Factory socket clients. No task data or secrets need deletion. The shared-directory ownership used by the switch may remain when re-enabling the root host runner. Preserve private new run
 records and existing API exports. Never recover the queue with two active runners.
 
 ### Eval tasks
@@ -2163,6 +2236,10 @@ write is accepted only with the sticky bit (including Factory's existing 1733 ro
 Non-root-owned roots and writable roots without the sticky bit remain refused. After
 installation, run `sudo python3 tests/launcher_task_probe.py` (14 checks), and add `--private`
 with the guide's private-repository credentials for the fifteenth check.
+
+Install `/etc/tmpfiles.d/homelab-task-run.conf` as root:root 0644 after reviewing its diff;
+run `systemd-tmpfiles --create /etc/tmpfiles.d/homelab-task-run.conf` to create the boot lock.
+Follow [Switch to runs](#switch-to-runs) when restoring the enabled configuration.
 
 Install the disabled container runner, launcher folder/clone support and per-service secret
 copies using [Runs service: installed, disabled](#runs-service-installed-disabled). Include
@@ -2417,6 +2494,7 @@ SSH accounts work through Tailscale.
 | `node/opt/homelab-fence/proxy/` | `0755` | `0644` |
 | `node/etc/homelab-task/` | `0755` | `0644` |
 | `node/etc/homelab-launcher/` | `0755` | `0644` |
+| `node/etc/tmpfiles.d/` | `0755` | `0644` |
 
    ```bash
    sudo install -d -m 0755 -o root -g root /etc/ssh /etc/ssh/sshd_config.d /etc/ufw /etc/docker /etc/sysctl.d /etc/profile.d /etc/sudoers.d /usr/local/sbin /opt/homelab-telegram-bot /opt/homelab-context /opt/homelab-task /opt/homelab-package-proxy /etc/homelab-task /etc/systemd/system
@@ -2430,6 +2508,9 @@ SSH accounts work through Tailscale.
    sudo install -m 0644 -o root -g root node/etc/containerd/config.toml /etc/containerd/config.toml
    sudo install -m 0644 -o root -g root node/etc/sysctl.d/99-homelab-swappiness.conf /etc/sysctl.d/99-homelab-swappiness.conf
    sudo install -m 0644 -o root -g root node/etc/profile.d/homelab-console-timeout.sh /etc/profile.d/homelab-console-timeout.sh
+   sudo install -d -m 0755 -o root -g root /etc/tmpfiles.d
+   sudo install -m 0644 -o root -g root node/etc/tmpfiles.d/homelab-task-run.conf /etc/tmpfiles.d/homelab-task-run.conf
+   sudo systemd-tmpfiles --create /etc/tmpfiles.d/homelab-task-run.conf
    sudo visudo -cf node/etc/sudoers.d/homelab-agent-v2
    sudo install -m 0440 -o root -g root node/etc/sudoers.d/homelab-agent-v2 /etc/sudoers.d/homelab-agent-v2
    sudo install -m 0644 -o root -g root node/etc/homelab-copy.recipient /etc/homelab-copy.recipient

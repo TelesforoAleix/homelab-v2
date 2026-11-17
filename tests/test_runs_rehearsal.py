@@ -1,6 +1,7 @@
 """Every rehearsal scenario has pass/fail coverage without a model or node."""
 
 import base64
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -63,15 +64,7 @@ class FakeAPI:
             deny = probe.CANARY in goal
             eval = "eval" in body
             status = "question" if question else "failed" if outside or deny else "done"
-            reason = (
-                "outside_allowed_files"
-                if outside
-                else "push_refused"
-                if deny
-                else "eval_kept"
-                if eval
-                else None
-            )
+            reason = "outside_allowed_files" if outside else "push_refused" if deny else None
             commits = []
             if status == "done" and body["mode"] == "write" and not eval:
                 self.refs[body["repository"], body["branch"]] = "b" * 40
@@ -90,7 +83,7 @@ class FakeAPI:
                 result["diff_base64"] = base64.b64encode(SECRET.encode()).decode()
             if self.fail == "status":
                 result["status"] = "escalated"
-            if self.fail == "reason":
+            if self.fail == "reason" or (self.fail == "eval_reason" and eval):
                 result["status_reason"] = "wrong"
             if self.fail == "diff" and eval:
                 result["diff_base64"] = None
@@ -170,6 +163,7 @@ def test_check_fails_on_wrong_status(rehearsal, check):
         ("outside", "reason"),
         ("deny", "reason"),
         ("ticket_eval", "diff"),
+        ("ticket_eval", "eval_reason"),
     ],
 )
 def test_each_independent_invariant_is_checked(rehearsal, check, failure):
@@ -339,3 +333,16 @@ def test_token_helper_never_passes_secret_in_arguments(monkeypatch, capsys):
     with pytest.raises(ValueError):
         node.github("DELETE", probe.PUBLIC, "git/refs/heads/main")
     assert not capsys.readouterr().out
+
+
+def test_boot_lock_tmpfiles_rule():
+    rule = Path(__file__).resolve().parents[1] / "node/etc/tmpfiles.d/homelab-task-run.conf"
+    assert rule.read_text().split() == [
+        "f",
+        "/run/lock/homelab-task-run.lock",
+        "0640",
+        "root",
+        "10001",
+        "-",
+        "-",
+    ]
