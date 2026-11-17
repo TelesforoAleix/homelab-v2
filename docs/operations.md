@@ -1865,9 +1865,11 @@ The database login comes from the same `HOMELAB_DB_PASSWORD` interpolation as th
    `sudo docker compose --profile runs build runs`.
 5. Run `sudo python3 tests/launcher_task_probe.py` (the original boundary checks, ownership/clone
    checks and both writable/read-only CLI probes), and `sudo homelab-check-fence --launcher`.
-   Require `PASS: read-only cli-run cannot write /work; run folder remains writable`.
-   The CLI probe holds `codex exec --help` on a pipe and checks actual writes in that same
-   container; it makes no model call. Also run the `--private` probe described below.
+   Require `PASS: cli-run without read_only runs with a writable /work mount`,
+   `PASS: read-only cli-run runs with a read-only /work mount; run folder stays writable`, and
+   `PASS: cli-run accepts a bounded prompt descriptor without a model call`.
+   The CLI probe runs `codex exec --help` and checks mounts from the installed launcher’s
+   arguments; it makes no model call. Also run the `--private` probe described below.
    The ownership probe
    creates and removes only its random scratch folder, clones the public platform `main`
    through the fixed shape and makes no model call or push.

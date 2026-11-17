@@ -374,6 +374,29 @@ def test_readonly_node_probe_checks_both_actual_work_mount_modes(tmp_path, monke
     monkeypatch.setattr(probe, "STATE", tmp_path)
     monkeypatch.setattr(probe.grp, "getgrnam", lambda _: SimpleNamespace(gr_gid=21900))
     monkeypatch.setattr(probe, "exists", lambda _: False)
+    launcher_requests = []
+
+    def run_arguments(request, profiles):
+        assert profiles == "profiles"
+        launcher_requests.append(request.copy())
+        suffix = ",readonly" if request.get("read_only") else ""
+        return [
+            "--mount",
+            "type=bind,src=/source,dst=/work" + suffix,
+            "--mount",
+            "type=bind,src=/run,dst=/run/factory",
+        ], "name"
+
+    fake_launcher = SimpleNamespace(
+        load_configuration=lambda: ("profiles", {}), run_arguments=run_arguments
+    )
+    monkeypatch.setattr(
+        probe.importlib.machinery,
+        "SourceFileLoader",
+        lambda name, path: SimpleNamespace(name=name, exec_module=lambda module: None),
+    )
+    monkeypatch.setattr(probe.importlib.util, "spec_from_loader", lambda *args: None)
+    monkeypatch.setattr(probe.importlib.util, "module_from_spec", lambda spec: fake_launcher)
 
     def client(image, group, uid, request, name):
         assert request["op"] in {"cli-create", "cli-remove"}
@@ -394,11 +417,35 @@ def test_readonly_node_probe_checks_both_actual_work_mount_modes(tmp_path, monke
     assert [request["op"] for request in requests] == ["cli-create", "cli-remove"] * 2
     assert "read_only" not in runs[0] and "stdin" not in runs[0]
     assert runs[1]["read_only"] is True and runs[1]["stdin"] is True
-    assert [request["command"] for request in runs] == [
-        ["python3", "-I", "-c", probe.WRITE_CHECK, mode] for mode in ("rw", "ro")
-    ]
+    assert all(request["command"] == ["codex", "exec", "--help"] for request in runs)
+    assert launcher_requests == runs
     assert not any(args[0] == "exec" for args in calls)
-    assert "cannot write /work; run folder remains writable" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert len(output.splitlines()) == 3
+    assert "read-only /work mount; run folder stays writable" in output
+
+
+@pytest.mark.parametrize(
+    ("work_mount", "run_mount", "read_only"),
+    [
+        (None, "type=bind,src=/run,dst=/run/factory", True),
+        ("type=bind,src=/work,dst=/work", "type=bind,src=/run,dst=/run/factory", True),
+        ("type=bind,src=/work,dst=/work,readonly", "type=bind,src=/run,dst=/run/factory", False),
+        (
+            "type=bind,src=/work,dst=/work,readonly",
+            "type=bind,src=/run,dst=/run/factory,readonly",
+            True,
+        ),
+    ],
+)
+def test_readonly_node_probe_rejects_bad_mounts(work_mount, run_mount, read_only):
+    from tests import launcher_task_probe as probe
+
+    arguments = ["--mount", run_mount]
+    if work_mount:
+        arguments += ["--mount", work_mount]
+    with pytest.raises(RuntimeError):
+        probe.check_cli_mounts(arguments, read_only)
 
 
 def test_private_clone_forwards_only_header_environment_and_records_no_credential(
