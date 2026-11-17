@@ -23,8 +23,8 @@ with socket.socket(socket.AF_UNIX) as connection:
     connection.settimeout(60)
     connection.connect('/run/homelab-launcher.sock')
     with open('/dev/null', 'wb') as output:
-        socket.send_fds(connection, [(json.dumps(request) + '\\n').encode()],
-                        [output.fileno(), output.fileno()])
+        descriptors = [output.fileno(), output.fileno()] if request['op'] == 'run' else []
+        socket.send_fds(connection, [(json.dumps(request) + '\\n').encode()], descriptors)
         with connection.makefile('rb') as stream:
             response = json.loads(stream.readline(65537))
 print(json.dumps(response))
@@ -183,9 +183,95 @@ def probe():
             raise RuntimeError("probe container cleanup failed")
 
 
+def ownership_probe():
+    """Create and clone through the socket; every write is in a task-owned container."""
+    image = docker("image", "inspect", "--format", "{{.Id}}", "homelab-task:2")
+    group = grp.getgrnam("homelab-launch").gr_gid
+    owner = pwd.getpwnam("homelab-task")
+    if owner.pw_uid in (0, 21020):
+        raise RuntimeError("invalid task owner")
+    token = "ownership-probe-" + uuid.uuid4().hex
+    work = WORK_ROOT / token
+    ids = []
+    try:
+        response = client(
+            image, group, 21020, {"op": "task-create", "work_id": token}, token + "-creator"
+        )
+        if response != {"ok": True} or work.stat().st_uid != owner.pw_uid:
+            raise RuntimeError("launcher did not create task-owned folder")
+        if work.stat().st_mode & 0o022:
+            raise RuntimeError("runner could write task folder")
+        print("PASS: launcher creates work owned by the existing task uid, never runs")
+        clone_id = token + "-clone"
+        ids.append(clone_id)
+        response = client(
+            image,
+            group,
+            21020,
+            {
+                "op": "run",
+                "profile": "task",
+                "shape": "clone",
+                "run_id": clone_id,
+                "work_id": token,
+                "repository": "TelesforoAleix/homelab-v2",
+                "branch": "main",
+            },
+            token + "-cloner",
+        )
+        if response != {"ok": True, "exit_code": 0} or not (work / ".git").is_dir():
+            raise RuntimeError("fixed clone failed")
+        if (work / ".git").stat().st_uid != owner.pw_uid:
+            raise RuntimeError("clone wrote as wrong owner")
+        print("PASS: fixed clone uses the proxy and writes as the task uid")
+        for field, value, expected in [
+            ("repository", "../refused", "invalid_repository"),
+            ("branch", "bad..ref", "invalid_branch"),
+            ("arguments", ["arbitrary"], "invalid_fields"),
+        ]:
+            run_id = token + "-" + field
+            ids.append(run_id)
+            response = client(
+                image,
+                group,
+                21020,
+                {
+                    "op": "run",
+                    "profile": "task",
+                    "shape": "clone",
+                    "run_id": run_id,
+                    "work_id": token,
+                    "repository": "TelesforoAleix/homelab-v2",
+                    "branch": "main",
+                    field: value,
+                },
+                token + "-bad-" + field,
+            )
+            if response != {"ok": False, "error": expected}:
+                raise RuntimeError("clone accepted nonfixed input")
+        print("PASS: clone refuses repository, ref and command injection")
+    finally:
+        # A client timeout may leave the fixed clone running. Stop only this
+        # probe's containers before asking the launcher to remove their work.
+        for run_id in ids:
+            name = "homelab-launcher-task-" + run_id
+            if exists(name):
+                docker("rm", "-f", name)
+        response = client(
+            image, group, 21020, {"op": "task-remove", "work_id": token}, token + "-remover"
+        )
+        if response != {"ok": True} or work.exists():
+            raise RuntimeError("launcher did not remove its work folder")
+        for run_id in ids:
+            (STATE / (run_id + ".json")).unlink(missing_ok=True)
+            (STATE / ("homelab-launcher-task-" + run_id + ".current")).unlink(missing_ok=True)
+    print("PASS: ownership probe leaves no work folder")
+
+
 if __name__ == "__main__":
     try:
         probe()
+        ownership_probe()
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         # Never echo container output or exception text from a privileged probe.
         raise SystemExit(

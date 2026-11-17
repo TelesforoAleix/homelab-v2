@@ -1682,6 +1682,157 @@ Dependents need neither: they are released as their dependencies finish.
 asked for, and what it refused. To allow another host, add a line to
 `node/opt/homelab-package-proxy/package-hosts`.
 
+### Runs service: installed, disabled
+
+`runs` is the container version of the task runner, in the platform image, running as
+`21020:21020`. Its command is `python -m homelab.runs`. It is defined only under the Compose
+`runs` profile, with `restart: "no"`; normal `homelab.service` starts leave it disabled.
+**Keep `homelab-task-runner.service` as the only runner in this installation.** Enabling the
+new service and rehearsing a real task belong to the later switch, after owner review.
+The host's two task scripts and runner unit are unchanged.
+
+The queue/store, attempt order, one retry with check/review feedback, one review fix round,
+check, commit, costs and eval-attempt retention follow the host runner. CLI routes keep the
+existing launcher `cli-run` profile and their 20-minute turn limit. Networkless `data` task
+containers export/import regular files through pipes; only allowed, unpinned regular files
+return. Deletions, links, Git metadata and `.venv` do not return. The launcher creates the
+CLI's `ticket-<id>-<attempt>` work/run folders as uid 21000 and removes them after a turn.
+Neither those folders nor task copies ever belong to `runs`.
+
+`runs` asks the launcher to create each fresh task folder as the existing `homelab-task`
+account (neither root nor uid 21020). The `task-work` parent must remain root-owned 0755.
+The only work mount in `runs` is read-only. The launcher rejects overlapping shapes and
+folder lifecycle operations on one work id, including CLI transfers, so another container
+cannot swap a bind source during validation. Clone happens in a fixed `task` clone shape:
+only `/work` is bound, no logins, on the existing `homelab-fence` network through
+`http://cli-proxy:8888`. The launcher validates repository and branch and invokes system Git
+without a shell, using `--template= --no-tags --single-branch --branch`, an explicit GitHub
+HTTPS URL and `/work`; hooks and credential helpers are off. The other five shapes retain
+their networks, mounts, limits and commands. The launcher also offers authorized
+`task-create`/`task-remove`, `cli-create`/`cli-remove`, `task-image`, `task-recover` and `ping`
+operations. Task removal is fd-based and does not follow links; Factory provisioning/data
+access is restricted to task-attempt names and requires both `task` and `cli-run` permission.
+
+For pushes, a short-lived RS256 App JWT is signed with OpenSSL. Each push requests a fresh
+installation token restricted to that one repository with contents-write/metadata-read
+permissions. Git receives the authorization header only through its environment. Its URL
+and refspec are explicit, credential helpers/hooks are off, and a temporary Git directory
+exposes only the protected clone's objects/refs, never its config. The remote default branch
+and `main` are refused. The existing deny-list/canary scan runs before each push; it still
+fails closed for unknown visibility or an unreadable list. Eval attempts never push.
+See [GitHub's JWT contract](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
+and [installation-token parameters](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app).
+No Python JWT dependency is added.
+
+The new review parser requires exactly one line equal to `VERDICT: PASS` or `VERDICT: FIX`
+anywhere in the final assistant message. Zero or multiple lines end `review_failed`.
+Other lines become bounded review notes. This does not change the host runner's parser.
+Private logs and run records live under `/srv/homelab/runs`, owned by uid 21020, mode 0700;
+evals retain the same `eval/<set>/<case>/<hash>/<run id>` structure there. Final diff exports
+still go to the API's existing `task-runs/eval-diffs` directory through its separate bind.
+The `runs` journal contains ids and fixed reasons only. Failure notices use the same bounded
+`Task: <id> <slice> <status> <reason>` text, sent directly to the existing allowlisted chats.
+Notice failures do not change task status; no host/root helper is called.
+
+`runs` holds Postgres session advisory lock `(157442, 1)` for its lifetime; legacy claim and
+recovery commands take the same lock for their process. Before taking the lock, again after
+acquiring it, and before each queue turn, `runs` reads the host service's `cgroup.events` from
+a read-only bind of `/sys/fs/cgroup/system.slice`. A populated
+`homelab-task-runner.service` refuses startup with `legacy_runner_active`; unreadable/missing
+host state fails closed. The parent bind observes service recreation, unlike a file bind.
+If the old service starts later its claims cannot acquire the database lock. A session
+watchdog stops live containers on database connection loss; startup cleans up the caller's
+recorded launcher containers before recovering queue claims. Neither runner may bypass this
+check by unsetting or replacing the cgroup mount.
+
+The service mounts these paths, with `create_host_path: false` throughout:
+
+| Host path | Container path | Access / preparation |
+|---|---|---|
+| `/run/homelab-launcher.sock` | same | Socket; supplementary group from `HOMELAB_LAUNCH_GID` |
+| `/sys/fs/cgroup/system.slice` | `/run/host-services` | Read-only service state; no systemd API |
+| `/run/lock` | `/run/host-locks` | Read-only parent of the unchanged manual-run flock |
+| `/etc/homelab/runs` | `/run/secrets` | Read-only per-service credential copies |
+| `/srv/homelab/task-work` | same | Read-only, root-controlled parent, task-owned children |
+| `/srv/homelab/runs` | same | New private state, uid 21020, 0700 |
+| `${HOMELAB_TASK_TOKENS_PATH:-/srv/homelab/task-tokens}` | `/srv/homelab/task-tokens` | Token files; switch preparation below |
+| `${HOMELAB_TASK_COSTS_PATH:-/srv/homelab/task-costs}` | `/srv/homelab/task-costs` | Cost files; switch preparation below |
+| `${HOMELAB_TASK_RUNS_PATH:-/srv/homelab/task-runs}/eval-diffs` | `/srv/homelab/runs/eval-diffs` | Same exports read-only in API; switch preparation below |
+
+The orchestrator creates `/etc/homelab/runs` as uid/gid 21020, mode 0700. Every file below
+is owned by uid/gid 21020, mode 0400; never commit their values or bake them into an image.
+
+| File in that directory | Source / purpose |
+|---|---|
+| `runs-app.pem` | Copy of `/etc/homelab/runs-app.pem`; App signing key |
+| `runs-app.json` | Copy of `/etc/homelab/runs-app.json`, exactly `app_id` and `installation_id` integer fields |
+| `deny-list` | Read-only copy of `/etc/homelab/deny-list`, including its current entries; code adds the canary |
+| `bot-token` | Per-service copy of the existing notifier's Telegram token, supplied by the orchestrator |
+| `bot-allowlist` | Copy of `/etc/homelab-telegram-bot/allowlist`, the same notice recipients |
+
+A refreshed deny list requires refreshing its service copy before any run. Obtain the bot
+token from the owner's provisioned credential source; do not put it in a command argument,
+environment file or journal. The App's original root-only key remains 0600. App ids are
+provisioned on the node, never in repository configuration. Set `HOMELAB_LAUNCH_GID` in the
+node's existing `.env` to `getent group homelab-launch`'s gid; the closed default 65534 gives
+no launcher access. Supplementary group 10001 supplies API/gateway shared-file access.
+The database login comes from the same `HOMELAB_DB_PASSWORD` interpolation as the API.
+
+**After merge and owner review, installation only:**
+
+1. In `/srv/homelab/homelab-v2`, run `git pull --ff-only` by hand. Wait for launcher
+   clients to be idle. Save the installed launcher, profile metadata and launcher unit for
+   rollback. Show each diff against the committed `node/` file before
+   installing. Parse the Python/JSON and run `systemd-analyze verify` on the launcher unit
+   and socket. Install root:root, 0755 for the script and 0644 for metadata/unit.
+2. The launcher sandbox needs `/srv/homelab/task-work` in `ReadWritePaths` so it can create
+   task-owned folders. Keep every other sandbox setting. Run `systemctl daemon-reload`,
+   stop `homelab-launcher.service`, then restart `homelab-launcher.socket`. Restart Factory's
+   runner and sessions containers with their existing deployment commands so their file
+   binds see the new socket inode.
+3. Create the private state directory and per-service files listed above. Record the launcher
+   group gid in the private `.env`. Do not change token, cost or eval-export permissions
+   while the old runner is active; they are switch prerequisites.
+4. With the checkout updated, run `sudo systemctl restart homelab.service`. Verify that
+   `runs` has no running container.
+   Validate Compose with the profile off and on. Build the optional service explicitly:
+   `sudo docker compose --profile runs build runs`.
+5. Run `sudo python3 tests/launcher_task_probe.py` (the original boundary checks plus the
+   ownership/clone checks), and `sudo homelab-check-fence --launcher`. The ownership probe
+   creates and removes only its random scratch folder, clones the public platform `main`
+   through the fixed shape and makes no model call or push.
+6. With `systemctl is-active homelab-task-runner.service` reporting `active`, run
+   `sudo docker compose --profile runs run --rm --no-deps runs`. Require exit 2 and
+   `runner refused reason=legacy_runner_active`, with no recovery or claim. Verify again
+   that no `runs` container is running. Leave the old runner enabled and active.
+
+**Later switch prerequisites, not part of this installation:** stop and disable the host
+runner first, verify its cgroup is absent/empty and all task containers have stopped, then
+prepare token/cost directories for uid 21020 and group 10001. Prepare
+`/run/lock/homelab-task-run.lock` as root:10001, mode 0640, without replacing a live
+lock inode. `runs` holds an exclusive flock through its read-only bind, so the unchanged
+root script also refuses concurrent manual runs. A missing/unreadable lock fails closed;
+recreate this ephemeral file after reboot before enabling `runs`. Tokens need owner 21020,
+group 10001, mode 0750; costs need owner 21020, group 10001, mode 0770. Final diff exports
+need owner 21020, group 10001, mode 0750 (files 0640). Do not change gateway configuration or
+mounts. Run the rehearsal before changing startup policy. The explicit enable command is
+`sudo docker compose --profile runs up -d runs`; ordinary service starts still exclude it.
+Do not set `COMPOSE_PROFILES=runs` globally during this installation.
+
+**Launcher socket restarts must be followed by restarting `runs` whenever it is enabled:**
+`sudo docker compose --profile runs restart runs`. Its healthcheck sends `ping` through the
+bound socket; a retained dead inode becomes `unhealthy` rather than appearing ready. Docker
+health does not restart it automatically. Restart Factory's runner and sessions containers
+for the same reason. A failed socket probe prevents work; it does not grant a fallback path.
+
+Rollback: stop/remove any optional `runs` container before starting the old runner. Leave the
+profile disabled, restore the previously installed launcher/metadata/unit after visible diffs,
+validate the unit, run `systemctl daemon-reload`, stop the launcher service and restart its socket, then
+restart the Factory socket clients. No task data or secrets need deletion. If a later switch
+changed shared-directory ownership, restore the original root:10001 token/cost/export modes
+before re-enabling the host runner (0750/0770/0750 respectively). Preserve private new run
+records and existing API exports. Never recover the queue with two active runners.
+
 ### Eval tasks
 
 Add `"eval": {"set": "T", "case": "example", "configuration": "base"}` to a task
@@ -1813,6 +1964,12 @@ sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-dump node/usr/l
 ```
 
 ## Rebuilding the node
+
+Install the disabled container runner, launcher folder/clone support and per-service secret
+copies using [Runs service: installed, disabled](#runs-service-installed-disabled). Include
+the launcher sandbox write allowance in its installed unit, validate it and restart every
+socket client after the launcher socket. Keep the old host runner active and `runs` disabled;
+the sole startup test must refuse it before claim.
 
 Install the task launcher's three host files and run its non-root boundary probe using
 [Task launcher profile](#task-launcher-profile), after merge and the owner's go. This adds
@@ -2725,7 +2882,7 @@ cannot inherit host values. Prepare fixes `HTTPS_PROXY=http://package-proxy:8888
 All shapes use the approved immutable id of `homelab-task:2`, `--pull never`, `--rm`, `--init`,
 `--cap-drop ALL`, `no-new-privileges`, a read-only root, 8g memory/swap, 2 CPUs, 512 PIDs and
 no Docker logs. `/tmp` and `/home/task` are 4g tmpfs mounts with today's exec/nosuid/nodev,
-ownership and modes. Only agent/review open stdin. Names are
+ownership and modes. Among these five shapes, only agent/review open stdin. Names are
 `homelab-launcher-task-<run_id>`, separate from both existing runner and fence containers.
 The caller owns the deadline and uses `stop`; the launcher adds no shape timeout. It forces
 removal of any remaining task container after the Docker client exits or fails. Status,
@@ -2766,7 +2923,9 @@ sudo systemctl restart homelab-launcher.socket
 sudo python3 tests/launcher_task_probe.py
 ```
 
-Require all seven PASS lines. The root orchestrator creates a disposable task-owned scratch
+Require the original seven PASS lines and four ownership/clone PASS lines. The latter verify
+launcher-created ownership, the fixed proxied clone, input refusal and scratch cleanup.
+The root orchestrator creates a disposable task-owned scratch
 folder with empty `.git`/`.venv` directories. Its test container is uid 21020, offline,
 with only the launcher socket and its group added, never the Docker socket. It starts a
 harmless `check` shape that verifies its non-root user and read-only nested mounts, then

@@ -15,7 +15,7 @@ import psycopg
 
 from homelab.settings import get_settings
 from homelab.tasks.runs import claimed_goal, lock, lock_task
-from homelab.tasks.store import QUEUE
+from homelab.tasks.store import QUEUE, RUNNER_LOCK
 
 FIELDS = (
     "id",
@@ -129,6 +129,9 @@ def main(argv: list[str] | None = None) -> int:
         print("usage: python -m homelab.tasks.claim [--recover]", file=sys.stderr)
         return 2
     with psycopg.connect(get_settings().database_url) as connection:
+        if not connection.execute("SELECT pg_try_advisory_lock(%s, %s)", RUNNER_LOCK).fetchone()[0]:
+            print("homelab.tasks.claim: runner_active", file=sys.stderr)
+            return 2
         result = recover(connection) if args else claim(connection)
     print(json.dumps(result))
     return 0

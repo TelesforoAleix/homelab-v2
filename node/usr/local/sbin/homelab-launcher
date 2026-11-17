@@ -9,6 +9,7 @@ import importlib.util
 import json
 import logging
 import os
+import pwd
 import re
 import shutil
 import socket
@@ -70,7 +71,10 @@ TASK_STRING_LIMIT = 32768
 TASK_ARGUMENT_LIMIT = 256
 TASK_DATA_LIMIT = 48 * 1024
 TASK_MODEL_ENV = [
-    "HOMELAB_TASK_TOKEN", "HOMELAB_TASK_PURPOSE", "HOMELAB_PI_MODELS", "HOMELAB_PI_SETTINGS"
+    "HOMELAB_TASK_TOKEN",
+    "HOMELAB_TASK_PURPOSE",
+    "HOMELAB_PI_MODELS",
+    "HOMELAB_PI_SETTINGS",
 ]
 TASK_SHAPES = {
     "prepare": {
@@ -78,7 +82,9 @@ TASK_SHAPES = {
         "mounts": {"work": "/work:rw", "git": "/work/.git:ro"},
         "stdin": False,
         "environment": [
-            "HTTPS_PROXY=http://package-proxy:8888", "UV_HTTP_TIMEOUT=120", "HOMELAB_PI_VERSION"
+            "HTTPS_PROXY=http://package-proxy:8888",
+            "UV_HTTP_TIMEOUT=120",
+            "HOMELAB_PI_VERSION",
         ],
         "entrypoint": None,
         "entry": ["sh", "-c"],
@@ -116,6 +122,73 @@ TASK_SHAPES = {
         "entry": ["-I", "-c"],
     },
 }
+TASK_SHAPES["clone"] = {
+    "network": "homelab-fence",
+    "mounts": {"work": "/work:rw"},
+    "stdin": False,
+    "environment": [
+        "HTTPS_PROXY=http://cli-proxy:8888",
+        "HTTP_PROXY=http://cli-proxy:8888",
+        "GIT_CONFIG_NOSYSTEM=1",
+        "GIT_CONFIG_GLOBAL=/dev/null",
+        "GIT_TERMINAL_PROMPT=0",
+    ],
+    "entrypoint": "/usr/bin/git",
+    "entry": [],
+}
+TASK_SHAPES["data"] = {
+    "network": "none",
+    "mounts": {"work": "/work:rw"},
+    "stdin": True,
+    "environment": [],
+    "entrypoint": "/usr/bin/python3",
+    "entry": ["-I", "-c"],
+}
+REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+
+def branch_name(value):
+    # git-check-ref-format --branch rules, without invoking anything supplied by the caller.
+    if (
+        type(value) is not str
+        or not value
+        or value.startswith("-")
+        or value in {"@", "HEAD"}
+        or any(ord(c) < 33 or ord(c) == 127 or c in "~^:?*[\\" for c in value)
+        or ".." in value
+        or "@{" in value
+        or any(
+            not part or part.startswith(".") or part.endswith((".", ".lock"))
+            for part in value.split("/")
+        )
+    ):
+        raise Refused("invalid_branch")
+    return value
+
+
+def clone_arguments(request):
+    fields(request, ("op", "profile", "run_id", "work_id", "shape", "repository", "branch"))
+    repository = request["repository"]
+    if type(repository) is not str or not REPOSITORY.fullmatch(repository) or ".." in repository:
+        raise Refused("invalid_repository")
+    branch = branch_name(request["branch"])
+    return [
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "credential.helper=",
+        "clone",
+        "--template=",
+        "--no-tags",
+        "--single-branch",
+        "--branch",
+        branch,
+        "--",
+        f"https://github.com/{repository}.git",
+        "/work",
+    ]
+
+
 TASK_PROFILE = {
     "image": TASK_IMAGE,
     "limits": {"memory": "8g", "memory_swap": "8g", "cpus": "2", "pids": 512},
@@ -321,44 +394,85 @@ def bounded_task_string(value, reason):
 
 
 def task_arguments(request):
-    fields(request, ("op", "profile", "run_id", "work_id", "shape", "env", "arguments"))
-    shape = request["shape"]
+    shape = request.get("shape")
     if type(shape) is not str or shape not in TASK_SHAPES:
         raise Refused("unknown_shape")
     layout = TASK_SHAPES[shape]
-    environment = request["env"]
-    allowed = {name for name in layout["environment"] if "=" not in name}
-    if type(environment) is not dict or environment.keys() != allowed:
-        raise Refused("invalid_environment")
-    size = sum(bounded_task_string(value, "invalid_environment") for value in environment.values())
-    arguments = request["arguments"]
-    if type(arguments) is not list or not 1 <= len(arguments) <= TASK_ARGUMENT_LIMIT:
-        raise Refused("invalid_arguments")
-    size += sum(bounded_task_string(value, "invalid_arguments") for value in arguments)
-    if size > TASK_DATA_LIMIT:
-        raise Refused("task_data_too_large")
+    if shape == "clone":
+        arguments = clone_arguments(request)
+        environment = {}
+    else:
+        fields(
+            request,
+            ("op", "profile", "run_id", "work_id", "shape", "env", "arguments"),
+            ("workspace",) if shape == "data" else (),
+        )
+        environment = request["env"]
+        allowed = {name for name in layout["environment"] if "=" not in name}
+        if type(environment) is not dict or environment.keys() != allowed:
+            raise Refused("invalid_environment")
+        size = sum(
+            bounded_task_string(value, "invalid_environment") for value in environment.values()
+        )
+        arguments = request["arguments"]
+        if type(arguments) is not list or not 1 <= len(arguments) <= TASK_ARGUMENT_LIMIT:
+            raise Refused("invalid_arguments")
+        size += sum(bounded_task_string(value, "invalid_arguments") for value in arguments)
+        if size > TASK_DATA_LIMIT:
+            raise Refused("task_data_too_large")
     name = "homelab-launcher-task-" + identifier(request["run_id"])
-    work = TASK_WORK_ROOT / identifier(request["work_id"])
+    workspace = request.get("workspace", "task")
+    if workspace not in ("task", "cli"):
+        raise Refused("invalid_role")
+    if workspace == "cli" and not re.fullmatch(r"ticket-[0-9]+-[0-9]+", request["work_id"]):
+        raise Refused("invalid_identifier")
+    root = TASK_WORK_ROOT if workspace == "task" else fence.WORK_ROOT
+    work = root / identifier(request["work_id"])
     with directory(work) as fd:
         info = os.fstat(fd)
         uid, gid = info.st_uid, info.st_gid
-    if uid == 0:
+    if uid in (0, 21020):
         raise Refused("invalid_owner")
-    # All task copies have real .git directories, including commit/review where
-    # .git is covered by the work mount. No work-copy content is read on the host.
-    with directory(work / ".git"):
-        pass
+    if shape not in ("clone", "data"):
+        with directory(work / ".git"):
+            pass
     if "venv" in layout["mounts"]:
         with directory(work / ".venv"):
             pass
     args = [
-        "docker", "run", "--rm", "--name", name, "--pull", "never", "--init",
-        "--user", f"{uid}:{gid}", "--cap-drop", "ALL",
-        "--security-opt", "no-new-privileges", "--read-only",
-        "--tmpfs", TASK_PROFILE["tmpfs"][0],
-        "--tmpfs", TASK_PROFILE["tmpfs"][1].replace("<uid>", str(uid)).replace("<gid>", str(gid)),
-        "--memory", "8g", "--memory-swap", "8g", "--cpus", "2", "--pids-limit", "512",
-        "--log-driver", "none", "--network", layout["network"], "--workdir", "/work",
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        name,
+        "--pull",
+        "never",
+        "--init",
+        "--user",
+        f"{uid}:{gid}",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--read-only",
+        "--tmpfs",
+        TASK_PROFILE["tmpfs"][0],
+        "--tmpfs",
+        TASK_PROFILE["tmpfs"][1].replace("<uid>", str(uid)).replace("<gid>", str(gid)),
+        "--memory",
+        "8g",
+        "--memory-swap",
+        "8g",
+        "--cpus",
+        "2",
+        "--pids-limit",
+        "512",
+        "--log-driver",
+        "none",
+        "--network",
+        layout["network"],
+        "--workdir",
+        "/work",
     ]
     sources = {"work": work, "git": work / ".git", "venv": work / ".venv"}
     for role, mount in layout["mounts"].items():
@@ -507,6 +621,7 @@ class Launcher:
         self.profiles, self.callers, self.state = profiles, callers, state
         self.lock = threading.Lock()
         self.active = set()
+        self.active_work = set()
         self.context = threading.local()
 
     def authorize(self, uid, profile):
@@ -567,6 +682,48 @@ class Launcher:
         )
 
     def execute(self, uid, request, descriptors):
+        # A caller cannot use a second task container (or remove/recreate) to swap
+        # a bind source between validation and Docker's mount. Fence clients keep
+        # their existing concurrency outside the task-attempt namespace.
+        key = None
+        if isinstance(request, dict):
+            operation = request.get("op")
+            profile = request.get("profile")
+            if operation == "run" and profile == "task":
+                self.authorize(uid, "task")
+                workspace = request.get("workspace", "task")
+                if workspace not in ("task", "cli"):
+                    raise Refused("invalid_role")
+                key = workspace, identifier(request.get("work_id"))
+            elif operation in ("task-create", "task-remove", "cli-create", "cli-remove"):
+                self.authorize(uid, "task")
+                key = (
+                    ("cli" if operation.startswith("cli-") else "task"),
+                    identifier(request.get("work_id")),
+                )
+            elif operation == "run" and profile == "cli-run":
+                folders = request.get("folders")
+                work = folders.get("work") if isinstance(folders, dict) else None
+                if isinstance(work, str) and re.fullmatch(r"ticket-[0-9]+-[0-9]+", work):
+                    self.authorize(uid, "cli-run")
+                    key = "cli", work
+            elif operation in ("own", "remove") and request.get("role") in ("work", "run"):
+                folder_id = request.get("folder_id")
+                if isinstance(folder_id, str) and re.fullmatch(r"ticket-[0-9]+-[0-9]+", folder_id):
+                    key = "cli", folder_id
+        if key is None:
+            return self._execute(uid, request, descriptors)
+        with self.lock:
+            if key in self.active_work:
+                raise Refused("work_active")
+            self.active_work.add(key)
+        try:
+            return self._execute(uid, request, descriptors)
+        finally:
+            with self.lock:
+                self.active_work.discard(key)
+
+    def _execute(self, uid, request, descriptors):
         if str(uid) not in self.callers:
             raise Refused("unknown_uid")
         if type(request) is not dict or type(request.get("op")) is not str:
@@ -574,7 +731,9 @@ class Launcher:
         operation = request["op"]
         if operation == "run":
             task_stdin = request.get("profile") == "task" and request.get("shape") in (
-                "agent", "review"
+                "agent",
+                "review",
+                "data",
             )
             if len(descriptors) != 2 + task_stdin:
                 raise Refused("invalid_descriptors")
@@ -589,6 +748,8 @@ class Launcher:
             if type(profile) is not str or profile not in self.profiles:
                 raise Refused("unknown_profile")
             self.authorize(uid, profile)
+            if profile == "task" and request.get("workspace") == "cli":
+                self.authorize(uid, "cli-run")
             self.context.profile = profile
             args, name = run_arguments(request, self.profiles)
             run_id = request["run_id"]
@@ -602,7 +763,9 @@ class Launcher:
                     raise Refused("run_exists") from None
                 self.active.add(name)
             code = 125
-            task_environment = {"PATH": os.defpath, **request["env"]} if profile == "task" else None
+            task_environment = (
+                {"PATH": os.defpath, **request.get("env", {})} if profile == "task" else None
+            )
             try:
                 try:
                     code = subprocess.run(
@@ -634,6 +797,71 @@ class Launcher:
             return {"ok": True, "exit_code": code}
         if descriptors:
             raise Refused("invalid_descriptors")
+        if operation == "task-image":
+            self.authorize(uid, "task")
+            fields(request, ("op",))
+            return {"ok": True, "image": approved_image(TASK_IMAGE)}
+        if operation == "ping":
+            fields(request, ("op",))
+            return {"ok": True}
+        if operation in ("task-create", "task-remove", "cli-create", "cli-remove"):
+            self.authorize(uid, "task")
+            fields(request, ("op", "work_id"))
+            work_id = identifier(request["work_id"])
+            if operation.startswith("cli-"):
+                self.authorize(uid, "cli-run")
+                if not re.fullmatch(r"ticket-[0-9]+-[0-9]+", work_id):
+                    raise Refused("invalid_identifier")
+                roots, owner = (fence.WORK_ROOT, fence.RUN_ROOT), (fence.UID, fence.GID)
+            else:
+                account = pwd.getpwnam("homelab-task")
+                roots, owner = (TASK_WORK_ROOT,), (account.pw_uid, account.pw_gid)
+            if owner[0] in (0, 21020):
+                raise Refused("invalid_owner")
+            with self.lock:
+                if operation.endswith("create"):
+                    # Reject collisions before creating either Factory folder.
+                    for root in roots:
+                        with directory(root) as parent:
+                            try:
+                                os.stat(work_id, dir_fd=parent, follow_symlinks=False)
+                            except FileNotFoundError:
+                                continue
+                            raise FileExistsError(work_id)
+                for root in roots:
+                    with directory(root) as parent:
+                        info = os.fstat(parent)
+                        if info.st_uid != 0 or info.st_mode & 0o022:
+                            raise Refused("unsafe_work_root")
+                        if operation.endswith("create"):
+                            os.mkdir(
+                                work_id, 0o755 if root == TASK_WORK_ROOT else 0o700, dir_fd=parent
+                            )
+                            with directory(root / work_id) as child:
+                                os.fchown(child, *owner)
+                                # The host unit uses UMask=0077; runs needs read traversal.
+                                os.fchmod(child, 0o755 if root == TASK_WORK_ROOT else 0o700)
+                        else:
+                            try:
+                                remove(root / work_id)
+                            except FileNotFoundError:
+                                pass
+            return {"ok": True}
+        if operation == "task-recover":
+            self.authorize(uid, "task")
+            fields(request, ("op",))
+            # Only this caller's persisted launch records authorize cleanup. Factory is separate.
+            for path in self.state.glob("*.json"):
+                record = self.read_record(uid, path.stem) if uid == 0 else None
+                if record is None:
+                    raw = decode_json(protected_read(path, 0o600))
+                    if raw["uid"] != uid:
+                        continue
+                    record = self.read_record(uid, path.stem)
+                if record["profile"] in ("task", "cli-run") and self.is_current(path.stem, record):
+                    if self.container_exists(record["name"]):
+                        self.docker("rm", "-f", record["name"])
+            return {"ok": True}
         if operation in ("own", "remove"):
             fields(request, ("op", "role", "folder_id"))
             if type(request["role"]) is not str:

@@ -55,7 +55,10 @@ Solid parts are built; dashed parts are planned.
 then judges the result with a pinned check. Separate containers prepare, work, check and commit.
 The [fixed container launcher](docs/operations.md#install-the-fixed-fence-launcher) also offers
 these task shapes to uid 21020 (`homelab-runs`), alongside its Factory profiles. The host task
-runner continues to start its own containers; it does not use the new profile yet.
+runner continues to start its own containers. The platform image also contains an
+[unprivileged `runs` service](docs/operations.md#runs-service-installed-disabled), installed under
+the opt-in Compose `runs` profile and disabled. It uses the launcher for every container and
+repository-scoped GitHub App tokens for pushes; the host runner remains the only active runner.
 Only the agent reaches LiteLLM, on `homelab-tasks`, with a one-run token for its purpose and a
 request budget; prepare reaches only the package indexes, through a proxy.
 Tasks are [submitted](ARCHITECTURE.md#task-store) as a file to a durable store and queue in
@@ -124,6 +127,7 @@ Running the stack needs a provisioned node; see the [operator runbook](docs/oper
 | `src/homelab/knowledge/` | LlamaIndex ingestion and retrieval |
 | `src/homelab/jobs/` | Procrastinate tasks and worker |
 | `src/homelab/tasks/` | Run/task records and the submit, claim and finish commands |
+| `src/homelab/runs/` | Installed, disabled container task runner and launcher client |
 | `config/litellm.yaml` | Model purposes and routes |
 | `node/` | Host files at their installed paths (table entries are merged) |
 | `mac/` | Usage profiles, measurements, model router and action listener |
