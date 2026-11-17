@@ -3040,8 +3040,9 @@ sudo python3 tests/launcher_task_probe.py
 ```
 
 Require the original seven PASS lines, four ownership/clone PASS lines and three CLI PASS lines.
-The CLI probes check writable defaults, read-only work with writable run output, and bounded
-prompt stdin without a model call. With `--private`, require a fifteenth private-clone PASS.
+The CLI probes run the write checks as the `cli-run` command, checking writable defaults,
+read-only work with writable run output, and bounded prompt stdin without a model call.
+With `--private`, require a fifteenth private-clone PASS.
 The ownership/clone checks verify
 launcher-created ownership, the fixed proxied clone, input refusal and scratch cleanup.
 The root orchestrator creates a disposable task-owned scratch

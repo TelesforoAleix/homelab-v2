@@ -28,6 +28,10 @@ with socket.socket(socket.AF_UNIX) as connection:
     connection.connect('/run/homelab-launcher.sock')
     with open('/dev/null', 'wb') as output:
         descriptors = [output.fileno(), output.fileno()] if request['op'] == 'run' else []
+        if request.get('stdin'):
+            source = os.memfd_create('probe-input', os.MFD_CLOEXEC)
+            os.write(source, b'{"goal":"probe","assets":[]}')
+            descriptors.append(source)
         socket.send_fds(connection, [(json.dumps(request) + '\\n').encode()], descriptors)
         with connection.makefile('rb') as stream:
             response = json.loads(stream.readline(65537))
@@ -278,37 +282,6 @@ def ownership_probe():
     print("PASS: ownership probe leaves no work folder")
 
 
-# Fill a pipe so `codex exec --help` waits in the real cli-run container without a model call.
-# The orchestrator checks writes in that container, then signals the socket client to drain it.
-BLOCKING_CLIENT = """import json, os, signal, socket, sys, threading
-read, write = os.pipe()
-os.set_blocking(write, False)
-try:
-    while True:
-        os.write(write, b'x' * 4096)
-except BlockingIOError:
-    pass
-os.set_blocking(write, True)
-ready = threading.Event()
-signal.signal(signal.SIGUSR1, lambda *_: ready.set())
-def drain():
-    ready.wait()
-    while os.read(read, 65536):
-        pass
-threading.Thread(target=drain, daemon=True).start()
-with socket.socket(socket.AF_UNIX) as connection:
-    connection.settimeout(60)
-    connection.connect('/run/homelab-launcher.sock')
-    descriptors = [write, write]
-    if json.loads(sys.argv[1]).get('stdin'):
-        source = os.memfd_create('probe-input', os.MFD_CLOEXEC)
-        os.write(source, b'{"goal":"probe","assets":[]}')
-        descriptors.append(source)
-    socket.send_fds(connection, [(sys.argv[1] + '\\n').encode()], descriptors)
-    with connection.makefile('rb') as stream:
-        result = json.loads(stream.readline(65537))
-assert result == {'ok': True, 'exit_code': 0}
-"""
 WRITE_CHECK = """import errno, pathlib, sys
 work = pathlib.Path('/work/probe-write')
 try:
@@ -344,64 +317,13 @@ def readonly_probe():
                 "folders": {"work": work_id, "run": work_id},
                 "tool": "codex",
                 "exports": [],
-                "command": ["codex", "exec", "--help"],
+                "command": ["python3", "-I", "-c", WRITE_CHECK, "ro" if read_only else "rw"],
             }
             if read_only:
                 request["read_only"] = True
                 request["stdin"] = True
-            docker(
-                "run",
-                "--detach",
-                "--name",
-                caller,
-                "--pull",
-                "never",
-                "--network",
-                "none",
-                "--user",
-                "21020:21020",
-                "--group-add",
-                str(group),
-                "--cap-drop",
-                "ALL",
-                "--security-opt",
-                "no-new-privileges",
-                "--read-only",
-                "--log-driver",
-                "none",
-                "--memory",
-                "256m",
-                "--pids-limit",
-                "64",
-                "--mount",
-                "type=bind,src=/run/homelab-launcher.sock,dst=/run/homelab-launcher.sock",
-                "--entrypoint",
-                "/usr/bin/python3",
-                image,
-                "-I",
-                "-c",
-                BLOCKING_CLIENT,
-                json.dumps(request),
-            )
-            deadline = time.monotonic() + 20
-            while not docker("ps", "-q", "--filter", f"name=^/{container}$"):
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("CLI probe did not start")
-                time.sleep(0.1)
-            docker(
-                "exec",
-                "--user",
-                "21000:21000",
-                container,
-                "python3",
-                "-I",
-                "-c",
-                WRITE_CHECK,
-                "ro" if read_only else "rw",
-            )
-            docker("kill", "--signal=USR1", caller)
-            if docker("wait", caller) != "0":
-                raise RuntimeError("CLI help failed")
+            if client(image, group, 21020, request, caller) != {"ok": True, "exit_code": 0}:
+                raise RuntimeError("CLI write check failed")
             print(
                 "PASS: read-only cli-run cannot write /work; run folder remains writable"
                 if read_only
