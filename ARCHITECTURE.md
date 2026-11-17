@@ -902,7 +902,7 @@ Per-service secret copies are read-only; logs retain ids and fixed codes, never 
 or task content. The healthcheck requires an answering launcher socket. Because Compose binds
 the socket file's inode, restart `runs` after restarting the launcher socket, as with Factory's
 runner and sessions containers. Provisioning, switch prerequisites and rollback are in
-[operations](docs/operations.md#runs-service-installed-disabled).
+[operations](docs/operations.md#runs-service).
 
 ## Jobs
 
