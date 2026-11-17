@@ -37,6 +37,23 @@ with socket.socket(socket.AF_UNIX) as connection:
             response = json.loads(stream.readline(65537))
 print(json.dumps(response))
 """
+RUN_CLIENT = """import json, os, socket, sys
+assert os.getuid() == int(sys.argv[1]) != 0
+request = json.loads(sys.argv[2])
+with socket.socket(socket.AF_UNIX) as connection:
+    connection.settimeout(60)
+    connection.connect('/run/homelab-launcher.sock')
+    with open('/dev/null', 'wb') as output:
+        descriptors = [output.fileno(), output.fileno()]
+        if request.get('stdin'):
+            source = os.memfd_create('probe-input', os.MFD_CLOEXEC)
+            os.write(source, b'{"goal":"probe","assets":[]}')
+            descriptors.append(source)
+        socket.send_fds(connection, [(json.dumps(request) + '\\n').encode()], descriptors)
+        with connection.makefile('rb') as stream:
+            response = json.loads(stream.readline(65537))
+sys.exit(0 if response == {'ok': True, 'exit_code': 0} else 1)
+"""
 
 
 def docker(*arguments, **kwargs):
@@ -45,54 +62,58 @@ def docker(*arguments, **kwargs):
     ).stdout.strip()
 
 
-def client(image, group, uid, request, name, *, private=False):
-    return json.loads(
-        docker(
-            "run",
-            "--rm",
-            "--name",
-            name,
-            "--pull",
-            "never",
-            "--network",
-            "none",
-            "--user",
-            f"{uid}:{uid}",
-            "--group-add",
-            str(group),
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--read-only",
-            "--log-driver",
-            "none",
-            "--memory",
-            "256m",
-            "--memory-swap",
-            "256m",
-            "--cpus",
-            "1",
-            "--pids-limit",
-            "64",
-            "--mount",
-            "type=bind,src=/run/homelab-launcher.sock,dst=/run/homelab-launcher.sock",
-            "--entrypoint",
-            "/usr/bin/python3",
-            *(["--env", "HOMELAB_PROBE_REQUEST"] if private else []),
-            image,
-            "-I",
-            "-c",
-            CLIENT,
-            str(uid),
-            "-" if private else json.dumps(request),
-            **(
-                {"env": {**os.environ, "HOMELAB_PROBE_REQUEST": json.dumps(request)}}
-                if private
-                else {}
-            ),
-        )
+def client_container(image, group, uid, request, name, script, *, private=False):
+    return docker(
+        "run",
+        "--rm",
+        "--name",
+        name,
+        "--pull",
+        "never",
+        "--network",
+        "none",
+        "--user",
+        f"{uid}:{uid}",
+        "--group-add",
+        str(group),
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--read-only",
+        "--log-driver",
+        "none",
+        "--memory",
+        "256m",
+        "--memory-swap",
+        "256m",
+        "--cpus",
+        "1",
+        "--pids-limit",
+        "64",
+        "--mount",
+        "type=bind,src=/run/homelab-launcher.sock,dst=/run/homelab-launcher.sock",
+        "--entrypoint",
+        "/usr/bin/python3",
+        *(["--env", "HOMELAB_PROBE_REQUEST"] if private else []),
+        image,
+        "-I",
+        "-c",
+        script,
+        str(uid),
+        "-" if private else json.dumps(request),
+        **(
+            {"env": {**os.environ, "HOMELAB_PROBE_REQUEST": json.dumps(request)}} if private else {}
+        ),
     )
+
+
+def client(image, group, uid, request, name, *, private=False):
+    return json.loads(client_container(image, group, uid, request, name, CLIENT, private=private))
+
+
+def run_client(image, group, uid, request, name):
+    client_container(image, group, uid, request, name, RUN_CLIENT)
 
 
 def exists(name):
@@ -322,8 +343,7 @@ def readonly_probe():
             if read_only:
                 request["read_only"] = True
                 request["stdin"] = True
-            if client(image, group, 21020, request, caller) != {"ok": True, "exit_code": 0}:
-                raise RuntimeError("CLI write check failed")
+            run_client(image, group, 21020, request, caller)
             print(
                 "PASS: read-only cli-run cannot write /work; run folder remains writable"
                 if read_only
