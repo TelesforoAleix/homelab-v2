@@ -370,23 +370,30 @@ def test_readonly_node_probe_checks_both_actual_work_mount_modes(tmp_path, monke
     from tests import launcher_task_probe as probe
 
     calls = []
+    requests = []
     monkeypatch.setattr(probe, "STATE", tmp_path)
     monkeypatch.setattr(probe.grp, "getgrnam", lambda _: SimpleNamespace(gr_gid=21900))
-    monkeypatch.setattr(probe, "client", lambda *a: {"ok": True})
     monkeypatch.setattr(probe, "exists", lambda _: False)
+
+    def client(image, group, uid, request, name):
+        requests.append(request)
+        return {"ok": True, "exit_code": 0} if request["op"] == "run" else {"ok": True}
 
     def docker(*args):
         calls.append(args)
-        return "0" if args[0] == "wait" else "fixture"
+        return "fixture"
 
+    monkeypatch.setattr(probe, "client", client)
     monkeypatch.setattr(probe, "docker", docker)
     probe.readonly_probe()
-    requests = [json.loads(args[-1]) for args in calls if args[0] == "run"]
-    assert "read_only" not in requests[0]
-    assert requests[1]["read_only"] is True and requests[1]["stdin"] is True
-    checks = [args for args in calls if args[0] == "exec"]
-    assert [args[-1] for args in checks] == ["rw", "ro"]
-    assert all(probe.WRITE_CHECK in args for args in checks)
+    runs = [request for request in requests if request["op"] == "run"]
+    assert len(runs) == 2
+    assert "read_only" not in runs[0] and "stdin" not in runs[0]
+    assert runs[1]["read_only"] is True and runs[1]["stdin"] is True
+    assert [request["command"] for request in runs] == [
+        ["python3", "-I", "-c", probe.WRITE_CHECK, mode] for mode in ("rw", "ro")
+    ]
+    assert not any(args[0] == "exec" for args in calls)
     assert "cannot write /work; run folder remains writable" in capsys.readouterr().out
 
 
