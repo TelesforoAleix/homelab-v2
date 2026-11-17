@@ -1601,11 +1601,13 @@ each request cost to `/srv/homelab/task-costs/<token hash>` (`root:10001`, `0770
 start of every run); the run reads and removes each file and reports `cost_usd` in its record, null
 when any part is unknown. Nothing but the numbers is in those files.
 
-### The task runner
+### The legacy host task runner (rollback)
 
-`homelab-task-runner.service` consumes the queue; see [Task runner](../ARCHITECTURE.md#task-runner).
-It follows the data volume and the stack, so restarting `homelab.service` restarts it first. A
-stopped runner's task returns to the queue at its next start and runs again from a new clone.
+`homelab-task-runner.service` is stopped and disabled since the switch to `runs` on 2026-11-17.
+It remains installed for rollback until its later removal. Do not start it while `runs` is
+active. If restored for rollback, it consumes the queue; see [Task runner](../ARCHITECTURE.md#task-runner).
+It follows the data volume and the stack. A stopped runner's task returns to the queue at its
+next start and runs again from a new clone.
 Its journal holds task ids, attempt endings and reasons, never task content. When a task ends
 `escalated` or `failed` it sends one phone notice, "Task: <id> <slice> <status> <reason>", through
 `homelab-queue-notice --task`; if that fails, the journal says `notice failed` and the queue goes on.
@@ -1682,19 +1684,17 @@ Dependents need neither: they are released as their dependencies finish.
 asked for, and what it refused. To allow another host, add a line to
 `node/opt/homelab-package-proxy/package-hosts`.
 
-### Runs service: installed, disabled
+### Runs service
 
 `runs` is the container version of the task runner, in the platform image, running as
-`21020:21020`. Its command is `python -m homelab.runs`. It is defined only under the Compose
-`runs` profile, with `restart: "no"`; normal `homelab.service` starts leave it disabled.
-**Keep `homelab-task-runner.service` as the only runner in this installation.** Enabling the
-new service and rehearsing a real task belong to the later switch, after owner review.
-The host's two task scripts and runner unit are unchanged.
+`21020:21020`. Its command is `python -m homelab.runs`. It is defined under the Compose
+`runs` profile, with `restart: "no"`; the node's private environment sets `COMPOSE_PROFILES=runs`,
+so ordinary `homelab.service` starts include it. Since the switch on 2026-11-17, it is the
+execution service. The old `homelab-task-runner.service` is stopped and disabled, retained only
+as the rollback until its removal. The host's two task scripts and runner unit remain installed.
 
-**Whole-slice, cut and review path.** `HOMELAB_RUN_ROLES` is a comma-separated subset of
-`slice,cut,review`, empty by default, passed independently to the API and `runs`. The API
-continues to reject those roles with `409 role_not_available` while empty. Enabling the
-setting alone starts nothing: the Compose `runs` profile is the second switch. Review
+**Whole-slice, cut and review path.** The node's private environment sets
+`HOMELAB_RUN_ROLES=slice,cut,review`, passed independently to the API and `runs`. Review
 requires `mode: read`; slice and cut support either mode. A write cut can commit the ticket
 flow’s failing tests. Explicit `limits` remain unsupported.
 
@@ -1901,7 +1901,8 @@ mode 0750 and 0770 respectively. Final diff exports need owner 21020, group 1000
 mode 0750 (files 0640). The lock is root:10001, mode 0640. `runs` holds an exclusive
 flock through its read-only bind; a missing or unreadable lock fails closed. The tmpfiles
 rule below recreates it at boot without truncating or replacing an existing lock inode.
-Keep the profile and role setting off until the switch procedure.
+These prerequisites were checked as part of the completed switch. The steps remain useful when
+reconstructing the node or preparing a future rollback; the live profile and role settings are on.
 
 ### Runs rehearsal on the node
 
@@ -1980,6 +1981,11 @@ script never changes enablement policy. If restoration itself fails, keep the ol
 stopped until `runs` is confirmed stopped; repeat the restoration commands manually.
 
 ### Switch to runs
+
+The switch was completed on 2026-11-17: the rehearsal passed all eight checks, `runs` and the
+roles are enabled, the old runner is stopped and disabled, and Factory sends all slice work
+through the run API. The old runner remains installed as rollback; these rollback steps stay
+valid until it is removed.
 
 After merge and owner review, the orchestrator executes these steps as root, in order. Stop
 on any failed check and resolve it before continuing. Keep submissions idle through the
@@ -2274,14 +2280,15 @@ Install `/etc/tmpfiles.d/homelab-task-run.conf` as root:root 0644 after reviewin
 run `systemd-tmpfiles --create /etc/tmpfiles.d/homelab-task-run.conf` to create the boot lock.
 Follow [Switch to runs](#switch-to-runs) when restoring the enabled configuration.
 
-Install the disabled container runner, launcher folder/clone support and per-service secret
-copies using [Runs service: installed, disabled](#runs-service-installed-disabled). Include
-the launcher sandbox write allowance in its installed unit, validate it and restart every
-socket client after the launcher socket. Keep the old host runner active and `runs` disabled;
-the sole startup test must refuse it before claim.
+Install the `runs` service, launcher folder/clone support and per-service secret copies using
+[Runs service](#runs-service). Include the launcher sandbox write allowance in its installed
+unit, validate it and restart every socket client after the launcher socket. The current node
+starts `runs` with the platform and enables `HOMELAB_RUN_ROLES=slice,cut,review`; the old host
+runner remains installed but stopped and disabled as rollback until its removal.
 Install the launcher/profile updates for private cloning, streamed bundles and optional
-read-only CLI work using that same guide. Run the read-only and private-clone probes, restart
-the socket's clients, and keep `HOMELAB_RUN_ROLES` empty as well as the Compose profile off.
+read-only CLI work using that same guide. Run the read-only and private-clone probes and restart
+the socket's clients. The legacy-runner refusal check is part of the earlier installation
+validation; it does not describe the current service state.
 
 Install the task launcher's three host files and run its non-root boundary probe using
 [Task launcher profile](#task-launcher-profile), after merge and the owner's go. This adds
@@ -3131,7 +3138,7 @@ symlinks without touching their targets. Neither operation accepts the login rol
 For `run` only, send two writable descriptors (stdout, stderr) with `SCM_RIGHTS`,
 for example using `socket.send_fds`. Task `agent`, `review` and `data` require a third readable
 stdin descriptor. CLI runs with `stdin: true` require a third readable regular-file descriptor,
-validated as described in [the whole-run path](#runs-service-installed-disabled).
+validated as described in [the whole-run path](#runs-service).
 Every other shape/profile takes exactly two. Send no descriptors for other operations. The helper
 waits and returns `{"ok":true,"exit_code":N}`. All container output, including usage, goes
 directly to those descriptors, never to the response or journal. `usage` has no network and
@@ -3282,7 +3289,7 @@ sudo systemctl stop homelab-launcher.service
 sudo systemctl restart homelab-launcher.socket
 ```
 
-This withdraws `task` and uid 21020's permissions. The current host task runner is unaffected;
+This withdraws `task` and uid 21020's permissions. The retained host task runner is disabled and available only for rollback until its removal;
 no data volume, secret, login or network change is needed.
 
 ### Bulk disk and storage migration
