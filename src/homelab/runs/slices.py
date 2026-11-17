@@ -198,13 +198,13 @@ def parse_output(harness, text):
                 and isinstance(candidate["body"], str)
             ):
                 result.final = candidate
-                if candidate["kind"] == "waiting" and LIMIT_MESSAGE.search(candidate["body"]):
-                    result.limited = True
             if event.get("type") in {"error", "turn.failed"} or event.get("is_error") is True:
                 if LIMIT_MESSAGE.search(json.dumps(event)):
                     result.limited = True
         except (ValueError, TypeError, KeyError, AttributeError):
             continue
+    if result.final is not None:
+        result.limited = False
     return result
 
 
@@ -310,7 +310,9 @@ def execute_turn(record, prompt, folder, turn_id, *, cancelled=lambda: False):
             output.metrics,
         )
 
-    if output.limited or (code != 0 and LIMIT_MESSAGE.search(err.read_text(errors="replace"))):
+    if output.limited or (
+        output.final is None and code != 0 and LIMIT_MESSAGE.search(err.read_text(errors="replace"))
+    ):
         if not session:
             return failed("provider_lost")
         return waiting_state(time.time() + 3600), session, [], output.metrics

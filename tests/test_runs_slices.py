@@ -307,3 +307,68 @@ def test_failed_delivery_keeps_measured_turn_usage(tmp_path, monkeypatch):
     assert result["status"] == "failed" and result["status_reason"] == "outside_allowed_files"
     assert metrics["fresh"] == 10 and metrics["usd"] == 0.02
     assert session == "session" and not commits
+
+
+def test_valid_final_overrides_transient_limit_events(tmp_path, monkeypatch):
+    def capture(request, out, err, seconds, **kwargs):
+        events = [
+            {"type": "thread.started", "thread_id": "same-session"},
+            {"type": "error", "message": "Reconnecting... 1/5 (rate limit reached)"},
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "agent_message",
+                    "text": json.dumps({"kind": "handover", "body": "done"}),
+                },
+            },
+            {"type": "turn.completed"},
+        ]
+        out.write_text("\n".join(map(json.dumps, events)))
+        err.write_bytes(b"")
+        return 0, "exited"
+
+    monkeypatch.setattr(slices.launcher, "capture", capture)
+    monkeypatch.setattr(slices, "deliver", lambda *a, **kw: ["b" * 40])
+    record = {
+        "request": {"mode": "write"},
+        "work_id": "run-" + "a" * 32,
+        "executor": executor().selection(),
+        "session_id": None,
+    }
+    result, session, commits, metrics = slices.execute_turn(record, "Goal", tmp_path, "turn")
+    assert result["status"] == "done"
+    assert result["status_reason"] is None
+    assert result["resumable"] is True
+    assert commits == ["b" * 40]
+
+
+def test_waiting_final_mentioning_rate_limit_is_a_client_step(tmp_path, monkeypatch):
+    def capture(request, out, err, seconds, **kwargs):
+        events = [
+            {"type": "thread.started", "thread_id": "same-session"},
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "agent_message",
+                    "text": json.dumps(
+                        {"kind": "waiting", "body": "Review the rate-limit middleware"}
+                    ),
+                },
+            },
+            {"type": "turn.completed"},
+        ]
+        out.write_text("\n".join(map(json.dumps, events)))
+        err.write_bytes(b"")
+        return 0, "exited"
+
+    monkeypatch.setattr(slices.launcher, "capture", capture)
+    record = {
+        "request": {"mode": "read"},
+        "work_id": "run-" + "a" * 32,
+        "executor": executor().selection(),
+        "session_id": None,
+    }
+    result, session, commits, metrics = slices.execute_turn(record, "Goal", tmp_path, "turn")
+    assert result["status"] == "waiting"
+    assert result["status_reason"] == "client_step"
+    assert result["resume_at"] is None

@@ -935,7 +935,7 @@ class Launcher:
                 for root in roots:
                     with directory(root) as parent:
                         info = os.fstat(parent)
-                        if info.st_uid != 0 or info.st_mode & 0o022:
+                        if info.st_uid != 0 or (info.st_mode & 0o022 and not info.st_mode & 0o1000):
                             raise Refused("unsafe_work_root")
                         if operation.endswith("create"):
                             os.mkdir(
