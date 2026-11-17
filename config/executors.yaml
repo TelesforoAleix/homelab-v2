@@ -27,11 +27,11 @@ cut:
     - {harness: claude, model: opus}
 review:
   light:
+    - {harness: claude, model: sonnet}
     - {harness: codex, model: gpt-6.1-sol, effort: high}
-    - {harness: claude, model: opus}
   standard:
+    - {harness: claude, model: sonnet}
     - {harness: codex, model: gpt-6.1-sol, effort: high}
-    - {harness: claude, model: opus}
   strong:
-    - {harness: codex, model: gpt-6.1-sol, effort: high}
     - {harness: claude, model: opus}
+    - {harness: codex, model: gpt-6.1-sol, effort: high}

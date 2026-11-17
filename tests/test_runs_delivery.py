@@ -182,5 +182,5 @@ def test_public_scan_checks_intermediate_commits_even_when_tip_is_clean(
             return original(directory, *args, **kwargs)
 
         monkeypatch.setattr(delivery, "git", refuse_push)
-        with pytest.raises(delivery.Refused, match="push_refused"):
+        with pytest.raises(delivery.Refused, match="push_private_content"):
             delivery.push_checked(directory, document, tip)

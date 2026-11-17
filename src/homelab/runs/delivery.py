@@ -156,8 +156,10 @@ def push_checked(directory, document, tip):
                 raise ValueError
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         raise Refused("push_refused") from None
-    if private_content_check(document, directory, tip, private=private):
-        raise Refused("push_refused")
+    reason = private_content_check(document, directory, tip, private=private)
+    if reason:
+        # Keep the fixed category, excluding filenames and match locations.
+        raise Refused(reason.split(":", 1)[0])
     result = git(
         directory,
         "push",

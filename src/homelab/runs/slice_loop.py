@@ -37,9 +37,15 @@ class Service:
 
     def loop(self):
         futures = set()
+        next_sweep = 0
         try:
             while not self.stop.is_set():
                 self.legacy_inactive()
+                full_sweep = time.monotonic() >= next_sweep
+                with self.database() as connection:
+                    store.sweep(connection, failed_only=not full_sweep)
+                if full_sweep:
+                    next_sweep = time.monotonic() + 3600
                 for future in list(futures):
                     if future.done():
                         future.result()
@@ -96,6 +102,8 @@ class Service:
                     # Remove only our incomplete copy; prepared copies survive resumes.
                     work_id = "run-" + saved["id"].hex
                     launcher.request({"op": "cli-remove", "work_id": work_id})
+                    with self.database() as connection:
+                        store.prepared(connection, saved["id"], work_id, ready=False)
                     saved["work_id"] = slices.prepare(saved, folder, cancelled=self.stop.is_set)
                     with self.database() as connection:
                         store.prepared(connection, saved["id"], saved["work_id"])
@@ -135,6 +143,9 @@ class Service:
             if not self.stop.is_set():
                 with self.database() as connection:
                     store.complete(connection, saved, result, session, commits, metrics)
+                if result["status"] in {"failed", "cancelled"}:
+                    with self.database() as connection:
+                        store.sweep(connection, failed_only=True)
 
     def close(self):
         self.stop.set()

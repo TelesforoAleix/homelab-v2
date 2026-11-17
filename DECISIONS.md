@@ -1012,3 +1012,17 @@ the launcher-created children remain owned by the task account or uid 21000. The
 collision check and mkdir's refusal of existing names keep pre-created entries out.
 Non-root-owned parents and writable non-sticky parents remain refused. No other launcher
 validation or folder ownership changes.
+
+
+**2026-11-17 — Cuts may write; reviews stay read-only.** Factory’s cut commits the ticket
+flow’s failing tests, so enabled cut runs accept write mode as well as read mode. Only
+review rejects write mode. Branch protection and independent delivery checks still apply.
+
+**2026-11-17 — Harness sessions outlive retained work copies.** The whole-run loop uses
+launcher `cli-remove` for failed/cancelled copies immediately and for other ended copies
+three days after their last turn ended, swept hourly. It holds the existing run-store lock
+against claims/messages and retries busy-folder refusals. Removing both folders clears
+copy readiness and `resumable`, without deleting the harness login’s session. An uncancelled
+conversation can accept a later message, prepare the branch afresh and resume that session
+with the original executor. Pending messages and usage resets still gate additional turns.
+Incomplete preparations are tracked before clone so their failures can be cleaned up.

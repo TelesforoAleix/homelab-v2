@@ -22,7 +22,7 @@ def test_initial_executor_table():
     )
     assert table["slice"]["light"][0].model == "gpt-6-luna"
     assert table["slice"]["standard"][0].effort == "medium"
-    assert table["review"]["strong"][1].model == "opus"
+    assert table["review"]["strong"][0].model == "opus"
     assert len(configuration_hash("pi/base")) == 64
 
 

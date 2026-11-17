@@ -104,7 +104,7 @@ def create(
             raise RunError(409, "branch_is_default")
         if body.role != "ticket" and body.eval is None and body.role not in enabled_roles():
             raise RunError(409, "role_not_available")
-        if body.eval is None and body.role in {"cut", "review"} and body.mode != "read":
+        if body.eval is None and body.role == "review" and body.mode != "read":
             raise RunError(422, "invalid_request")
         predecessors = []
         dependencies = []
@@ -122,7 +122,8 @@ def create(
             """SELECT id FROM homelab_runs WHERE application = %s
                AND request->>'repository' = %s AND request->>'branch' = %s
                AND (status IN ('queued', 'running', 'question', 'waiting')
-                    OR (status = 'escalated' AND resumable))""",
+                    OR (status = 'escalated' AND
+                        (resumable OR session_id IS NOT NULL)))""",
             (application, body.repository, body.branch),
         ).fetchall()
         # Naming the last member of a chain also names its transitive predecessors.
@@ -217,8 +218,13 @@ def cancel(connection, application: str, run_id: UUID):
             # Today's host protocol has no interrupt operation. Never report a live
             # writer as cancelled while it could still push.
             raise RunError(409, "not_resumable")
+        fresh_resume = (
+            record["session_id"] is not None
+            and record["work_id"] is None
+            and record["status"] in {"done", "escalated", "question", "waiting"}
+        )
         if record["status"] not in ACTIVE:
-            if not record["resumable"]:
+            if not record["resumable"] and not fresh_resume:
                 return record
         connection.execute(
             """WITH RECURSIVE descendants AS (
@@ -231,8 +237,9 @@ def cancel(connection, application: str, run_id: UUID):
                                         ELSE 'predecessor' END,
                    finished_at = clock_timestamp(), resumable = false
                WHERE id IN (SELECT id FROM descendants)
-                 AND (status = 'queued' OR (id = %s AND resumable AND status <> 'running'))""",
-            (run_id, run_id, run_id),
+                 AND (status = 'queued' OR
+                      (id = %s AND (resumable OR %s) AND status <> 'running'))""",
+            (run_id, run_id, run_id, fresh_resume),
         )
         connection.execute(
             """UPDATE homelab_tasks t SET status = 'failed', reason = r.status_reason,
