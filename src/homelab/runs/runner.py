@@ -348,8 +348,59 @@ def repository_is_private(repository):
         return False
 
 
-def private_content_check(task, copy, commit, *, private=None):
-    """Inspect each outgoing commit without emitting the inspected content."""
+def outgoing_commits(task, git_dir, commit):
+    """The clone's outgoing commits, oldest first with parents before children.
+
+    The range is against the clone's own remote branch tip, not task["base_commit"].
+    """
+    base = f"refs/remotes/origin/{task['branch']}"
+    subprocess.run(
+        [
+            "git",
+            "--git-dir",
+            str(git_dir),
+            "-c",
+            "safe.directory=*",
+            "merge-base",
+            "--is-ancestor",
+            base,
+            commit,
+        ],
+        env=git_env(),
+        cwd="/",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=GIT_SECONDS,
+        check=True,
+    )
+    result = subprocess.run(
+        [
+            "git",
+            "--git-dir",
+            str(git_dir),
+            "-c",
+            "safe.directory=*",
+            "rev-list",
+            "--topo-order",
+            "--reverse",
+            f"{base}..{commit}",
+        ],
+        env=git_env(),
+        cwd="/",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=GIT_SECONDS,
+        check=True,
+    )
+    return result.stdout.decode("ascii").splitlines()
+
+
+def private_content_check(task, copy, commit, *, private=None, commits=None):
+    """Inspect each outgoing commit without emitting the inspected content.
+
+    With `commits` supplied, scan exactly those revisions; otherwise obtain the
+    outgoing range from the clone's remote branch tip through `outgoing_commits`.
+    """
     if private is True or (private is None and repository_is_private(task["repository"])):
         return None
     try:
@@ -380,9 +431,8 @@ def private_content_check(task, copy, commit, *, private=None):
         return result.stdout
 
     try:
-        base = f"refs/remotes/origin/{task['branch']}"
-        git("merge-base", "--is-ancestor", base, commit)
-        commits = git("rev-list", f"{base}..{commit}").decode("ascii").splitlines()
+        if commits is None:
+            commits = outgoing_commits(task, copy, commit)
         for revision in commits:
             message = git("show", "-s", "--format=%B", revision).decode("utf-8", "replace")
             if hit(message):
