@@ -384,7 +384,7 @@ class Rehearsal:
         result = self.wait(
             self.submit(target, self.write_goal(path, CANARY + "\n"), allowed=[path])
         )
-        assert result["status"] == "failed" and result["status_reason"] == "push_private_content"
+        assert result["status"] == "failed" and result["status_reason"] == "push_refused"
         assert result["commits"] == [] and self.tip(*target[:2]) == target[2]
 
     def ticket_eval(self):

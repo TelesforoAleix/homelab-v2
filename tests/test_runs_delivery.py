@@ -182,5 +182,23 @@ def test_public_scan_checks_intermediate_commits_even_when_tip_is_clean(
             return original(directory, *args, **kwargs)
 
         monkeypatch.setattr(delivery, "git", refuse_push)
-        with pytest.raises(delivery.Refused, match="push_private_content"):
+        with pytest.raises(delivery.Refused, match="push_refused"):
+            delivery.push_checked(directory, document, tip)
+
+
+@pytest.mark.parametrize("reason", ["push_private_content: fixture:1", "push_deny_list_unreadable"])
+def test_deny_failures_keep_contract_reason_without_pushing(bundle, tmp_path, monkeypatch, reason):
+    _, path, document, _ = bundle
+    github(monkeypatch)
+    monkeypatch.setattr(delivery, "private_content_check", lambda *a, **kw: reason)
+    with delivery.checked_bundle(path, document, tmp_path) as (directory, tip):
+        original = delivery.git
+
+        def refuse_push(directory, *args, **kwargs):
+            if "push" in args:
+                pytest.fail("deny failures must prevent push")
+            return original(directory, *args, **kwargs)
+
+        monkeypatch.setattr(delivery, "git", refuse_push)
+        with pytest.raises(delivery.Refused, match="^push_refused$"):
             delivery.push_checked(directory, document, tip)

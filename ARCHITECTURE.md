@@ -865,7 +865,7 @@ launcher refusals later, never removing an in-use copy. Copy readiness and `resu
 after removal, while the harness login retains the session. Later messages prepare the
 branch again and resume that session; cancellation, deduplication, branch exclusion and
 usage-reset gates still apply. Partial preparations are recorded before creation too.
-Public delivery refusals preserve only the deny checker’s fixed category, without paths.
+Public deny hits and unreadable deny lists end `failed:push_refused`, without matched content or paths.
 
 The Python runner uses the same task store and Procrastinate transactions directly over the
 API's database login. A session advisory lock `(157442, 1)` excludes another `runs`; legacy

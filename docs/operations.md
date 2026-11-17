@@ -1743,9 +1743,8 @@ diff must be within `allowed_files` (null means unrestricted, empty means none) 
 `pinned_paths`, including deletions and rename sources. Refusal ends
 `failed: outside_allowed_files` before push. Delivery rechecks the authenticated remote
 default, scans every outgoing public commit with the deny list/canary, and pushes with a
-fresh App token and no force. A deny hit ends `failed: push_private_content`, with no
-matched content, filename or line in the reason; an unreadable deny list ends
-`push_deny_list_unreadable`. A rewritten branch ends `failed: push_refused`.
+fresh App token and no force. Deny hits, an unreadable deny list and rewritten branches
+end `failed: push_refused`, without matched content, filenames or lines in the reason.
 
 Final kinds map to resumable states: `handover` to `done`, `question` to `question`,
 `escalation` to `escalated`, and `waiting` to `waiting: client_step`. A message resumes the
@@ -1958,7 +1957,7 @@ restore_runner() {
 }
 trap restore_runner EXIT
 systemctl stop homelab-task-runner.service
-! systemctl is-active --quiet homelab-task-runner.service
+if systemctl is-active --quiet homelab-task-runner.service; then exit 1; fi
 HOMELAB_RUN_ROLES=slice,cut,review COMPOSE_PROFILES= docker compose --profile runs up -d --build --wait --wait-timeout 120 --no-deps --force-recreate api runs
 export HOMELAB_REHEARSAL_RUNS_CONTAINER="$(docker compose --profile runs ps --format '{{.Name}}' runs)"
 python3 tests/runs_rehearsal.py

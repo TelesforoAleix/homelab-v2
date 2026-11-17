@@ -570,3 +570,25 @@ def test_failed_prepare_removes_partial_copy_immediately(enabled, monkeypatch, t
         assert record == (None, False)
     finally:
         service.close()
+
+
+def test_push_refused_completes_failed_run_with_contract_reason(enabled):
+    run_id = submitted(enabled)
+    saved = slices.claim(enabled)
+    slices.begin(enabled, saved, saved["executor"])
+    slices.complete(
+        enabled,
+        saved,
+        {"status": "failed", "status_reason": "push_refused", "resumable": False},
+        "session",
+        [],
+        {},
+    )
+    result = api_runs.read("factory", run_id)
+    assert result["status"] == "failed" and result["status_reason"] == "push_refused"
+    assert result["commits"] == [] and not result["resumable"]
+    assert result["attempts"][0]["status"] == "failed"
+    assert result["attempts"][0]["outcome"] == "push_refused"
+    assert enabled.execute("SELECT status FROM procrastinate_jobs").fetchone()[0] == "failed"
+    submitted(enabled, request_id="next", branch="slice/next")
+    assert slices.claim(enabled)["request_id"] == "next"

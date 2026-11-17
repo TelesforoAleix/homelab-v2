@@ -66,7 +66,7 @@ class FakeAPI:
             reason = (
                 "outside_allowed_files"
                 if outside
-                else "push_private_content"
+                else "push_refused"
                 if deny
                 else "eval_kept"
                 if eval
