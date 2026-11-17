@@ -110,6 +110,24 @@ def test_limit_during_turn_keeps_session_and_same_executor(enabled):
     assert resumed["harness_started"]
 
 
+def test_recover_aborts_job_for_already_failed_run(enabled):
+    run_id = submitted(enabled)
+    claimed = slices.claim(enabled)
+    slices.begin(enabled, claimed, claimed["executor"])
+    enabled.execute(
+        """UPDATE homelab_runs SET status = 'failed', status_reason = 'test',
+        resumable = false WHERE id = %s""",
+        (run_id,),
+    )
+    before = enabled.execute("SELECT * FROM homelab_runs WHERE id = %s", (run_id,)).fetchone()
+    assert slices.recover(enabled) == 0
+    assert (
+        enabled.execute("SELECT * FROM homelab_runs WHERE id = %s", (run_id,)).fetchone() == before
+    )
+    assert enabled.execute("SELECT status FROM procrastinate_jobs").fetchall() == [("aborted",)]
+    assert slices.claim(enabled) is None
+
+
 def test_two_interruptions_fail_the_run_and_both_attempts(enabled):
     run_id = submitted(enabled)
     for index in (0, 1):
