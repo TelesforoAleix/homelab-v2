@@ -118,6 +118,87 @@ services:
         exec procrastinate --app homelab.jobs.app.app worker
         --queues local,default --concurrency 1
 
+  runs:
+    # Installed but disabled: normal `compose up` never starts this service.
+    profiles: [runs]
+    image: homelab-api
+    build: .
+    user: "21020:21020"
+    group_add: ["${HOMELAB_LAUNCH_GID:-65534}", "10001"]
+    command: ["python", "-m", "homelab.runs"]
+    environment:
+      HOMELAB_DATABASE_URL: postgresql://homelab:${HOMELAB_DB_PASSWORD}@postgres:5432/homelab
+      HOMELAB_TASK_AUTHOR_NAME: ${HOMELAB_TASK_AUTHOR_NAME:-Home Lab}
+      HOMELAB_TASK_AUTHOR_EMAIL: ${HOMELAB_TASK_AUTHOR_EMAIL:-home-lab@home-lab.invalid}
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - type: bind
+        source: /run/homelab-launcher.sock
+        target: /run/homelab-launcher.sock
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /sys/fs/cgroup/system.slice
+        target: /run/host-services
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /run/lock
+        target: /run/host-locks
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/homelab/runs
+        target: /run/secrets
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/homelab/task-work
+        target: /srv/homelab/task-work
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/homelab/runs
+        target: /srv/homelab/runs
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${HOMELAB_TASK_TOKENS_PATH:-/srv/homelab/task-tokens}
+        target: /srv/homelab/task-tokens
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${HOMELAB_TASK_COSTS_PATH:-/srv/homelab/task-costs}
+        target: /srv/homelab/task-costs
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${HOMELAB_TASK_RUNS_PATH:-/srv/homelab/task-runs}/eval-diffs
+        target: /srv/homelab/runs/eval-diffs
+        bind:
+          create_host_path: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,mode=1777,size=1g"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+    logging:
+      driver: journald
+    healthcheck:
+      test: ["CMD", "python", "-m", "homelab.runs", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+
   postgres:
     image: pgvector/pgvector:pg17
     networks:

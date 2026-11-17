@@ -811,6 +811,50 @@ branch; new submissions still require its repository/default-branch policy. Fact
 unlinked eval tasks remain readable and deduplicated. Eval tasks continue using the host's
 existing diff export and never push. No host runner, launcher or gateway change is needed.
 
+## Container task runner (installed, disabled)
+
+The platform image contains `python -m homelab.runs`. Compose defines it as `runs` under the
+opt-in `runs` profile, uid 21020 with no capabilities, Docker socket, host helper or published
+port. Ordinary `homelab.service` starts do not enable it. The old host runner is still the
+only active runner; its two scripts and unit are unchanged.
+
+The Python runner uses the same task store and Procrastinate transactions directly over the
+API's database login. A session advisory lock `(157442, 1)` excludes another `runs`; legacy
+claim/recovery CLI processes take the same lock before touching the queue. Startup and each
+queue turn read a read-only bind of the host's `system.slice` cgroup parent and refuse a
+populated `homelab-task-runner.service`. Missing/unreadable host state fails closed. Binding
+the parent observes cgroup creation/removal without systemd or Docker access. A database
+session watchdog stops live launcher containers if the lock connection is lost. An
+exclusive flock on a read-only host lock-file bind also excludes manual invocations of the
+unchanged root task script; provisioning this ephemeral file is a switch prerequisite.
+
+The launcher creates each work folder using the existing `homelab-task` uid, refusing uid 0
+and 21020. Its root-controlled work parent prevents the runner replacing the folder between
+a no-follow check and a Docker bind. `runs` mounts task work read-only and never writes inside
+it. The launcher rejects overlapping shapes or folder lifecycle operations on one work id,
+so another launched container cannot swap a bind source during validation. A fixed clone shape uses only that work bind and the existing fence proxy/network; the
+launcher validates repository and branch and invokes system Git directly, without a shell,
+hooks, credential helpers or login mounts. Prepare, Pi, review, check and commit retain their
+five shapes. CLI routes use the existing `cli-run` profile; networkless data containers copy
+only regular files into and out of separately launcher-created, uid 21000 task-attempt folders.
+No mounted folder belongs to `runs`. Configuration snapshots and private run records belong
+to `runs` and are never mounted by the launcher.
+
+Attempt ordering, feedback retries, review fix round, checks, commits, eval retention, costs
+and failure notices follow the host runner. The new verdict parser accepts exactly one exact
+`VERDICT: PASS` or `VERDICT: FIX` line anywhere in the final assistant message, and rejects zero
+or multiple lines. A sanitized temporary Git directory exposes only the clone's objects and
+refs for the unchanged deny-list/canary scan and push, never its config or hooks. Each push
+mints a fresh RS256 App JWT with OpenSSL, requests an installation token restricted to one
+repository, then uses HTTPS with an explicit URL/refspec and an authorization header held
+only in process memory. The independent remote default-branch guard still applies.
+
+Per-service secret copies are read-only; logs retain ids and fixed codes, never credentials
+or task content. The healthcheck requires an answering launcher socket. Because Compose binds
+the socket file's inode, restart `runs` after restarting the launcher socket, as with Factory's
+runner and sessions containers. Provisioning, switch prerequisites and rollback are in
+[operations](docs/operations.md#runs-service-installed-disabled).
+
 ## Jobs
 
 The Procrastinate app persists jobs in Postgres. Its `ping` task runs on the default queue;

@@ -922,3 +922,45 @@ with the same model and gateway as `task-worker`, but `reasoning_effort: none`. 
 runs on 2026-11-16, two of seven review rounds ended `review_failed` because the final assistant
 message contained only a thinking block and no text or `VERDICT:` line; worker turns passed
 their checks every time. The role table is updated separately by the operator.
+
+
+**2026-11-17 — The launcher creates task work as the existing task account.** The orchestrator
+uid 21020 must never own or write a folder it asks the launcher to mount: ownership otherwise
+allows swapping a directory or link after the helper's no-follow check and before Docker's
+mount. Root-controlled parents and task-owned children close that window. All clone and
+working-tree writes happen in launched containers. The launcher excludes overlapping shapes and folder
+lifecycle operations on one work id, closing the same race through a second container. The owner approved a fixed clone shape
+on the existing `homelab-fence` network/proxy because the package-only and model-only task
+networks cannot clone from GitHub. Its sole bind is `/work`; it has no logins, takes only a
+validated repository/branch, disables hooks and credential helpers, and executes system Git
+without a shell. CLI routes retain the existing `cli-run` profile; offline data containers
+replace the old root runner's file copies without giving `runs` ownership of mounted folders.
+
+**2026-11-17 — Container pushes use one-repository App tokens and a sanitized Git directory.**
+The platform App replaces per-repository host deploy keys. OpenSSL signs a short-lived RS256
+JWT; each push requests a fresh installation token with `repositories` restricted to that
+repository and contents-write/metadata-read permissions. No Python JWT dependency is added.
+The token travels only in an in-memory Git authorization header, never a URL, argument, file
+or log. An explicit HTTPS URL/refspec, hooks/credential helpers off and no working-copy config
+keep the push independent of repository settings. A temporary Git directory exposes only
+objects and refs; the existing deny-list scan and its canary inspect every outgoing commit
+before push. The default branch and `main` remain refused.
+
+**2026-11-17 — One exact verdict line may occur anywhere in the final review message.** On the
+ticket reviewer, one of five measured reviews wrote `VERDICT: FIX` followed by more text;
+the host's last-line parser reported `review_failed`. Only the new container runner accepts
+exactly one line `VERDICT: PASS` or `VERDICT: FIX` anywhere in the final assistant message.
+Zero or multiple verdict lines fail closed. Notes comprise the other lines with the existing
+8 KiB limit. The old scripts retain their parser until the runner switch.
+
+**2026-11-17 — The disabled runner checks host cgroups and shares a Postgres lock with claims.**
+The old runner has no lifetime database session, so an advisory lock alone cannot detect an
+idle but active host service. A read-only bind of the `system.slice` parent exposes its
+`cgroup.events` populated flag without a Docker/systemd API or a privileged helper. Startup
+refuses active or unreadable state, then rechecks after taking a lifetime session lock.
+Legacy claim/recovery CLI processes acquire the same lock, preventing them claiming if the
+host service starts later. A lock-session watchdog terminates live launched containers on
+connection loss; the next runner cleans up recorded containers before recovery/claim.
+Holding the unchanged root task script's flock through a read-only `/run/lock` bind also
+excludes manual runs; its ephemeral root:10001 0640 inode is prepared at the switch, and
+missing or unreadable state fails closed.

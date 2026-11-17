@@ -8,6 +8,8 @@ from typing import Any
 
 QUEUE = "tasks"
 JOB = "run_coding_task"
+# Shared with the container runner; the legacy CLI holds it for each claim/recovery.
+RUNNER_LOCK = (157442, 1)
 
 
 class Refused(Exception):

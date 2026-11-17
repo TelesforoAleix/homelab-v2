@@ -167,6 +167,35 @@
           "-I",
           "-c"
         ]
+      },
+      "clone": {
+        "network": "homelab-fence",
+        "mounts": {
+          "work": "/work:rw"
+        },
+        "stdin": false,
+        "environment": [
+          "HTTPS_PROXY=http://cli-proxy:8888",
+          "HTTP_PROXY=http://cli-proxy:8888",
+          "GIT_CONFIG_NOSYSTEM=1",
+          "GIT_CONFIG_GLOBAL=/dev/null",
+          "GIT_TERMINAL_PROMPT=0"
+        ],
+        "entrypoint": "/usr/bin/git",
+        "entry": []
+      },
+      "data": {
+        "network": "none",
+        "mounts": {
+          "work": "/work:rw"
+        },
+        "stdin": true,
+        "environment": [],
+        "entrypoint": "/usr/bin/python3",
+        "entry": [
+          "-I",
+          "-c"
+        ]
       }
     },
     "timeout": null
