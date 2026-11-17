@@ -21,6 +21,7 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
         "embed-large-bulk-*",
         "grade",
         "task-worker",
+        "task-reviewer",
         "eval/*",
         "translate",
         "vision",
@@ -48,6 +49,7 @@ def test_model_config_has_only_the_fixed_purposes_and_no_fallback():
         **rows["chat"],
         "model": "openai/deepseek/deepseek-v4-flash",
     }
+    assert rows["task-reviewer"] == {**rows["task-worker"], "reasoning_effort": "none"}
     assert rows["embed"] == {
         "model": "openai/llama-nemotron-embed-1b-v2",
         "api_base": "http://llama-embed:8080/v1",
