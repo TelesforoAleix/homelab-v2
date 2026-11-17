@@ -92,8 +92,11 @@ class Script:
             "commit": "a" * 40 if ended == "committed" else None,
         }
 
-    def push(self, item, copy, commit):
-        return self.pushes.pop(0)
+    def push(self, item, copy, commit, *, commits=None):
+        ended = self.pushes.pop(0)
+        if ended == "pushed" and commits is not None:
+            commits.append(commit)
+        return ended
 
     def named(self, event):
         return [item for item in self.events if isinstance(item, dict) and item["event"] == event]

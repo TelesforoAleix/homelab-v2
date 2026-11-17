@@ -95,7 +95,8 @@ def test_push_ignores_copy_config_and_keeps_token_out_of_command_and_disk(tmp_pa
 
     calls = []
     monkeypatch.setattr(runner, "refuse_branch", lambda task: None)
-    monkeypatch.setattr(runner, "private_content_check", lambda *args: None)
+    monkeypatch.setattr(runner, "outgoing_commits", lambda *args: [], raising=False)
+    monkeypatch.setattr(runner, "private_content_check", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "installation_token", lambda repo: "FAKE-PUSH-TOKEN")
     monkeypatch.setattr(
         runner, "sealed_git_dir", lambda copy: contextmanager(lambda: iter([tmp_path]))()
@@ -490,8 +491,9 @@ def test_push_deny_list_still_precedes_token_and_push(tmp_path, monkeypatch):
     from homelab.runs import runner
 
     monkeypatch.setattr(runner, "refuse_branch", lambda _: None)
+    monkeypatch.setattr(runner, "outgoing_commits", lambda *args: [], raising=False)
     monkeypatch.setattr(
-        runner, "private_content_check", lambda *args: "push_private_content: path:1"
+        runner, "private_content_check", lambda *args, **kwargs: "push_private_content: path:1"
     )
     monkeypatch.setattr(runner, "installation_token", lambda _: pytest.fail("must not mint"))
     assert (
