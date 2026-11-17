@@ -4,6 +4,8 @@ Run from the merged checkout, after owner approval and installation:
     sudo python3 tests/launcher_task_probe.py
 """
 
+import argparse
+import base64
 import grp
 import json
 import os
@@ -11,6 +13,8 @@ import pwd
 import re
 import shutil
 import subprocess
+import time
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -18,7 +22,7 @@ WORK_ROOT = Path("/srv/homelab/task-work")
 STATE = Path("/run/homelab-launcher")
 CLIENT = """import json, os, socket, sys
 assert os.getuid() == int(sys.argv[1]) != 0
-request = json.loads(sys.argv[2])
+request = json.loads(os.environ.pop('HOMELAB_PROBE_REQUEST') if sys.argv[2] == '-' else sys.argv[2])
 with socket.socket(socket.AF_UNIX) as connection:
     connection.settimeout(60)
     connection.connect('/run/homelab-launcher.sock')
@@ -37,7 +41,7 @@ def docker(*arguments, **kwargs):
     ).stdout.strip()
 
 
-def client(image, group, uid, request, name):
+def client(image, group, uid, request, name, *, private=False):
     return json.loads(
         docker(
             "run",
@@ -71,12 +75,18 @@ def client(image, group, uid, request, name):
             "type=bind,src=/run/homelab-launcher.sock,dst=/run/homelab-launcher.sock",
             "--entrypoint",
             "/usr/bin/python3",
+            *(["--env", "HOMELAB_PROBE_REQUEST"] if private else []),
             image,
             "-I",
             "-c",
             CLIENT,
             str(uid),
-            json.dumps(request),
+            "-" if private else json.dumps(request),
+            **(
+                {"env": {**os.environ, "HOMELAB_PROBE_REQUEST": json.dumps(request)}}
+                if private
+                else {}
+            ),
         )
     )
 
@@ -268,11 +278,255 @@ def ownership_probe():
     print("PASS: ownership probe leaves no work folder")
 
 
+# Fill a pipe so `codex exec --help` waits in the real cli-run container without a model call.
+# The orchestrator checks writes in that container, then signals the socket client to drain it.
+BLOCKING_CLIENT = """import json, os, signal, socket, sys, threading
+read, write = os.pipe()
+os.set_blocking(write, False)
+try:
+    while True:
+        os.write(write, b'x' * 4096)
+except BlockingIOError:
+    pass
+os.set_blocking(write, True)
+ready = threading.Event()
+signal.signal(signal.SIGUSR1, lambda *_: ready.set())
+def drain():
+    ready.wait()
+    while os.read(read, 65536):
+        pass
+threading.Thread(target=drain, daemon=True).start()
+with socket.socket(socket.AF_UNIX) as connection:
+    connection.settimeout(60)
+    connection.connect('/run/homelab-launcher.sock')
+    descriptors = [write, write]
+    if json.loads(sys.argv[1]).get('stdin'):
+        source = os.memfd_create('probe-input', os.MFD_CLOEXEC)
+        os.write(source, b'{"goal":"probe","assets":[]}')
+        descriptors.append(source)
+    socket.send_fds(connection, [(sys.argv[1] + '\\n').encode()], descriptors)
+    with connection.makefile('rb') as stream:
+        result = json.loads(stream.readline(65537))
+assert result == {'ok': True, 'exit_code': 0}
+"""
+WRITE_CHECK = """import errno, pathlib, sys
+work = pathlib.Path('/work/probe-write')
+try:
+    work.write_text('probe')
+except OSError as error:
+    assert sys.argv[1] == 'ro' and error.errno == errno.EROFS
+else:
+    assert sys.argv[1] == 'rw'
+    work.unlink()
+run = pathlib.Path('/run/factory/probe-write')
+run.write_text('probe'); run.unlink()
+"""
+
+
+def readonly_probe():
+    image = docker("image", "inspect", "--format", "{{.Id}}", "homelab-task:2")
+    group = grp.getgrnam("homelab-launch").gr_gid
+    for read_only in (False, True):
+        work_id = "run-" + uuid.uuid4().hex
+        run_id, caller = work_id + "-help", work_id + "-client"
+        container = "homelab-fence-run-" + run_id
+        created = False
+        try:
+            if client(
+                image, group, 21020, {"op": "cli-create", "work_id": work_id}, caller + "-create"
+            ) != {"ok": True}:
+                raise RuntimeError("cannot create CLI probe folders")
+            created = True
+            request = {
+                "op": "run",
+                "profile": "cli-run",
+                "run_id": run_id,
+                "folders": {"work": work_id, "run": work_id},
+                "tool": "codex",
+                "exports": [],
+                "command": ["codex", "exec", "--help"],
+            }
+            if read_only:
+                request["read_only"] = True
+                request["stdin"] = True
+            docker(
+                "run",
+                "--detach",
+                "--name",
+                caller,
+                "--pull",
+                "never",
+                "--network",
+                "none",
+                "--user",
+                "21020:21020",
+                "--group-add",
+                str(group),
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--read-only",
+                "--log-driver",
+                "none",
+                "--memory",
+                "256m",
+                "--pids-limit",
+                "64",
+                "--mount",
+                "type=bind,src=/run/homelab-launcher.sock,dst=/run/homelab-launcher.sock",
+                "--entrypoint",
+                "/usr/bin/python3",
+                image,
+                "-I",
+                "-c",
+                BLOCKING_CLIENT,
+                json.dumps(request),
+            )
+            deadline = time.monotonic() + 20
+            while not docker("ps", "-q", "--filter", f"name=^/{container}$"):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("CLI probe did not start")
+                time.sleep(0.1)
+            docker(
+                "exec",
+                "--user",
+                "21000:21000",
+                container,
+                "python3",
+                "-I",
+                "-c",
+                WRITE_CHECK,
+                "ro" if read_only else "rw",
+            )
+            docker("kill", "--signal=USR1", caller)
+            if docker("wait", caller) != "0":
+                raise RuntimeError("CLI help failed")
+            print(
+                "PASS: read-only cli-run cannot write /work; run folder remains writable"
+                if read_only
+                else "PASS: cli-run without read_only retains writable /work"
+            )
+            if read_only:
+                print("PASS: cli-run accepts a bounded prompt descriptor without a model call")
+        finally:
+            for name in (container, caller):
+                if exists(name):
+                    docker("rm", "-f", name)
+            # Wait for the launcher to release its overlap guard after the Docker exit.
+            if created:
+                for _ in range(30):
+                    response = client(
+                        image,
+                        group,
+                        21020,
+                        {"op": "cli-remove", "work_id": work_id},
+                        caller + "-remove",
+                    )
+                    if response == {"ok": True}:
+                        break
+                    time.sleep(0.1)
+                else:
+                    raise RuntimeError("CLI probe cleanup failed")
+            (STATE / (run_id + ".json")).unlink(missing_ok=True)
+            (STATE / (container + ".current")).unlink(missing_ok=True)
+
+
+def token_absent(work, needles):
+    """No-follow scan of regular files, after the clone container has exited."""
+    import stat
+
+    overlap = max(map(len, needles))
+    for _, _, files, directory in os.fwalk(work, follow_symlinks=False):
+        for name in files:
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            except OSError:
+                continue
+            with os.fdopen(fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    continue
+                previous = b""
+                while chunk := stream.read(65536):
+                    data = previous + chunk
+                    if any(needle in data for needle in needles):
+                        return False
+                    previous = data[-overlap:]
+    return True
+
+
+def private_clone_probe():
+    repository = os.environ["HOMELAB_PROBE_REPOSITORY"]
+    token = os.environ["HOMELAB_PROBE_TOKEN"]
+    branch = os.environ["HOMELAB_PROBE_BRANCH"]
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9._-]*", repository):
+        raise RuntimeError("invalid probe repository")
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repository}",
+        headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        if json.load(response).get("private") is not True:
+            raise RuntimeError("probe requires a private repository")
+    image = docker("image", "inspect", "--format", "{{.Id}}", "homelab-task:2")
+    group = grp.getgrnam("homelab-launch").gr_gid
+    work_id = "run-" + uuid.uuid4().hex
+    run_id = work_id + "-clone"
+    container = "homelab-launcher-task-" + run_id
+    work = Path("/srv/factory/work") / work_id
+    header = (
+        "Authorization: Basic " + base64.b64encode(("x-access-token:" + token).encode()).decode()
+    )
+    created = False
+    try:
+        if client(
+            image, group, 21020, {"op": "cli-create", "work_id": work_id}, work_id + "-create"
+        ) != {"ok": True}:
+            raise RuntimeError("private clone folder creation failed")
+        created = True
+        request = {
+            "op": "run",
+            "profile": "task",
+            "shape": "clone",
+            "workspace": "cli",
+            "run_id": run_id,
+            "work_id": work_id,
+            "repository": repository,
+            "branch": branch,
+            "env": {"GIT_CONFIG_VALUE_0": header},
+        }
+        if client(image, group, 21020, request, work_id + "-client", private=True) != {
+            "ok": True,
+            "exit_code": 0,
+        }:
+            raise RuntimeError("private clone failed")
+        if (work / ".git").stat().st_uid != 21000 or not token_absent(
+            work, [token.encode(), header.encode(), header.split()[-1].encode()]
+        ):
+            raise RuntimeError("private clone ownership or credential check failed")
+        print("PASS: private clone uses an environment-only header and leaves no token in its copy")
+    finally:
+        if exists(container):
+            docker("rm", "-f", container)
+        if created and client(
+            image, group, 21020, {"op": "cli-remove", "work_id": work_id}, work_id + "-remove"
+        ) != {"ok": True}:
+            raise RuntimeError("private clone cleanup failed")
+        (STATE / (run_id + ".json")).unlink(missing_ok=True)
+        (STATE / (container + ".current")).unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--private", action="store_true")
+    options = parser.parse_args()
     try:
         probe()
         ownership_probe()
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+        readonly_probe()
+        if options.private:
+            private_clone_probe()
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
         # Never echo container output or exception text from a privileged probe.
         raise SystemExit(
             "FAIL: task launcher probe; inspect installation and Docker state"

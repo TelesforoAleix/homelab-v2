@@ -56,9 +56,20 @@ def stop_all():
         stop_run(run_id)
 
 
-def capture(value, stdout_path, stderr_path, seconds, *, stdin=None, limit=256 * 1024 * 1024):
+def capture(
+    value,
+    stdout_path,
+    stderr_path,
+    seconds,
+    *,
+    stdin=None,
+    limit=256 * 1024 * 1024,
+    cancelled=lambda: False,
+):
     """Drain launcher output pipes with the host runner's deadline and exact byte limit."""
     run_id = value["run_id"]
+    if cancelled():
+        raise Refused("launcher_cancelled")
     result = []
     out_read, out_write = os.pipe()
     err_read, err_write = os.pipe()
@@ -68,7 +79,9 @@ def capture(value, stdout_path, stderr_path, seconds, *, stdin=None, limit=256 *
             descriptors = [out_write, err_write]
             if stdin is not None:
                 descriptors.append(stdin.fileno())
-            result.append(request(value, descriptors, timeout=seconds + 60))
+            result.append(
+                request(value, descriptors, timeout=seconds + 60 if seconds is not None else None)
+            )
         except Exception:
             result.append(None)
         finally:
@@ -86,9 +99,12 @@ def capture(value, stdout_path, stderr_path, seconds, *, stdin=None, limit=256 *
                 selector.register(out_read, selectors.EVENT_READ, out)
                 selector.register(err_read, selectors.EVENT_READ, err)
                 thread.start()
-                deadline = time.monotonic() + seconds
+                deadline = time.monotonic() + seconds if seconds is not None else None
                 while selector.get_map():
-                    remaining = deadline - time.monotonic()
+                    if cancelled():
+                        stopped = "interrupted"
+                        break
+                    remaining = deadline - time.monotonic() if deadline is not None else 1
                     if remaining <= 0:
                         stopped = "timeout"
                         break

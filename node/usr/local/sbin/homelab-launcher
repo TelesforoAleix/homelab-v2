@@ -46,6 +46,7 @@ LAYOUTS = {
             "exports": "/work/repos/<id>:ro",
         },
         "timeout": None,
+        "optional": {"read_only": False, "stdin": False},
     },
     "chat": {
         "network": "homelab-fence",
@@ -61,6 +62,7 @@ LAYOUTS = {
         "network": "none",
         "mounts": {"work": "/work:ro", "run": "/run/factory:rw"},
         "timeout": None,
+        "optional": {"stream": False},
     },
     "usage": {"network": "none", "mounts": {"codex-login": "/login:ro"}, "timeout": None},
 }
@@ -133,6 +135,11 @@ TASK_SHAPES["clone"] = {
         "GIT_CONFIG_GLOBAL=/dev/null",
         "GIT_TERMINAL_PROMPT=0",
     ],
+    "optional_environment": [
+        "GIT_CONFIG_COUNT=1",
+        "GIT_CONFIG_KEY_0=http.https://github.com/.extraHeader",
+        "GIT_CONFIG_VALUE_0",
+    ],
     "entrypoint": "/usr/bin/git",
     "entry": [],
 }
@@ -145,6 +152,7 @@ TASK_SHAPES["data"] = {
     "entry": ["-I", "-c"],
 }
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+CLI_WORK = re.compile(r"(?:ticket-[0-9]+-[0-9]+|run-[0-9a-f]{32})\Z")
 
 
 def branch_name(value):
@@ -167,7 +175,11 @@ def branch_name(value):
 
 
 def clone_arguments(request):
-    fields(request, ("op", "profile", "run_id", "work_id", "shape", "repository", "branch"))
+    fields(
+        request,
+        ("op", "profile", "run_id", "work_id", "shape", "repository", "branch"),
+        ("env", "workspace"),
+    )
     repository = request["repository"]
     if type(repository) is not str or not REPOSITORY.fullmatch(repository) or ".." in repository:
         raise Refused("invalid_repository")
@@ -177,7 +189,9 @@ def clone_arguments(request):
         "core.hooksPath=/dev/null",
         "-c",
         "credential.helper=",
+        *(["-c", "http.followRedirects=false"] if "env" in request else []),
         "clone",
+        *(["--no-hardlinks"] if request.get("workspace") == "cli" else []),
         "--template=",
         "--no-tags",
         "--single-branch",
@@ -400,7 +414,7 @@ def task_arguments(request):
     layout = TASK_SHAPES[shape]
     if shape == "clone":
         arguments = clone_arguments(request)
-        environment = {}
+        clone_environment(request)
     else:
         fields(
             request,
@@ -424,7 +438,7 @@ def task_arguments(request):
     workspace = request.get("workspace", "task")
     if workspace not in ("task", "cli"):
         raise Refused("invalid_role")
-    if workspace == "cli" and not re.fullmatch(r"ticket-[0-9]+-[0-9]+", request["work_id"]):
+    if workspace == "cli" and not CLI_WORK.fullmatch(request["work_id"]):
         raise Refused("invalid_identifier")
     root = TASK_WORK_ROOT if workspace == "task" else fence.WORK_ROOT
     work = root / identifier(request["work_id"])
@@ -486,11 +500,72 @@ def task_arguments(request):
         args.append("--interactive")
     for variable in layout["environment"]:
         args += ["--env", variable]
+    if shape == "clone" and "env" in request:
+        for variable in layout["optional_environment"]:
+            args += ["--env", variable]
     if layout["entrypoint"]:
         args += ["--entrypoint", layout["entrypoint"]]
     # Caller data only follows the immutable image and fixed entry. It can never
     # supply a Docker option, bind source, network, image or host command.
     return [*args, approved_image(TASK_IMAGE), *layout["entry"], *arguments], name
+
+
+def clone_environment(request):
+    if "env" not in request:
+        return {}
+    environment = request["env"]
+    if type(environment) is not dict or set(environment) != {"GIT_CONFIG_VALUE_0"}:
+        raise Refused("invalid_environment")
+    value = environment["GIT_CONFIG_VALUE_0"]
+    if (
+        type(value) is not str
+        or len(value) > 8192
+        or not re.fullmatch(r"Authorization: Basic [A-Za-z0-9+/]+=*", value)
+    ):
+        raise Refused("invalid_environment")
+    return environment
+
+
+CLI_INPUT_BYTES = 4 * 1024 * 1024
+
+
+def cli_input(descriptor):
+    """Snapshot a regular descriptor; contract-sized content never enters argv or records."""
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode):
+        raise Refused("invalid_stdin")
+    if info.st_size > CLI_INPUT_BYTES:
+        raise Refused("stdin_too_large")
+    source = os.pread(descriptor, CLI_INPUT_BYTES + 1, 0)
+    if len(source) > CLI_INPUT_BYTES:
+        raise Refused("stdin_too_large")
+    try:
+        document = decode_json(source)
+        fields(document, ("goal", "assets"), ("work",))
+        goal, assets = document["goal"], document["assets"]
+        if (
+            type(goal) is not str
+            or not 1 <= len(goal) <= 200_000
+            or "\x00" in goal
+            or type(assets) is not list
+            or len(assets) > 32
+        ):
+            raise ValueError
+        encoded = json.dumps(assets, ensure_ascii=False, allow_nan=False)
+        if len(encoded.encode("utf-8")) > 200_000:
+            raise ValueError
+        work = document.get("work")
+        if work is not None:
+            if type(work) is not dict:
+                raise ValueError
+            goal += "\n\nRun work policy (JSON):\n" + json.dumps(
+                work, ensure_ascii=False, allow_nan=False
+            )
+        if assets:
+            goal += "\n\nSupplied assets (JSON):\n" + encoded
+        return goal.encode("utf-8")
+    except (Refused, ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+        raise Refused("invalid_stdin") from None
 
 
 def run_arguments(request, profiles):
@@ -511,7 +586,12 @@ def run_arguments(request, profiles):
                 "exports",
                 *(("turn",) if profile == "chat" else ()),
             ),
+            ("read_only", "stdin") if profile == "cli-run" else (),
         )
+        if profile == "cli-run" and type(request.get("read_only", False)) is not bool:
+            raise Refused("invalid_read_only")
+        if profile == "cli-run" and type(request.get("stdin", False)) is not bool:
+            raise Refused("invalid_stdin")
         if type(request["tool"]) is not str or request["tool"] not in fence.TOOLS:
             raise Refused("invalid_tool")
         command = request["command"]
@@ -533,7 +613,9 @@ def run_arguments(request, profiles):
         ):
             raise Refused("invalid_turn")
     elif profile == "bundle":
-        fields(request, (*common, "folders", "branch"))
+        fields(request, (*common, "folders", "branch"), ("stream",))
+        if type(request.get("stream", False)) is not bool:
+            raise Refused("invalid_stream")
         if type(request["branch"]) is not str:
             raise Refused("invalid_branch")
     else:
@@ -561,8 +643,15 @@ def run_arguments(request, profiles):
             read_only_paths=paths,
             container_name=name if profile == "chat" else None,
         )
+        if request.get("read_only", False):
+            mount = f"type=bind,src={work},dst=/work"
+            args[args.index(mount)] = mount + ",readonly"
+        if request.get("stdin", False):
+            args.insert(args.index(fence.IMAGE), "--interactive")
     elif profile == "bundle":
         args = fence.bundle_arguments(repo=work, run=run, branch=request["branch"])
+        if request.get("stream", False):
+            args[args.index("/run/factory/branch.bundle")] = "-"
     else:
         args = usage_arguments(fence.IMAGE)
     # Resolve the tag immediately before launch and run the approved immutable id.
@@ -701,15 +790,15 @@ class Launcher:
                     ("cli" if operation.startswith("cli-") else "task"),
                     identifier(request.get("work_id")),
                 )
-            elif operation == "run" and profile == "cli-run":
+            elif operation == "run" and profile in ("cli-run", "bundle"):
                 folders = request.get("folders")
                 work = folders.get("work") if isinstance(folders, dict) else None
-                if isinstance(work, str) and re.fullmatch(r"ticket-[0-9]+-[0-9]+", work):
-                    self.authorize(uid, "cli-run")
+                if isinstance(work, str) and CLI_WORK.fullmatch(work):
+                    self.authorize(uid, profile)
                     key = "cli", work
             elif operation in ("own", "remove") and request.get("role") in ("work", "run"):
                 folder_id = request.get("folder_id")
-                if isinstance(folder_id, str) and re.fullmatch(r"ticket-[0-9]+-[0-9]+", folder_id):
+                if isinstance(folder_id, str) and CLI_WORK.fullmatch(folder_id):
                     key = "cli", folder_id
         if key is None:
             return self._execute(uid, request, descriptors)
@@ -735,12 +824,14 @@ class Launcher:
                 "review",
                 "data",
             )
-            if len(descriptors) != 2 + task_stdin:
+            cli_stdin = request.get("profile") == "cli-run" and request.get("stdin") is True
+            has_stdin = task_stdin or cli_stdin
+            if len(descriptors) != 2 + has_stdin:
                 raise Refused("invalid_descriptors")
             for fd in descriptors[:2]:
                 if fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY:
                     raise Refused("invalid_descriptors")
-            if task_stdin and (
+            if has_stdin and (
                 fcntl.fcntl(descriptors[2], fcntl.F_GETFL) & os.O_ACCMODE == os.O_WRONLY
             ):
                 raise Refused("invalid_descriptors")
@@ -751,6 +842,7 @@ class Launcher:
             if profile == "task" and request.get("workspace") == "cli":
                 self.authorize(uid, "cli-run")
             self.context.profile = profile
+            payload = cli_input(descriptors[2]) if cli_stdin else None
             args, name = run_arguments(request, self.profiles)
             run_id = request["run_id"]
             record = {"profile": profile, "name": name, "uid": uid, "exit_code": None}
@@ -768,20 +860,32 @@ class Launcher:
             )
             try:
                 try:
-                    code = subprocess.run(
-                        args,
-                        stdin=descriptors[2] if task_stdin else subprocess.DEVNULL,
-                        stdout=descriptors[0],
-                        stderr=descriptors[1],
-                        check=False,
-                        timeout=self.profiles[profile]["timeout"],
-                        **({"env": task_environment} if profile == "task" else {}),
-                    ).returncode
+                    with contextlib.ExitStack() as resources:
+                        source = descriptors[2] if task_stdin else subprocess.DEVNULL
+                        if cli_stdin:
+                            source = resources.enter_context(
+                                os.fdopen(
+                                    os.memfd_create("homelab-cli-input", os.MFD_CLOEXEC), "w+b"
+                                )
+                            )
+                            source.write(payload)
+                            source.seek(0)
+                        code = subprocess.run(
+                            args,
+                            stdin=source,
+                            stdout=descriptors[0],
+                            stderr=descriptors[1],
+                            check=False,
+                            timeout=self.profiles[profile]["timeout"],
+                            **({"env": task_environment} if profile == "task" else {}),
+                        ).returncode
                 except subprocess.TimeoutExpired:
                     code = 124
                 finally:
                     # Task/chat cleanup also covers a failed or interrupted Docker client.
-                    if profile in ("chat", "task"):
+                    if profile in ("chat", "task") or CLI_WORK.fullmatch(
+                        request.get("folders", {}).get("work", "")
+                    ):
                         try:
                             if self.container_exists(name):
                                 self.docker("rm", "-f", name)
@@ -810,7 +914,7 @@ class Launcher:
             work_id = identifier(request["work_id"])
             if operation.startswith("cli-"):
                 self.authorize(uid, "cli-run")
-                if not re.fullmatch(r"ticket-[0-9]+-[0-9]+", work_id):
+                if not CLI_WORK.fullmatch(work_id):
                     raise Refused("invalid_identifier")
                 roots, owner = (fence.WORK_ROOT, fence.RUN_ROOT), (fence.UID, fence.GID)
             else:
@@ -858,7 +962,9 @@ class Launcher:
                     if raw["uid"] != uid:
                         continue
                     record = self.read_record(uid, path.stem)
-                if record["profile"] in ("task", "cli-run") and self.is_current(path.stem, record):
+                if record["profile"] in ("task", "cli-run", "bundle", "usage") and self.is_current(
+                    path.stem, record
+                ):
                     if self.container_exists(record["name"]):
                         self.docker("rm", "-f", record["name"])
             return {"ok": True}

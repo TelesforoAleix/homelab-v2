@@ -1691,13 +1691,77 @@ asked for, and what it refused. To allow another host, add a line to
 new service and rehearsing a real task belong to the later switch, after owner review.
 The host's two task scripts and runner unit are unchanged.
 
-The queue/store, attempt order, one retry with check/review feedback, one review fix round,
+**Whole-slice, cut and review path.** `HOMELAB_RUN_ROLES` is a comma-separated subset of
+`slice,cut,review`, empty by default, passed independently to the API and `runs`. The API
+continues to reject those roles with `409 role_not_available` while empty. Enabling the
+setting alone starts nothing: the Compose `runs` profile is the second switch. Cut and
+review require `mode: read`; slice supports either mode. Explicit `limits` remain unsupported.
+
+These roles use Procrastinate's separate `runs` queue, two CLI worker slots and repository
+locks, across all three roles. Tickets retain their independent one-at-a-time loop. Ordered
+dependencies and cancellation remain application-owned. Executor choice comes only from the
+role/level list in `config/executors.yaml`, never the caller. Codex's launcher `usage` reading
+permits five-hour usage below 99%. Claude permits below 90% from a reading less than an hour
+old, or after the reset; its short probe is lazy, only when needed, after 30 minutes of age,
+and at most hourly. Weekly windows accompany both readings. Probe attempt times survive a
+restart, including failures. No usable choice means `waiting: usage_limit` with the earliest
+reset as `resume_at` and a scheduled automatic retry. Missing windows fail closed and retry
+in an hour. A turn ending at a usage limit waits for its executor's reset in the same session.
+
+The launcher creates each `run-<uuid>` work/run pair under the existing Factory roots, owned
+by uid 21000; `runs` mounts neither tree. There is no retained mirror. A fixed clone, without
+hardlinks, uses the existing branch, or the current remote default tip for a new branch.
+Its one-repository App token is an environment-only Git authorization header, scoped to
+GitHub HTTPS with redirects disabled. Neither URL, argv nor copy configuration stores it;
+the clone has no harness logins. Offline data containers set the branch, fixed committer and
+final-message schema. The harness gets its configured executor and the work policy/assets.
+`cli-run` alone has the logins. `read_only: true` makes the complete `/work` bind read-only;
+the run folder `/run/factory` stays writable for final-message output. Absent or false retains
+today's writable copy. Read turns never bundle or push.
+
+Whole-run prompts use `cli-run`'s optional `stdin: true`, with a third readable regular-file
+descriptor containing JSON `{goal, assets, work?}`. The launcher snapshots and validates it:
+at most 200,000 goal characters, 32 assets totalling at most 200,000 UTF-8 JSON bytes, and
+4 MiB for the complete envelope. NULs, malformed JSON and excess limits are refused before
+container creation. It renders the goal, work policy and assets into an anonymous memory
+file used only as Docker stdin. Codex reads `-`; Claude reads its piped prompt. No prompt
+enters request argv, launcher records or logs. Existing callers without the flag retain
+their two-descriptor, no-stdin behavior. The socket request limit remains 64 KiB.
+
+Write turns export through `bundle` with `stream: true`, which returns Git bundle bytes on
+stdout instead of writing `branch.bundle`. Existing bundle callers keep their file output.
+`runs` verifies outside the copy: exactly `HEAD` and the branch at the same tip, successful
+`git bundle verify`, and descent from `base_commit`. Every changed path in the base-to-tip
+diff must be within `allowed_files` (null means unrestricted, empty means none) and outside
+`pinned_paths`, including deletions and rename sources. Refusal ends
+`failed: outside_allowed_files` before push. Delivery rechecks the authenticated remote
+default, scans every outgoing public commit with the deny list/canary, and pushes with a
+fresh App token and no force. A rewritten branch ends `failed: push_refused`.
+
+Final kinds map to resumable states: `handover` to `done`, `question` to `question`,
+`escalation` to `escalated`, and `waiting` to `waiting: client_step`. A message resumes the
+same executor/session/copy and adds one attempt. `message_id` is unique per run, so retries
+add no extra turn. A completed run cannot resume onto a branch occupied by its successor.
+Usage waits resume automatically; client messages do not bypass that reset. Delivered tips
+are recorded in `commits`; final text is stored only in the application-owned run record.
+Transient CLI captures are removed with each private turn folder. Retained copies belong
+to the harness account, never to `runs`, and remain available for later messages.
+
+At startup, launcher recovery removes this caller's task, CLI, bundle and usage containers
+before database recovery. Each interrupted attempt ends `failed: interrupted`; the run queues
+once. A second interruption fails it permanently and cancels queued descendants. The lifetime
+runner locks and watchdog remain in force while workers stop. No new uid, network, host bind,
+Docker socket access or login access for `runs` is added.
+
+For tickets, the queue/store, attempt order, one retry with check/review feedback, one review fix round,
 check, commit, costs and eval-attempt retention follow the host runner. CLI routes keep the
 existing launcher `cli-run` profile and their 20-minute turn limit. Networkless `data` task
 containers export/import regular files through pipes; only allowed, unpinned regular files
 return. Deletions, links, Git metadata and `.venv` do not return. The launcher creates the
 CLI's `ticket-<id>-<attempt>` work/run folders as uid 21000 and removes them after a turn.
 Neither those folders nor task copies ever belong to `runs`.
+Whole-run CLI turns retain the profile's absent deadline, with prompt cancellation on
+shutdown; clone, probe and ticket/check deadlines remain separate.
 
 `runs` asks the launcher to create each fresh task folder as the existing `homelab-task`
 account (neither root nor uid 21020). The `task-work` parent must remain root-owned 0755.
@@ -1711,7 +1775,8 @@ HTTPS URL and `/work`; hooks and credential helpers are off. The other five shap
 their networks, mounts, limits and commands. The launcher also offers authorized
 `task-create`/`task-remove`, `cli-create`/`cli-remove`, `task-image`, `task-recover` and `ping`
 operations. Task removal is fd-based and does not follow links; Factory provisioning/data
-access is restricted to task-attempt names and requires both `task` and `cli-run` permission.
+access is restricted to `ticket-<id>-<attempt>` or `run-<uuid>` names and requires both
+`task` and `cli-run` permission.
 
 For pushes, a short-lived RS256 App JWT is signed with OpenSSL. Each push requests a fresh
 installation token restricted to that one repository with contents-write/metadata-read
@@ -1783,7 +1848,8 @@ The database login comes from the same `HOMELAB_DB_PASSWORD` interpolation as th
 1. In `/srv/homelab/homelab-v2`, run `git pull --ff-only` by hand. Wait for launcher
    clients to be idle. Save the installed launcher, profile metadata and launcher unit for
    rollback. Show each diff against the committed `node/` file before
-   installing. Parse the Python/JSON and run `systemd-analyze verify` on the launcher unit
+   installing. Stop `homelab-launcher.service` before copying the launcher and metadata.
+   Parse the Python/JSON and run `systemd-analyze verify` on the launcher unit
    and socket. Install root:root, 0755 for the script and 0644 for metadata/unit.
 2. The launcher sandbox needs `/srv/homelab/task-work` in `ReadWritePaths` so it can create
    task-owned folders. Keep every other sandbox setting. Run `systemctl daemon-reload`,
@@ -1797,8 +1863,12 @@ The database login comes from the same `HOMELAB_DB_PASSWORD` interpolation as th
    `runs` has no running container.
    Validate Compose with the profile off and on. Build the optional service explicitly:
    `sudo docker compose --profile runs build runs`.
-5. Run `sudo python3 tests/launcher_task_probe.py` (the original boundary checks plus the
-   ownership/clone checks), and `sudo homelab-check-fence --launcher`. The ownership probe
+5. Run `sudo python3 tests/launcher_task_probe.py` (the original boundary checks, ownership/clone
+   checks and both writable/read-only CLI probes), and `sudo homelab-check-fence --launcher`.
+   Require `PASS: read-only cli-run cannot write /work; run folder remains writable`.
+   The CLI probe holds `codex exec --help` on a pipe and checks actual writes in that same
+   container; it makes no model call. Also run the `--private` probe described below.
+   The ownership probe
    creates and removes only its random scratch folder, clones the public platform `main`
    through the fixed shape and makes no model call or push.
 6. With `systemctl is-active homelab-task-runner.service` reporting `active`, run
@@ -1817,7 +1887,33 @@ group 10001, mode 0750; costs need owner 21020, group 10001, mode 0770. Final di
 need owner 21020, group 10001, mode 0750 (files 0640). Do not change gateway configuration or
 mounts. Run the rehearsal before changing startup policy. The explicit enable command is
 `sudo docker compose --profile runs up -d runs`; ordinary service starts still exclude it.
-Do not set `COMPOSE_PROFILES=runs` globally during this installation.
+The switch must also set `HOMELAB_RUN_ROLES=slice,cut,review` in the private node environment
+and recreate the API and `runs` to pick it up. Rehearse real slices in that switch, after
+owner review. Leave both role setting and profile off during this installation; do not set
+`COMPOSE_PROFILES=runs` globally.
+
+The private clone probe needs an existing private repository/branch covered by the platform
+App and a fresh installation token restricted to that repository. Supply the token in a
+root shell with tracing off and silent input, never a command argument, env file or journal:
+
+```bash
+sudo -i
+cd /srv/homelab/homelab-v2
+set +x
+export HOMELAB_PROBE_REPOSITORY='<private owner/repository>'
+export HOMELAB_PROBE_BRANCH='<existing branch>'
+read -rsp 'Repository-scoped installation token: ' HOMELAB_PROBE_TOKEN; echo
+export HOMELAB_PROBE_TOKEN
+python3 tests/launcher_task_probe.py --private
+unset HOMELAB_PROBE_TOKEN HOMELAB_PROBE_REPOSITORY HOMELAB_PROBE_BRANCH
+```
+
+The probe confirms GitHub reports a private repository, clones into a launcher-created
+uid-21000 copy using the environment-only header, scans regular files without following
+links for the token/header, and removes only its random scratch folders and containers.
+Require `PASS: private clone uses an environment-only header and leaves no token in its copy`.
+The launcher client container also receives its request through an environment variable,
+so its argv cannot expose the header. No real slice turn or push is part of these probes.
 
 **Launcher socket restarts must be followed by restarting `runs` whenever it is enabled:**
 `sudo docker compose --profile runs restart runs`. Its healthcheck sends `ping` through the
@@ -1970,6 +2066,9 @@ copies using [Runs service: installed, disabled](#runs-service-installed-disable
 the launcher sandbox write allowance in its installed unit, validate it and restart every
 socket client after the launcher socket. Keep the old host runner active and `runs` disabled;
 the sole startup test must refuse it before claim.
+Install the launcher/profile updates for private cloning, streamed bundles and optional
+read-only CLI work using that same guide. Run the read-only and private-clone probes, restart
+the socket's clients, and keep `HOMELAB_RUN_ROLES` empty as well as the Compose profile off.
 
 Install the task launcher's three host files and run its non-root boundary probe using
 [Task launcher profile](#task-launcher-profile), after merge and the owner's go. This adds
@@ -2795,9 +2894,9 @@ profile, mount or network.
 | Operation | Exact request fields besides `op` |
 |---|---|
 | `own`, `remove` | `role` (`work` or `run`), `folder_id` |
-| `run`, profile `cli-run` | `profile`, `run_id`, `folders` (`work` and `run` ids), `tool` (`claude` or `codex`), `command` (argv), `exports` (list of repository export ids, possibly empty) |
+| `run`, profile `cli-run` | `profile`, `run_id`, `folders` (`work` and `run` ids), `tool` (`claude` or `codex`), `command` (argv), `exports` (list of repository export ids, possibly empty); optional boolean `read_only` and `stdin`, both default false |
 | `run`, profile `chat` | The `cli-run` fields plus positive integer `turn` (at most 2^63-1) |
-| `run`, profile `bundle` | `profile`, `run_id`, `folders` (`work` and `run` ids), `branch` |
+| `run`, profile `bundle` | `profile`, `run_id`, `folders` (`work` and `run` ids), `branch`; optional boolean `stream` (default false) |
 | `run`, profile `usage` | `profile`, `run_id` |
 | `run`, profile `task` | `profile`, `run_id`, `work_id`, `shape`, `env`, `arguments` (see [task contract](#task-launcher-profile)) |
 | `status`, `stop` | `run_id` |
@@ -2813,8 +2912,10 @@ uses Python's descriptor-based, symlink-resistant tree removal, including unlink
 symlinks without touching their targets. Neither operation accepts the login role.
 
 For `run` only, send two writable descriptors (stdout, stderr) with `SCM_RIGHTS`,
-for example using `socket.send_fds`. Task `agent` and `review` require a third, readable stdin
-descriptor; every other shape/profile takes exactly two. Send no descriptors for other operations. The helper
+for example using `socket.send_fds`. Task `agent`, `review` and `data` require a third readable
+stdin descriptor. CLI runs with `stdin: true` require a third readable regular-file descriptor,
+validated as described in [the whole-run path](#runs-service-installed-disabled).
+Every other shape/profile takes exactly two. Send no descriptors for other operations. The helper
 waits and returns `{"ok":true,"exit_code":N}`. All container output, including usage, goes
 directly to those descriptors, never to the response or journal. `usage` has no network and
 only the Codex login mounted read-only; its fixed in-container Python command scans session
@@ -2888,6 +2989,13 @@ The caller owns the deadline and uses `stop`; the launcher adds no shape timeout
 removal of any remaining task container after the Docker client exits or fails. Status,
 single-use ids, caller ownership and content-free audit records follow the existing contract.
 
+The clone shape additionally accepts optional `workspace: cli` for a launcher-created
+`ticket-<id>-<attempt>` or `run-<uuid>` copy. Its optional `env` must contain exactly
+`GIT_CONFIG_VALUE_0`, a bounded, newline-free `Authorization: Basic …` header. The launcher
+fixes `GIT_CONFIG_COUNT=1` and the GitHub-scoped header key, forwards the value only through
+the Docker environment, and disables redirects. With no `env`, public clone callers retain
+their previous command and environment. Neither clone mode mounts logins.
+
 After merge and the owner's go, wait for launcher clients to be idle and run from the node's
 committed tree. Prepare rollback first: retain the three files from the previous committed
 version and the current approval list. The base below is the version before this profile;
@@ -2915,6 +3023,7 @@ sudo systemd-analyze verify /etc/systemd/system/homelab-launcher.socket /etc/sys
 # Review and explicitly approve this already-built task image id, preserving fence approvals.
 sudo docker image inspect --format '{{.Id}}' homelab-task:2
 sudo sh -ec 'task_image_id=$(docker image inspect --format "{{.Id}}" homelab-task:2); grep -qxF "$task_image_id" /etc/homelab-launcher/images || printf "%s\n" "$task_image_id" >> /etc/homelab-launcher/images'
+sudo systemctl stop homelab-launcher.service
 sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-launcher /usr/local/sbin/homelab-launcher
 sudo install -m 0644 -o root -g root node/etc/homelab-launcher/profiles.json node/etc/homelab-launcher/callers.json /etc/homelab-launcher/
 # Restarting a socket alone does not reload an already-running helper's configuration.
@@ -2923,7 +3032,10 @@ sudo systemctl restart homelab-launcher.socket
 sudo python3 tests/launcher_task_probe.py
 ```
 
-Require the original seven PASS lines and four ownership/clone PASS lines. The latter verify
+Require the original seven PASS lines, four ownership/clone PASS lines and three CLI PASS lines.
+The CLI probes check writable defaults, read-only work with writable run output, and bounded
+prompt stdin without a model call. With `--private`, require a fifteenth private-clone PASS.
+The ownership/clone checks verify
 launcher-created ownership, the fixed proxied clone, input refusal and scratch cleanup.
 The root orchestrator creates a disposable task-owned scratch
 folder with empty `.git`/`.venv` directories. Its test container is uid 21020, offline,

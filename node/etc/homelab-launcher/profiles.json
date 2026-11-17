@@ -14,7 +14,11 @@
       "run": "/run/factory:rw",
       "exports": "/work/repos/<id>:ro"
     },
-    "timeout": null
+    "timeout": null,
+    "optional": {
+      "read_only": false,
+      "stdin": false
+    }
   },
   "chat": {
     "image": "homelab-fence:1",
@@ -46,7 +50,10 @@
       "work": "/work:ro",
       "run": "/run/factory:rw"
     },
-    "timeout": null
+    "timeout": null,
+    "optional": {
+      "stream": false
+    }
   },
   "usage": {
     "image": "homelab-fence:1",
@@ -182,7 +189,12 @@
           "GIT_TERMINAL_PROMPT=0"
         ],
         "entrypoint": "/usr/bin/git",
-        "entry": []
+        "entry": [],
+        "optional_environment": [
+          "GIT_CONFIG_COUNT=1",
+          "GIT_CONFIG_KEY_0=http.https://github.com/.extraHeader",
+          "GIT_CONFIG_VALUE_0"
+        ]
       },
       "data": {
         "network": "none",

@@ -132,6 +132,22 @@ CREATE TABLE IF NOT EXISTS homelab_runs (
 CREATE INDEX IF NOT EXISTS homelab_runs_changes ON homelab_runs(application, revision);
 CREATE INDEX IF NOT EXISTS homelab_runs_predecessors ON homelab_runs USING gin(predecessors);
 
+-- Expand only; the host task bridge still handles tickets and evals unchanged.
+ALTER TABLE homelab_runs ADD COLUMN IF NOT EXISTS resumable boolean NOT NULL DEFAULT false;
+ALTER TABLE homelab_runs ADD COLUMN IF NOT EXISTS session_id text;
+ALTER TABLE homelab_runs ADD COLUMN IF NOT EXISTS work_id text;
+ALTER TABLE homelab_runs ADD COLUMN IF NOT EXISTS copy_ready boolean NOT NULL DEFAULT false;
+ALTER TABLE homelab_runs ADD COLUMN IF NOT EXISTS harness_started boolean NOT NULL DEFAULT false;
+ALTER TABLE homelab_runs ADD COLUMN IF NOT EXISTS interruptions integer NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS homelab_run_messages (
+    run_id uuid NOT NULL REFERENCES homelab_runs(id),
+    message_id text NOT NULL,
+    text text NOT NULL,
+    consumed boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (run_id, message_id)
+);
+
 -- All bridge writers take this transaction lock before locking task or run rows. Revisions
 -- therefore become visible in order; a changed-after cursor cannot skip a later commit.
 CREATE OR REPLACE FUNCTION homelab_run_touch() RETURNS trigger AS $$
@@ -154,6 +170,10 @@ DECLARE
 BEGIN
     SELECT id, status INTO run_id, run_status FROM homelab_runs WHERE task_id = NEW.id;
     IF run_id IS NULL OR run_status = 'cancelled' THEN RETURN NEW; END IF;
+    -- Whole-run conversations own their state, including waiting and resumable escalation.
+    IF EXISTS (SELECT 1 FROM homelab_runs WHERE id = run_id
+               AND request->>'role' IN ('slice', 'cut', 'review')
+               AND request->>'eval' IS NULL) THEN RETURN NEW; END IF;
     run_reason = CASE
         WHEN NEW.reason IN ('check_failed', 'review_rejected', 'outside_allowed_files', 'interrupted')
             THEN NEW.reason

@@ -964,3 +964,41 @@ connection loss; the next runner cleans up recorded containers before recovery/c
 Holding the unchanged root task script's flock through a read-only `/run/lock` bind also
 excludes manual runs; its ephemeral root:10001 0640 inode is prepared at the switch, and
 missing or unreadable state fails closed.
+
+**2026-11-17 — Whole-run copies stay launcher-owned, including private clones.** Slice, cut
+and review use launcher-created uid-21000 work/run pairs in the existing roots; no mirror
+is retained. A new branch starts at the fetched remote default tip, an existing branch at
+its own tip. Clone and checkout/configuration writes happen only in launched containers.
+One-repository App authorization reaches the fixed clone as an environment-only HTTP header,
+with redirects disabled, no logins and no credential persisted in the copy. The optional
+`cli-run` read-only work bind preserves writable run output and existing callers' defaults.
+Bundles can stream through the existing socket descriptors, avoiding an orchestrator mount
+of the harness folders. The owner explicitly approved the optional read-only flag.
+
+**2026-11-17 — Delivery checks the exported diff against the pinned base.** Allowed paths
+and pinned paths are enforced independently of harness instructions, outside the copy and
+before a push. Null allowed paths means unrestricted, an empty list permits no changes;
+entries cover themselves and their descendants. The diff disables renames so deletion or
+renaming of a pin cannot bypass the check. An invalid path set ends the run with
+`outside_allowed_files`, without delivering any part. Bundle head/ancestry validation, the
+remote default guard, the public outgoing-commit deny-list scan and non-force App push
+remain separate checks.
+
+**2026-11-17 — Ordered executor fallback waits durably on subscription windows.** Each new
+run tries its configured role/level list in order: Codex below 99% five-hour usage, then
+Claude below 90% with a reading less than an hour old or a passed reset. Claude probes happen
+only when needed, after 30 minutes of age and at most hourly, including failed probes across
+restarts. Weekly readings are retained, without adding another gate. No usable executor
+means a scheduled Procrastinate retry at the earliest reset; unknown readings fail closed
+and retry in an hour. Once started, conversation and usage-limit resumes retain the same
+executor, session and copy. The two-worker `runs` queue uses Procrastinate repository locks;
+tickets keep their independent serial queue.
+
+**2026-11-17 — CLI prompt stdin preserves the existing API bounds.** The owner authorized
+an optional `stdin` flag after the 64 KiB launcher line proved too small for the contract's
+200,000-character goal plus 200 KB of assets. A third regular-file descriptor carries a
+bounded JSON envelope. The launcher validates separate goal/asset limits, snapshots it into
+an anonymous memory file, and passes only the rendered prompt to Docker stdin. No content
+enters argv, records or logs, and existing callers retain their previous no-stdin behavior.
+The owner also authorized changing `api/run_contract.py` to admit read mode only for enabled
+whole-run roles; explicit limits and ticket/eval read mode keep their existing rejection.

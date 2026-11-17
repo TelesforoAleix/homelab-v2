@@ -58,7 +58,9 @@ these task shapes to uid 21020 (`homelab-runs`), alongside its Factory profiles.
 runner continues to start its own containers. The platform image also contains an
 [unprivileged `runs` service](docs/operations.md#runs-service-installed-disabled), installed under
 the opt-in Compose `runs` profile and disabled. It uses the launcher for every container and
-repository-scoped GitHub App tokens for pushes; the host runner remains the only active runner.
+repository-scoped GitHub App tokens for clones and pushes; the host runner remains the only active
+runner. Whole-slice CLI turns, read-only cut/review runs, conversation resumes and usage fallback
+are installed behind the separate, empty-by-default `HOMELAB_RUN_ROLES` setting.
 Only the agent reaches LiteLLM, on `homelab-tasks`, with a one-run token for its purpose and a
 request budget; prepare reaches only the package indexes, through a proxy.
 Tasks are [submitted](ARCHITECTURE.md#task-store) as a file to a durable store and queue in
@@ -73,9 +75,10 @@ The existing task request and time limits apply; unknown model IDs fail upstream
 The [version-one run API](docs/run-api.md) accepts application-owned, idempotent ticket writes
 and eval runs on loopback. A root-owned key file holds bearer digests, scopes and each key's
 repository/default-branch map; other applications cannot read a run. Runs share the existing
-Postgres task queue, report attempts and usage, and support ordered dependencies and queued
-cancellation. Read mode and requests containing `limits` return `409 role_not_available` before
-storage. The legacy eval endpoints keep their response shapes and use the same key file.
+Postgres task store and queues, report attempts and usage, and support ordered dependencies and queued
+cancellation. Slice, cut and review roles, including their read mode, return
+`409 role_not_available` unless explicitly enabled; requests containing `limits` still return
+409 before storage. The legacy eval endpoints keep their response shapes and use the same key file.
 
 A [read-only code context server](docs/operations.md#code-context-server) gives Mac coding agents
 symbol navigation over SSH. It runs Serena without network access against separate,
