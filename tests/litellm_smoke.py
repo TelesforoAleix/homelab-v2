@@ -318,6 +318,7 @@ def run(unset=False):
                         "image-gpt-2.5-flare",
                         "image-gpt-2.5-sunburst",
                         "image-nano-banana-2.1",
+                        "task-reviewer",
                         "task-worker",
                         "translate",
                         "vision",

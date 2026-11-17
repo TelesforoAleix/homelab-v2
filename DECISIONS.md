@@ -916,3 +916,9 @@ empty/null rather than inferred. These boundaries preserve the existing host exe
 from `deepseek/deepseek-v4.1-flash` to `deepseek/deepseek-v4-flash` after v4.1 Flash
 stalled until timeout on Pi requests carrying its system prompt and tools, although plain chat
 still answered. Results from `pi/base` before and after the move are not comparable.
+
+**2026-11-17 — The ticket reviewer has its own purpose without reasoning.** Use `task-reviewer`
+with the same model and gateway as `task-worker`, but `reasoning_effort: none`. In two eval
+runs on 2026-11-16, two of seven review rounds ended `review_failed` because the final assistant
+message contained only a thinking block and no text or `VERDICT:` line; worker turns passed
+their checks every time. The role table is updated separately by the operator.

@@ -58,13 +58,21 @@ def client(hook, peer=TASK_PEER):
     return TestClient(app, client=peer), app.state.reached
 
 
-def test_valid_token_reaches_its_purpose(hook, tmp_path):
-    grant(tmp_path)
+@pytest.mark.parametrize(
+    "purpose,other", [("task-worker", "task-reviewer"), ("task-reviewer", "task-worker")]
+)
+def test_valid_token_reaches_its_purpose(hook, tmp_path, purpose, other):
+    grant(tmp_path, purposes=[purpose])
     http, reached = client(hook)
-    response = http.post("/v1/chat/completions", headers=BEARER, json=CHAT)
+    request = {**CHAT, "model": purpose}
+    response = http.post("/v1/chat/completions", headers=BEARER, json=request)
     assert response.status_code == 200
+    assert (
+        http.post("/v1/chat/completions", headers=BEARER, json={**CHAT, "model": other}).status_code
+        == 403
+    )
     assert [(method, path, json.loads(body)) for method, path, body in reached] == [
-        ("POST", "/v1/chat/completions", CHAT)
+        ("POST", "/v1/chat/completions", request)
     ]
 
 

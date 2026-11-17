@@ -1617,6 +1617,8 @@ role in `homelab_roles`; a task with none ends `escalated`, `no_usable_review_ro
 attempt. A `review_rejected` attempt gets one more try on the same route from a fresh clone, with
 the reviewer's notes in the ticket; `review_failed` and `review_diff_too_large` go to the next route.
 Each review is a `review` trace of role `ticket-reviewer`.
+The seeded reviewer route uses `task-worker`. The `task-reviewer` purpose uses the same model
+with reasoning disabled; selecting it for the reviewer is an operator update to `homelab_roles`.
 
 The worker also accepts `{"kind":"cli","tool":"codex","model":"<model>","effort":"high"}`.
 The model and effort come from the role table; supported effort values are `none`, `minimal`,
