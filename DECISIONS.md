@@ -1002,3 +1002,13 @@ an anonymous memory file, and passes only the rendered prompt to Docker stdin. N
 enters argv, records or logs, and existing callers retain their previous no-stdin behavior.
 The owner also authorized changing `api/run_contract.py` to admit read mode only for enabled
 whole-run roles; explicit limits and ticket/eval read mode keep their existing rejection.
+
+
+**2026-11-17 — Launcher work roots may be root-owned sticky directories.** Task and CLI
+create/remove operations accept root-owned parents with no group/other write, or with the
+sticky bit set. Factory already uses root:root 1733 work/run roots so its runner can create
+entries. Sticky directories let only root or the entry owner rename or remove a child;
+the launcher-created children remain owned by the task account or uid 21000. The existing
+collision check and mkdir's refusal of existing names keep pre-created entries out.
+Non-root-owned parents and writable non-sticky parents remain refused. No other launcher
+validation or folder ownership changes.

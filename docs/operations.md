@@ -2061,6 +2061,13 @@ sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-dump node/usr/l
 
 ## Rebuilding the node
 
+Install the launcher root-check update using [Install the fixed fence launcher](#install-the-fixed-fence-launcher).
+Task and CLI create/remove operations require root-owned work/run roots: group or other
+write is accepted only with the sticky bit (including Factory's existing 1733 roots).
+Non-root-owned roots and writable roots without the sticky bit remain refused. After
+installation, run `sudo python3 tests/launcher_task_probe.py` (14 checks), and add `--private`
+with the guide's private-repository credentials for the fifteenth check.
+
 Install the disabled container runner, launcher folder/clone support and per-service secret
 copies using [Runs service: installed, disabled](#runs-service-installed-disabled). Include
 the launcher sandbox write allowance in its installed unit, validate it and restart every

@@ -425,3 +425,58 @@ def test_private_clone_forwards_only_header_environment_and_records_no_credentia
         assert env.service.execute(os.getuid(), request, [out.fileno()] * 2)["exit_code"] == 0
     assert len(calls) == 1
     assert all(header not in path.read_text() for path in env.state.iterdir())
+
+
+@pytest.mark.parametrize("workspace", ["task", "cli-work", "cli-run"])
+@pytest.mark.parametrize("action", ["create", "remove"])
+@pytest.mark.parametrize(
+    "mode,owner,accepted",
+    [
+        (0o755, 0, True),
+        (0o1733, 0, True),
+        (0o777, 0, False),
+        (0o755, 21020, False),
+        (0o1733, 21020, False),
+    ],
+)
+def test_work_root_permissions(
+    env, tmp_path, monkeypatch, workspace, action, mode, owner, accepted
+):
+    task_root = tmp_path / "task-work"
+    task_root.mkdir()
+    monkeypatch.setattr(launcher, "TASK_WORK_ROOT", task_root)
+    roots = (task_root, launcher.fence.WORK_ROOT, launcher.fence.RUN_ROOT)
+    target = roots[("task", "cli-work", "cli-run").index(workspace)]
+    target.chmod(mode)
+    root_inodes = {root.stat().st_ino for root in roots}
+    target_inode = target.stat().st_ino
+    original = os.fstat
+
+    def metadata(fd):
+        values = list(original(fd))
+        if values[1] in root_inodes:
+            values[4] = owner if values[1] == target_inode else 0
+        return os.stat_result(values)
+
+    monkeypatch.setattr(os, "fstat", metadata)
+    monkeypatch.setattr(os, "fchown", lambda *args: None)
+    monkeypatch.setattr(
+        launcher.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=21001, pw_gid=21001)
+    )
+    env.service.callers["21020"] = ["task", "cli-run"]
+    work_id = "run-" + "a" * 32
+    active_roots = (task_root,) if workspace == "task" else roots[1:]
+    if action == "remove":
+        for root in active_roots:
+            (root / work_id).mkdir()
+    operation = ("task" if workspace == "task" else "cli") + "-" + action
+    request = {"op": operation, "work_id": work_id}
+    if not accepted:
+        with pytest.raises(launcher.Refused, match="unsafe_work_root"):
+            env.service.execute(21020, request, [])
+        return
+    assert env.service.execute(21020, request, []) == {"ok": True}
+    assert all((root / work_id).is_dir() is (action == "create") for root in active_roots)
+    if action == "create":
+        with pytest.raises(FileExistsError):
+            env.service.execute(21020, request, [])
