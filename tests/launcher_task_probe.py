@@ -7,6 +7,8 @@ Run from the merged checkout, after owner approval and installation:
 import argparse
 import base64
 import grp
+import importlib.machinery
+import importlib.util
 import json
 import os
 import pwd
@@ -303,21 +305,34 @@ def ownership_probe():
     print("PASS: ownership probe leaves no work folder")
 
 
-WRITE_CHECK = """import errno, pathlib, sys
-work = pathlib.Path('/work/probe-write')
-try:
-    work.write_text('probe')
-except OSError as error:
-    assert sys.argv[1] == 'ro' and error.errno == errno.EROFS
-else:
-    assert sys.argv[1] == 'rw'
-    work.unlink()
-run = pathlib.Path('/run/factory/probe-write')
-run.write_text('probe'); run.unlink()
-"""
+def check_cli_mounts(arguments, read_only):
+    def mounts(destination):
+        return [
+            value
+            for flag, value in zip(arguments, arguments[1:], strict=False)
+            if flag == "--mount"
+            and value.startswith("type=bind,")
+            and f"dst={destination}" in value.split(",")
+        ]
+
+    work = mounts("/work")
+    run = mounts("/run/factory")
+    if (
+        len(work) != 1
+        or work[0].split(",")[-1] != ("readonly" if read_only else "dst=/work")
+        or work[0].split(",").count("readonly") != int(read_only)
+        or len(run) != 1
+        or "readonly" in run[0].split(",")
+    ):
+        raise RuntimeError("CLI probe mount check failed")
 
 
 def readonly_probe():
+    loader = importlib.machinery.SourceFileLoader("launcher", "/usr/local/sbin/homelab-launcher")
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    launcher = importlib.util.module_from_spec(spec)
+    loader.exec_module(launcher)
+    profiles, _ = launcher.load_configuration()
     image = docker("image", "inspect", "--format", "{{.Id}}", "homelab-task:2")
     group = grp.getgrnam("homelab-launch").gr_gid
     for read_only in (False, True):
@@ -338,16 +353,19 @@ def readonly_probe():
                 "folders": {"work": work_id, "run": work_id},
                 "tool": "codex",
                 "exports": [],
-                "command": ["python3", "-I", "-c", WRITE_CHECK, "ro" if read_only else "rw"],
+                "command": ["codex", "exec", "--help"],
             }
             if read_only:
                 request["read_only"] = True
                 request["stdin"] = True
             run_client(image, group, 21020, request, caller)
+            arguments, _ = launcher.run_arguments(request, profiles)
+            check_cli_mounts(arguments, read_only)
             print(
-                "PASS: read-only cli-run cannot write /work; run folder remains writable"
+                "PASS: read-only cli-run runs with a read-only /work mount; "
+                "run folder stays writable"
                 if read_only
-                else "PASS: cli-run without read_only retains writable /work"
+                else "PASS: cli-run without read_only runs with a writable /work mount"
             )
             if read_only:
                 print("PASS: cli-run accepts a bounded prompt descriptor without a model call")
@@ -468,7 +486,7 @@ if __name__ == "__main__":
         readonly_probe()
         if options.private:
             private_clone_probe()
-    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
+    except Exception:
         # Never echo container output or exception text from a privileged probe.
         raise SystemExit(
             "FAIL: task launcher probe; inspect installation and Docker state"
