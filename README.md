@@ -64,7 +64,8 @@ usage fallback are installed behind the separate, empty-by-default `HOMELAB_RUN_
 Ended CLI copies are removed through the launcher immediately on failure/cancellation and
 after three days otherwise; later messages prepare a fresh branch copy and retain the harness
 session. The [node rehearsal](docs/operations.md#runs-rehearsal-on-the-node) temporarily enables
-the roles and restores the old runner afterwards.
+the roles and restores the old runner afterwards. A [switch procedure](docs/operations.md#switch-to-runs)
+checks delivery and rollback; a tmpfiles rule recreates the shared lock at boot.
 Only the agent reaches LiteLLM, on `homelab-tasks`, with a one-run token for its purpose and a
 request budget; prepare reaches only the package indexes, through a proxy.
 Tasks are [submitted](ARCHITECTURE.md#task-store) as a file to a durable store and queue in
