@@ -124,7 +124,10 @@ class Node:
                 repository,
             ]
         )
-        return self.http(method, f"https://api.github.com/repos/{repository}/{path}", token, body)
+        url = f"https://api.github.com/repos/{repository}"
+        if path:
+            url += f"/{path}"
+        return self.http(method, url, token, body)
 
     def session(self, run_id):
         # Canonical UUID interpolation only. Only this run's session column is read.

@@ -314,6 +314,20 @@ def test_copy_checks_include_ticket_work_and_never_query_content(monkeypatch, tm
     assert "goal" not in query and "session_id" not in query
 
 
+def test_github_repository_urls(monkeypatch):
+    node = object.__new__(probe.Node)
+    node.settings = SimpleNamespace(runs_container="runner")
+    urls = []
+    monkeypatch.setattr(probe, "command", lambda argv: SECRET)
+    monkeypatch.setattr(node, "http", lambda method, url, key, body: urls.append(url))
+    node.github("GET", probe.PRIVATE, "")
+    node.github("GET", probe.PRIVATE, "git/refs/heads/main")
+    assert urls == [
+        f"https://api.github.com/repos/{probe.PRIVATE}",
+        f"https://api.github.com/repos/{probe.PRIVATE}/git/refs/heads/main",
+    ]
+
+
 def test_token_helper_never_passes_secret_in_arguments(monkeypatch, capsys):
     node = object.__new__(probe.Node)
     node.settings = SimpleNamespace(runs_container="runner")

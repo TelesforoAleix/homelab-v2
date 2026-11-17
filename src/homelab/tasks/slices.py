@@ -339,7 +339,7 @@ def recover(connection):
                 saved = cursor.execute(
                     "SELECT * FROM homelab_runs WHERE task_id = %s", (args["task_id"],)
                 ).fetchone()
-            if saved is None:
+            if saved is None or saved["status"] != "running":
                 finish_job(connection, job_id, "aborted")
                 continue
             result = interrupted_state(saved["interruptions"])
