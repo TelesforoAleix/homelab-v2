@@ -19,6 +19,7 @@ from homelab.tasks.store import Refused
 from homelab.tasks.submit import Strict
 
 Count = Annotated[int, Field(ge=0)]
+Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{40,64}$")]
 
 
 class BeginAttempt(Strict):
@@ -72,6 +73,7 @@ class EndTask(Strict):
     job_id: int
     status: Literal["done", "escalated", "failed"]
     reason: str | None = None
+    commits: list[Sha] = Field(default_factory=list)
 
 
 Event = Annotated[BeginAttempt | EndAttempt | EndTask, Field(discriminator="event")]
@@ -174,6 +176,24 @@ def end_task(connection: Any, event: EndTask) -> list[int]:
         ).rowcount
         if not closed:
             return released
+        if event.status == "done" and event.reason is None and event.commits:
+            # A ticket attempt that pushed appends its base..commit SHAs, oldest first, to any
+            # already on the linked run, in the same transaction that ends it. A kept eval or
+            # any non-pushed ending leaves commits untouched.
+            connection.execute(
+                """UPDATE homelab_runs
+                   SET commits = (
+                       SELECT array_agg(sha ORDER BY ord)
+                       FROM (
+                           SELECT sha, MIN(ord) AS ord
+                           FROM unnest(commits || %s::text[]) WITH ORDINALITY
+                                AS pushed(sha, ord)
+                           GROUP BY sha
+                       ) merged
+                   )
+                   WHERE task_id = %s AND request->>'eval' IS NULL""",
+                (list(event.commits), event.task_id),
+            )
         connection.execute(
             "SELECT procrastinate_finish_job_v1(%s, %s::procrastinate_job_status, false)",
             (event.job_id, "succeeded" if event.status == "done" else "failed"),
