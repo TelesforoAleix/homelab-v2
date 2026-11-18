@@ -172,6 +172,15 @@ def complete(connection, saved, result, session, commits, metrics):
                     status,
                 ),
             )
+        task_status = "done" if status == "done" else "failed" if status == "failed" else "queued"
+        connection.execute(
+            """UPDATE homelab_tasks SET status = %s, reason = %s,
+            started_at = coalesce(started_at,
+                (SELECT started_at FROM homelab_runs WHERE task_id = homelab_tasks.id)),
+            updated_at = clock_timestamp(), finished_at = clock_timestamp() WHERE id = %s""",
+            (task_status, reason, saved["task_id"]),
+        )
+        # The legacy bridge also observes marked whole runs; write our state last.
         connection.execute(
             """UPDATE homelab_runs SET status = %s, status_reason = %s,
             resumable = %s, session_id = %s, final_message = %s, resume_at = %s,
@@ -190,12 +199,6 @@ def complete(connection, saved, result, session, commits, metrics):
         )
         connection.execute(
             "UPDATE homelab_run_messages SET consumed = true WHERE run_id = %s", (saved["id"],)
-        )
-        task_status = "done" if status == "done" else "failed" if status == "failed" else "queued"
-        connection.execute(
-            """UPDATE homelab_tasks SET status = %s, reason = %s,
-            updated_at = clock_timestamp(), finished_at = clock_timestamp() WHERE id = %s""",
-            (task_status, reason, saved["task_id"]),
         )
         finish_job(connection, saved["job_id"], "failed" if status == "failed" else "succeeded")
         if reason == "usage_limit":

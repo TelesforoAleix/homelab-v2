@@ -158,7 +158,14 @@ def repository_is_private(repository, token):
     return private
 
 
+def eval_branch_allowed(document):
+    marked = document.get("eval") is not None or document.get("eval_set") is not None
+    return document["branch"].startswith("eval/") == marked
+
+
 def push_checked(directory, document, tip):
+    if not eval_branch_allowed(document):
+        raise Refused("push_refused")
     if tip == document["base_commit"]:
         return []
     token = GitHubApp().token(document["repository"])

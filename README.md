@@ -69,13 +69,13 @@ fresh branch copy and retain the harness session. The old host runner is stopped
 kept installed only for rollback; its `homelab_roles` table is unused by `runs`.
 
 Tasks are [submitted](ARCHITECTURE.md#task-store) to Postgres and queued by Procrastinate.
-Pi entries in the executor table and eval tickets still use public configurations under
+Pi ticket entries, including evals that name Pi, use public configurations under
 `configurations/pi/`, fetched from merged `origin/main` in an independent clone. They record
 configuration hashes, image digest and source commit and pass the same check and commit gates,
 without a review. Only Pi reaches LiteLLM, with a one-run purpose token and request budget;
 prepare reaches only the package indexes through a proxy.
 
-Eval tasks may select `eval/<provider>/<model>` through one `eval/*` gateway route by naming
+Pi eval tickets may select `eval/<provider>/<model>` through one `eval/*` gateway route by naming
 a [configuration folder](configurations/README.md). Only an eval-marked task can receive its
 exact-purpose token; ordinary client keys, chat and bot callers cannot use the eval route.
 The existing task request and time limits apply; unknown model IDs fail upstream.
@@ -86,8 +86,12 @@ and review roles enabled. A root-owned key file holds bearer digests, scopes and
 repository/default-branch map; other applications cannot read a run. Runs share the existing
 Postgres task store and queues, report attempts and usage, and support ordered dependencies and queued
 cancellation. The enabled slice, cut and review roles include their documented read modes;
-requests containing `limits` still return `409` before storage. The legacy eval endpoints keep
-their response shapes and use the same key file.
+requests containing `limits` still return `409` before storage. Eval marks supply an exact
+executor with no fallback and use each role's normal path.
+Marked writes deliver only to `eval/` branches; unmarked writes cannot deliver there, and
+all pushes keep the private-content check. The agent-free `check` role grades a commit with
+selected overlay files in a sealed container and records its exit code and bounded output.
+The old `/v1/tasks/eval` routes and diff-export reading are removed.
 
 A [read-only code context server](docs/operations.md#code-context-server) gives Mac coding agents
 symbol navigation over SSH. It runs Serena without network access against separate,

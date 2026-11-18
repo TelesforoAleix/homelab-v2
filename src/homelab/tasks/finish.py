@@ -69,6 +69,11 @@ class EndAttempt(Strict):
         return self
 
 
+class CheckResult(Strict):
+    exit_code: int
+    tail: str = Field(max_length=16 * 1024)
+
+
 class EndTask(Strict):
     event: Literal["end_task"]
     task_id: int
@@ -76,6 +81,7 @@ class EndTask(Strict):
     status: Literal["done", "escalated", "failed"]
     reason: str | None = None
     commits: list[Annotated[str, Field(pattern=r"^[0-9a-f]{40,64}$")]] = Field(default_factory=list)
+    check: CheckResult | None = None
 
 
 class DeferUsage(Strict):
@@ -191,6 +197,12 @@ def end_task(connection: Any, event: EndTask) -> list[int]:
         ).rowcount
         if not closed:
             return released
+        if event.check is not None:
+            connection.execute(
+                """UPDATE homelab_runs SET request = jsonb_set(request, '{check}', %s::jsonb)
+                   WHERE task_id = %s AND request->>'role' = 'check'""",
+                (event.check.model_dump_json(), event.task_id),
+            )
         if event.status == "done" and event.reason is None and event.commits:
             connection.execute(
                 """UPDATE homelab_runs SET commits = ARRAY(

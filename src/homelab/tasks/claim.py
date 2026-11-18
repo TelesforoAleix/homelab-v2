@@ -88,6 +88,7 @@ def claim(connection: Any, *, legacy_roles: bool = True) -> dict[str, Any] | Non
                 ).fetchall()
                 metadata = {
                     "level": request[0]["level"] if request else "standard",
+                    "request": request[0] if request else None,
                     "attempt_history": history,
                 }
             (attempts,) = connection.execute(

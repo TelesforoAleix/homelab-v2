@@ -9,12 +9,17 @@ from typing import Annotated, Literal
 from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from homelab.api.run_keys import RunError
-from homelab.tasks.executors import configuration_hash
+from homelab.tasks.executors import Executor
 from homelab.tasks.runs import enabled_roles
 from homelab.tasks.submit import INT_MAX, EvalName, RepositoryPath, Strict
 
 RequestId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._:-]{1,64}$")]
 Text = Annotated[str, StringConstraints(pattern=r"^[^\x00]*$")]
+
+
+class Overlay(Strict):
+    commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    paths: list[RepositoryPath] = Field(min_length=1)
 
 
 class Work(Strict):
@@ -23,6 +28,7 @@ class Work(Strict):
     pinned_paths: list[RepositoryPath] = []
     check_command: Text | None = None
     history: Literal["shallow", "full"] = "shallow"
+    overlay: Overlay | None = None
 
 
 class Asset(Strict):
@@ -42,13 +48,7 @@ class Limits(Strict):
 class RunEval(Strict):
     set: EvalName
     case: EvalName
-    configuration: str
-
-    @field_validator("configuration")
-    @classmethod
-    def known_configuration(cls, value: str) -> str:
-        configuration_hash(value if value.startswith("pi/") else "pi/" + value)
-        return value
+    executor: Executor | None = None
 
 
 class RunRequest(Strict):
@@ -61,7 +61,7 @@ class RunRequest(Strict):
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     branch: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
     mode: Literal["write", "read"]
-    role: Literal["slice", "ticket", "cut", "review"]
+    role: Literal["slice", "ticket", "cut", "review", "check"]
     level: Literal["light", "standard", "strong"]
     work: Work
     assets: list[Asset] = Field(default_factory=list, max_length=32)
@@ -83,9 +83,7 @@ class RunRequest(Strict):
         if not isinstance(value, dict):
             return value
         role = value.get("role")
-        read_available = (
-            isinstance(role, str) and role in enabled_roles() and value.get("eval") is None
-        )
+        read_available = isinstance(role, str) and role in enabled_roles()
         if "limits" in value or (value.get("mode") == "read" and not read_available):
             raise RunError(
                 409,
@@ -97,7 +95,20 @@ class RunRequest(Strict):
 
     @model_validator(mode="after")
     def constraints(self) -> RunRequest:
-        if self.mode == "write" and self.branch is None:
+        if self.role == "check":
+            if (
+                self.mode != "write"
+                or self.eval is None
+                or "executor" in self.eval.model_fields_set
+                or not self.work.check_command
+                or self.work.overlay is None
+            ):
+                raise ValueError(
+                    "check requires an eval mark, command and overlay, without executor"
+                )
+        elif "overlay" in self.work.model_fields_set or (self.eval and self.eval.executor is None):
+            raise ValueError("overlay is only available for check; eval work needs an executor")
+        if self.mode == "write" and self.role != "check" and self.branch is None:
             raise ValueError("write mode requires branch")
         if self.branch and (
             ".." in self.branch or "//" in self.branch or self.branch.endswith(("/", ".", ".lock"))

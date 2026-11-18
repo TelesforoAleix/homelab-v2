@@ -1,7 +1,7 @@
 #!/usr/bin/python3 -I
 """Consume the existing task queue as uid 21020 through the fixed launcher.
 
-Attempt ordering, retries, feedback, cost traces and eval retention follow the host runner.
+Attempt ordering, retries, feedback and cost traces follow the host runner.
 Only the transport and the push credential change; no work-copy content is executed here.
 """
 
@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import signal
 import subprocess
 import tarfile
@@ -281,18 +280,12 @@ def run_ticket(task, copy, executor, feedback, *, number):
     with tempfile.TemporaryDirectory(prefix="homelab-config-") as temporary:
         configuration_name = executor.configuration or "pi/base"
         if task.get("eval_set") is not None:
-            name = task.get("eval_configuration")
-            if not isinstance(name, str) or not re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name
-            ):
-                raise Refused("eval_configuration_refused")
-            configuration_name = "pi/" + name
-            command += [
-                "--eval-mark",
-                json.dumps(
-                    {"set": task["eval_set"], "case": task["eval_case"], "configuration": name}
-                ),
-            ]
+            mark = {
+                "set": task["eval_set"],
+                "case": task["eval_case"],
+                "executor": executor.selection(),
+            }
+            command += ["--eval-mark", json.dumps(mark)]
         configuration, revision = configuration_snapshot(Path(temporary), configuration_name)
         command += ["--configuration", str(configuration), "--configuration-commit", revision]
         return invoke_ticket(task, feedback, command, executor.harness, number)
@@ -446,6 +439,8 @@ def push(task, copy, commit):
     from homelab.runs import delivery
 
     try:
+        if not delivery.eval_branch_allowed(task):
+            return "push_refused", []
         refuse_branch(task)
     except Refused as refusal:
         return f"push_{refusal}", []
@@ -530,11 +525,7 @@ def attempt(task, executor, number, feedback):
     ended = run["ended"]
     commits = []
     if ended == "committed":
-        if task.get("eval_set") is not None:
-            ended = "eval_kept"
-        else:
-            ended, commits = push(task, copy, run["commit"])
-    keep_eval_run(task, run)
+        ended, commits = push(task, copy, run["commit"])
     tokens = run.get("tokens") or {}
     record(
         {
@@ -542,7 +533,7 @@ def attempt(task, executor, number, feedback):
             "task_id": task["id"],
             "number": number,
             "route": route,
-            "status": "done" if ended in {"pushed", "eval_kept"} else "failed",
+            "status": "done" if ended == "pushed" else "failed",
             "reason": None if ended == "pushed" else ended,
             "run_id": run.get("run_id"),
             "check_exit_code": run.get("check_exit_code"),
@@ -565,63 +556,6 @@ def attempt(task, executor, number, feedback):
     return ended, (("check", check_output_of(run)) if ended in RETRIES else None), commits
 
 
-def keep_eval_run(task, run):
-    """Move content within the private service-owned run store, including failed attempts."""
-    if task.get("eval_set") is None or not run.get("run_folder"):
-        return
-    names = [task.get("eval_set"), task.get("eval_case"), run.get("run_id")]
-    if any(
-        not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name)
-        for name in names
-    ) or not re.fullmatch(r"[0-9a-f]{64}", str(run.get("configuration_hash"))):
-        raise Refused("eval_run_refused")
-    source = RUNS / run["run_id"]
-    if Path(run["run_folder"]) != source or source.is_symlink():
-        raise Refused("eval_run_refused")
-    parent = RUNS
-    for name in ("eval", task["eval_set"], task["eval_case"], run["configuration_hash"]):
-        parent = parent / name
-        parent.mkdir(mode=0o700, exist_ok=True)
-        if parent.is_symlink():
-            raise Refused("eval_run_refused")
-        parent.chmod(0o700)
-    source.chmod(0o700)
-    destination = parent / run["run_id"]
-    source.rename(destination)
-    run["run_folder"] = str(destination)
-    export_eval_diff(destination, run["run_id"])
-
-
-def export_eval_diff(folder, run_id):
-    """Publish only the final round's patch for the API, by atomic replacement."""
-    patches = []
-    for path in folder.iterdir():
-        match = re.fullmatch(r"diff(?:-([1-9][0-9]*))?\.patch", path.name)
-        if match:
-            patches.append((int(match[1] or 1), path))
-    if not patches:
-        return
-    patch = max(patches)[1]
-    if patch.is_symlink() or not patch.is_file():
-        raise Refused("eval_run_refused")
-    exports = RUNS / "eval-diffs"
-    exports.mkdir(mode=0o750, exist_ok=True)
-    target = exports / f"{run_id}.patch"
-    if exports.is_symlink() or target.is_symlink():
-        raise Refused("eval_run_refused")
-
-    fd, name = tempfile.mkstemp(prefix=f".{run_id}.", dir=exports)
-    temporary = Path(name)
-    try:
-        with os.fdopen(fd, "wb") as output, patch.open("rb") as source:
-            shutil.copyfileobj(source, output)
-            os.fchown(output.fileno(), -1, 10001)
-            os.fchmod(output.fileno(), 0o640)
-        temporary.replace(target)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def known_cost(item):
     """The cost key only when the run measured it; an empty cost stays empty in the store."""
     return {} if item.get("cost_usd") is None else {"cost_usd": item["cost_usd"]}
@@ -632,7 +566,7 @@ def work(task):
     from homelab.runs import slices
 
     choices = (
-        [Executor(configuration="pi/" + task["eval_configuration"])]
+        [Executor(**task["request"]["eval"]["executor"])]
         if task.get("eval_set") is not None
         else load_executors()["ticket"][task["level"]]
     )
@@ -654,7 +588,7 @@ def work(task):
 
         number, feedback = task["next_attempt"], None
         check_retried = push_retried = False
-        for reason, run_id, config_hash in task.get("attempt_history", []):
+        for reason, run_id, _config_hash in task.get("attempt_history", []):
             if reason == "push_rejected":
                 push_retried, check_retried, feedback = True, False, None
             elif reason in RETRIES:
@@ -662,8 +596,6 @@ def work(task):
                 if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", run_id):
                     raise Refused("check_feedback_unavailable")
                 parent = RUNS
-                if task.get("eval_set") is not None:
-                    parent = parent / "eval" / task["eval_set"] / task["eval_case"] / config_hash
                 feedback = ("check", check_output_of({"run_folder": str(parent / run_id)}))
         while True:
             executor, reset = usage.choose(choices, read, time.time())
@@ -685,19 +617,23 @@ def work(task):
             if ended == "push_rejected" and not push_retried:
                 push_retried, feedback, check_retried = True, None, False
                 continue
-            if ended == "eval_kept":
-                return "done", "eval_kept", []
             return ("done", None, commits) if ended == "pushed" else ("escalated", ended, [])
 
 
 def run_task(task):
     logger.info("task started id=%d", task["id"])
-    commits = []
+    commits, check_result = [], None
     try:
         if not REPOSITORY.fullmatch(task["repository"]) or ".." in task["repository"]:
             raise Refused("repository_refused")
-        refuse_branch(task)
-        status, reason, commits = work(task)
+        if (task.get("request") or {}).get("role") == "check":
+            from homelab.runs.checks import run
+
+            check_result = run(task)
+            status, reason = "done", None
+        else:
+            refuse_branch(task)
+            status, reason, commits = work(task)
     except Refused as refusal:
         status, reason = "failed", str(refusal)
     except Exception as error:  # A bad task must not stop the queue; systemd sees only real faults.
@@ -723,6 +659,7 @@ def run_task(task):
             "status": status,
             "reason": reason,
             "commits": commits,
+            **({"check": check_result} if check_result is not None else {}),
         }
     )
     logger.info("task ended id=%d status=%s reason=%s", task["id"], status, log_reason(reason))

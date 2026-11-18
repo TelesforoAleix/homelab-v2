@@ -21,7 +21,7 @@ def results(connection: Any, name: str) -> list[tuple]:
            )
            SELECT task.eval_case, attempt.configuration_hash, count(*) AS runs,
                   count(*) FILTER (WHERE attempt.status = 'done'
-                                     AND attempt.reason = 'eval_kept') AS passed,
+                                     AND attempt.reason IS NULL) AS passed,
                   avg(usage.steps), avg(usage.fresh), avg(usage.cached), avg(usage.output),
                   avg(extract(epoch FROM attempt.ended_at - attempt.started_at)),
                   CASE WHEN count(usage.cost) = count(*) THEN avg(usage.cost) END

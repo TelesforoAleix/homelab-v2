@@ -70,7 +70,7 @@ class Service:
             try:
                 choices = (
                     [Executor(**saved["executor"])]
-                    if saved["harness_started"]
+                    if saved["harness_started"] or saved["request"].get("eval")
                     else self.table[saved["request"]["role"]][saved["request"]["level"]]
                 )
                 readings = {}
