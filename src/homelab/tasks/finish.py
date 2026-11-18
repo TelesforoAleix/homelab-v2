@@ -75,6 +75,7 @@ class EndTask(Strict):
     job_id: int
     status: Literal["done", "escalated", "failed"]
     reason: str | None = None
+    commits: list[Annotated[str, Field(pattern=r"^[0-9a-f]{40,64}$")]] = Field(default_factory=list)
 
 
 class DeferUsage(Strict):
@@ -190,6 +191,14 @@ def end_task(connection: Any, event: EndTask) -> list[int]:
         ).rowcount
         if not closed:
             return released
+        if event.status == "done" and event.reason is None and event.commits:
+            connection.execute(
+                """UPDATE homelab_runs SET commits = ARRAY(
+                    SELECT sha FROM unnest(commits || %s::text[])
+                    WITH ORDINALITY AS pushed(sha, pos)
+                    GROUP BY sha ORDER BY min(pos)) WHERE task_id = %s""",
+                (event.commits, event.task_id),
+            )
         connection.execute(
             "SELECT procrastinate_finish_job_v1(%s, %s::procrastinate_job_status, false)",
             (event.job_id, "succeeded" if event.status == "done" else "failed"),

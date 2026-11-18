@@ -95,6 +95,10 @@ reset and a Procrastinate retry scheduled for that time. Both harness workers us
 pinned paths, allowed files, check, commit step and push. A failed check gets one retry in a
 fresh clone with its output as feedback, then escalates. Other failures do not advance the
 executor list. No review runs inside a ticket; the client reviews the slice before merge.
+Ticket runs work on private repositories the GitHub App is installed on. Remote reads,
+including the default-branch lookup and fresh clone, use repository-scoped installation tokens
+as authorization headers, never credentials in URLs or logs. `main` and the remote default
+branch remain refused.
 A `configuration:` entry remains valid and uses its Pi worker without a review.
 `slice`, `cut` and `review` without an eval mark return `409 role_not_available` unless enabled
 as described below.
@@ -117,10 +121,13 @@ only in `homelab_runs.goal`, not in task rows, request JSON or queue arguments. 
 keep their existing goal storage and behavior. Logs never include goals, assets or final
 messages.
 
-The host does not report delivered commit SHAs or a final message through its finish protocol.
-These fields remain `commits:[]` and `final_message:null`; usage and attempt outcomes come from
-the existing task traces. Unknown costs remain null. Run status reasons are mapped to the
-fixed version-one vocabulary while the legacy endpoint preserves original task reasons.
+`commits` lists the pushed SHAs for `slice` and `ticket` runs. A pushed ticket appends the
+successful attempt's `base..commit` SHAs, oldest first and without duplicates, to any already
+recorded, in the transaction that ends the run. Rejected or discarded attempts, other endings
+and kept evals leave `commits` unchanged. Tickets keep `final_message:null`; usage and attempt
+outcomes come from the existing task traces. Unknown costs remain null. Run status reasons are
+mapped to the fixed version-one vocabulary while the legacy endpoint preserves original task
+reasons.
 
 ## Key file and repository policy
 

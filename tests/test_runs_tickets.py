@@ -3,15 +3,19 @@
 # ruff: noqa: F811
 
 import json
+import subprocess
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
 from homelab.api import runs
 from homelab.runs import runner, slices, usage
+from homelab.runs.runner import push as deliver_ticket
 from homelab.tasks import finish
 from homelab.tasks.executors import Executor, load_executors
 from tests.test_runs import CLIENT, HEADERS, api, body, post  # noqa: F401
+from tests.test_runs_delivery import bundle, git  # noqa: F401
 from tests.test_task_store import connection  # noqa: F401
 
 
@@ -21,7 +25,7 @@ def ticket_runner(api, monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "refuse_branch", lambda _: None)
     monkeypatch.setattr(runner, "fresh_copy", lambda _: tmp_path)
     monkeypatch.setattr(runner, "remove_copy", lambda _: None)
-    monkeypatch.setattr(runner, "push", lambda *a: "pushed")
+    monkeypatch.setattr(runner, "push", lambda *a: ("pushed", ["b" * 40]))
     monkeypatch.setattr(runner, "notify", lambda *a: None)
     monkeypatch.setattr(runner, "keep_eval_run", lambda *a: None)
     monkeypatch.setattr(
@@ -58,6 +62,7 @@ def test_ticket_records_executor_that_runs_on_task_queue(
     selected = load_executors()["ticket"][level][int(limited)]
     result = CLIENT.get(f"/v1/runs/{response.json()['run_id']}", headers=HEADERS).json()
     assert result["status"] == "done"
+    assert result["commits"] == ["b" * 40]
     assert result["executor"] == selected.selection()
     assert result["configuration_hash"] == selected.fingerprint()
     assert ticket_runner == [(selected, None)]
@@ -169,13 +174,13 @@ def test_live_usage_limit_falls_back_but_other_failures_escalate(tmp_path, monke
 
     def attempt(task, selected, number, feedback):
         seen.append(selected.harness)
-        return ("usage_limit" if selected.harness == "codex" else "pushed"), None
+        return ("usage_limit" if selected.harness == "codex" else "pushed"), None, []
 
     monkeypatch.setattr(runner, "attempt", attempt)
-    assert runner.work({"level": "light", "next_attempt": 1}) == ("done", None)
+    assert runner.work({"level": "light", "next_attempt": 1}) == ("done", None, [])
     assert seen == ["codex", "claude"]
-    monkeypatch.setattr(runner, "attempt", lambda *a: ("cli_failed", None))
-    assert runner.work({"level": "light", "next_attempt": 1}) == ("escalated", "cli_failed")
+    monkeypatch.setattr(runner, "attempt", lambda *a: ("cli_failed", None, []))
+    assert runner.work({"level": "light", "next_attempt": 1}) == ("escalated", "cli_failed", [])
 
 
 def test_runner_passes_named_configuration_and_no_review_argument(tmp_path, monkeypatch):
@@ -247,8 +252,159 @@ def test_push_rejection_retries_once_with_same_table_choice(tmp_path, monkeypatc
 
     def attempt(task, selected, number, feedback):
         seen.append((selected, number))
-        return "push_rejected", None
+        return "push_rejected", None, []
 
     monkeypatch.setattr(runner, "attempt", attempt)
-    assert runner.work({"level": "standard", "next_attempt": 1}) == ("escalated", "push_rejected")
+    assert runner.work({"level": "standard", "next_attempt": 1}) == (
+        "escalated",
+        "push_rejected",
+        [],
+    )
     assert len(seen) == 2 and seen[0][0] == seen[1][0]
+
+
+@pytest.mark.parametrize("first", ["check_failed", "push_rejected"])
+def test_ticket_records_only_successful_attempt_commits(
+    api, ticket_runner, monkeypatch, tmp_path, first
+):
+    monkeypatch.setattr(slices, "codex_usage", lambda _: reading(0))
+    (tmp_path / "check.log").write_text("Retry the check")
+    attempts = []
+    pushes = []
+
+    def run_ticket(task, copy, executor, feedback, *, number):
+        attempts.append(number)
+        return {
+            "ended": "check_failed" if first == "check_failed" and number == 1 else "committed",
+            "commit": ("a" if number == 1 else "c") * 40,
+            "run_folder": str(tmp_path),
+        }
+
+    def push(task, copy, commit):
+        pushes.append(commit)
+        return ("push_rejected", []) if commit == "a" * 40 else ("pushed", ["b" * 40, "c" * 40])
+
+    monkeypatch.setattr(runner, "run_ticket", run_ticket)
+    monkeypatch.setattr(runner, "push", push)
+    run_id = post().json()["run_id"]
+    runner.run_task(runner.store("claim"))
+    result = CLIENT.get(f"/v1/runs/{run_id}", headers=HEADERS).json()
+    assert result["status"] == "done"
+    assert result["commits"] == ["b" * 40, "c" * 40]
+    assert attempts == [1, 2]
+    assert pushes == (["a" * 40, "c" * 40] if first == "push_rejected" else ["c" * 40])
+
+
+@pytest.mark.parametrize(
+    "end", ["clone_failed", "agent_failed", "check_failed", "push_failed", "eval_kept"]
+)
+def test_other_ticket_endings_leave_commits_unchanged(
+    api, ticket_runner, monkeypatch, tmp_path, end
+):
+    monkeypatch.setattr(slices, "codex_usage", lambda _: reading(0))
+    (tmp_path / "check.log").write_text("Failed check")
+    document = body()
+    if end == "eval_kept":
+        document["eval"] = {"set": "T", "case": "one", "configuration": "base"}
+    run_id = post(document).json()["run_id"]
+    api.execute("UPDATE homelab_runs SET commits = %s", (["e" * 40],))
+    monkeypatch.setattr(
+        runner,
+        "run_ticket",
+        lambda *a, **kw: {
+            "ended": "committed" if end in {"push_failed", "eval_kept"} else end,
+            "commit": "a" * 40,
+            "run_folder": str(tmp_path),
+        },
+    )
+    if end == "clone_failed":
+        monkeypatch.setattr(runner, "fresh_copy", lambda _: None)
+    monkeypatch.setattr(runner, "push", lambda *a: ("push_failed", []))
+    runner.run_task(runner.store("claim"))
+    result = CLIENT.get(f"/v1/runs/{run_id}", headers=HEADERS).json()
+    assert result["commits"] == ["e" * 40]
+    assert result["status"] == ("done" if end == "eval_kept" else "escalated")
+
+
+def test_ticket_finish_appends_in_order_once_and_rolls_back_with_run_end(api):
+    run_id = post().json()["run_id"]
+    task = runner.claim.claim(api, legacy_roles=False)
+    old, first, last = [letter * 40 for letter in "cab"]
+    api.execute("UPDATE homelab_runs SET commits = %s", ([old, first],))
+    event = finish.EndTask(
+        event="end_task",
+        task_id=task["id"],
+        job_id=task["job_id"],
+        status="done",
+        commits=[first, last, first],
+    )
+
+    class FailingJobFinish:
+        def __getattr__(self, name):
+            return getattr(api, name)
+
+        def execute(self, query, *args, **kwargs):
+            if "procrastinate_finish_job_v1" in query:
+                raise RuntimeError("simulated finish failure")
+            return api.execute(query, *args, **kwargs)
+
+    with pytest.raises(RuntimeError, match="simulated finish failure"):
+        finish.record(FailingJobFinish(), event)
+    assert api.execute("SELECT status, commits FROM homelab_runs").fetchone() == (
+        "running",
+        [old, first],
+    )
+    finish.record(api, event)
+    finish.record(api, event.model_copy(update={"commits": ["f" * 40]}))
+    result = CLIENT.get(f"/v1/runs/{run_id}", headers=HEADERS).json()
+    assert result["status"] == "done" and result["commits"] == [old, first, last]
+    assert result["final_message"] is None
+
+
+@pytest.mark.parametrize(
+    "status,reason", [("failed", None), ("escalated", "push_failed"), ("done", "eval_kept")]
+)
+def test_finish_ignores_commits_from_other_endings(api, status, reason):
+    post()
+    task = runner.claim.claim(api, legacy_roles=False)
+    api.execute("UPDATE homelab_runs SET commits = %s", (["e" * 40],))
+    finish.record(
+        api,
+        finish.EndTask(
+            event="end_task",
+            task_id=task["id"],
+            job_id=task["job_id"],
+            status=status,
+            reason=reason,
+            commits=["a" * 40],
+        ),
+    )
+    assert api.execute("SELECT commits FROM homelab_runs").fetchone() == (["e" * 40],)
+
+
+def test_ticket_record_receives_the_range_from_real_git(api, ticket_runner, bundle, monkeypatch):
+    copy, _, document, first = bundle
+    git(copy, "update-ref", "refs/remotes/origin/slice/test", document["base_commit"])
+    (copy / "src/app").write_text("another change")
+    git(copy, "commit", "-qam", "Another change")
+    tip = git(copy, "rev-parse", "HEAD")
+    monkeypatch.setattr(slices, "codex_usage", lambda _: reading(0))
+    monkeypatch.setattr(runner, "fresh_copy", lambda _: copy)
+    monkeypatch.setattr(runner, "push", deliver_ticket)
+    monkeypatch.setattr(runner, "installation_token", lambda _: "FAKE-APP-TOKEN")
+    monkeypatch.setattr(runner, "repository_is_private", lambda _: True)
+    monkeypatch.setattr(
+        runner, "run_ticket", lambda *a, **kw: {"ended": "committed", "commit": tip}
+    )
+    real_run = subprocess.run
+
+    def run(command, **kwargs):
+        if "push" in command:
+            return SimpleNamespace(returncode=0, stdout="")
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    run_id = post(body(branch="slice/test")).json()["run_id"]
+    runner.run_task(runner.store("claim"))
+    result = CLIENT.get(f"/v1/runs/{run_id}", headers=HEADERS).json()
+    assert result["status"] == "done" and result["commits"] == [first, tip]
