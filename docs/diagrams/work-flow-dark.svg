@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 1240 512" width="1240" height="512" role="img" aria-labelledby="flow-dark-title flow-dark-desc">
+<title id="flow-dark-title">How one piece of work flows</title>
+<desc id="flow-dark-desc">A BPMN-style process in five lanes. I log an idea; a planner researches, designs and stress-tests it with me through AI sparring until the design is agreed, then cuts it into slices. The platform starts a sandbox and an agent writes the change. Factory opens the pull request while an AI reviewer reviews it. If CI fails, the agent repairs the change. A class 4 change waits for my decision. Factory merges, the commit is installed and checked, and an unhealthy install rolls back automatically.</desc>
+<defs>
+<marker id="flow-dark-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#F2F2EF"/></marker>
+<marker id="flow-dark-arrow-signal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#FF4D00"/></marker>
+</defs>
+<rect x="0" y="0" width="1240" height="512" fill="#171717"/>
+<text x="40" y="62.0" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="start" letter-spacing="1">ME</text>
+<text x="40" y="146.0" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="start" letter-spacing="1">PLANNER</text>
+<text x="40" y="234.0" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="start" letter-spacing="1">FACTORY</text>
+<text x="40" y="336.0" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="start" letter-spacing="1">PLATFORM</text>
+<text x="40" y="446.0" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="start" letter-spacing="1">AGENT</text>
+<path d="M32,96 L1228,96" fill="none" stroke="#3A3A37" stroke-width="1"/>
+<path d="M32,188 L1228,188" fill="none" stroke="#3A3A37" stroke-width="1"/>
+<path d="M32,272 L1228,272" fill="none" stroke="#3A3A37" stroke-width="1"/>
+<path d="M32,392 L1228,392" fill="none" stroke="#3A3A37" stroke-width="1"/>
+<path d="M32,20 L1228,20" fill="none" stroke="#F2F2EF" stroke-width="1"/>
+<path d="M32,492 L1228,492" fill="none" stroke="#F2F2EF" stroke-width="1"/>
+<path d="M116,20 L116,492" fill="none" stroke="#3A3A37" stroke-width="1"/>
+<circle cx="140" cy="58" r="12" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<path d="M152,58 L166,58" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow)"/>
+<rect x="168" y="38" width="104" height="40" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="220.0" y="62.9" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">Log an idea</text>
+<path d="M272,58 L284,58 L284,142 L294,142" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow)"/>
+<rect x="296" y="114" width="134" height="56" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="363.0" y="129.9" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">Research, design</text>
+<text x="363.0" y="146.9" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">and stress-test</text>
+<text x="363.0" y="163.9" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">with AI sparring</text>
+<path d="M430,142 L448,142" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow)"/>
+<path d="M470,122 L490,142 L470,162 L450,142 z" fill="#171717" stroke="#FF4D00" stroke-width="1.5"/>
+<path d="M464,136 L476,148 M476,136 L464,148" stroke="#FF4D00" stroke-width="1.5"/>
+<text x="452" y="108" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="600" fill="#F2F2EF" text-anchor="start">Design agreed?</text>
+<path d="M470,162 L470,182 L363,182 L363,172" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow)"/>
+<text x="478" y="181" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#A3A39D" text-anchor="start">no</text>
+<path d="M490,142 L512,142" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow-signal)"/>
+<text x="493" y="128" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#A3A39D" text-anchor="start">yes</text>
+<rect x="514" y="122" width="104" height="40" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="566.0" y="146.9" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">Cut into slices</text>
+<path d="M566,162 L566,290" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow-signal)"/>
+<text x="574" y="236" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="start" letter-spacing="1">RUN API</text>
+<rect x="514" y="292" width="104" height="40" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="566.0" y="308.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">Pick executor,</text>
+<text x="566.0" y="325.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">start sandbox</text>
+<path d="M566,332 L566,408" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow)"/>
+<rect x="514" y="410" width="104" height="40" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="566.0" y="426.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">Write the</text>
+<text x="566.0" y="443.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">change</text>
+<path d="M618,430 L640,430 L640,230 L658,230" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow)"/>
+<rect x="660" y="210" width="104" height="40" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="712.0" y="226.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">Open PR,</text>
+<text x="712.0" y="243.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">run CI</text>
+<path d="M712,250 L712,408" fill="none" stroke="#F2F2EF" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#flow-dark-arrow)"/>
+<rect x="660" y="410" width="104" height="40" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="712.0" y="426.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">AI reviewer</text>
+<text x="712.0" y="443.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">reviews PR</text>
+<path d="M764,230 L784,230" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow)"/>
+<path d="M806,210 L826,230 L806,250 L786,230 z" fill="#171717" stroke="#FF4D00" stroke-width="1.5"/>
+<path d="M800,224 L812,236 M812,224 L800,236" stroke="#FF4D00" stroke-width="1.5"/>
+<text x="806" y="202" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="600" fill="#F2F2EF" text-anchor="middle">CI green?</text>
+<path d="M806,250 L806,474 L566,474 L566,452" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow)"/>
+<text x="814" y="304" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#A3A39D" text-anchor="start">no: repair</text>
+<path d="M826,230 L878,230" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow-signal)"/>
+<text x="838" y="222" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#A3A39D" text-anchor="start">yes</text>
+<path d="M900,210 L920,230 L900,250 L880,230 z" fill="#171717" stroke="#FF4D00" stroke-width="1.5"/>
+<path d="M894,224 L906,236 M906,224 L894,236" stroke="#FF4D00" stroke-width="1.5"/>
+<text x="900" y="266" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="600" fill="#F2F2EF" text-anchor="middle">Class 4 change?</text>
+<path d="M900,210 L900,80" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow)"/>
+<text x="908" y="112" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#A3A39D" text-anchor="start">yes</text>
+<rect x="852" y="38" width="96" height="40" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="900.0" y="62.9" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">I decide</text>
+<path d="M948,58 L1010,58 L1010,208" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow)"/>
+<path d="M920,230 L968,230" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow-signal)"/>
+<text x="932" y="222" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#A3A39D" text-anchor="start">no</text>
+<rect x="970" y="210" width="80" height="40" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="1010.0" y="234.9" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">Merge</text>
+<path d="M1010,250 L1010,290" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow-signal)"/>
+<rect x="958" y="292" width="104" height="40" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="1010.0" y="308.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">Install,</text>
+<text x="1010.0" y="325.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">check health</text>
+<path d="M1062,312 L1088,312" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow)"/>
+<path d="M1110,292 L1130,312 L1110,332 L1090,312 z" fill="#171717" stroke="#FF4D00" stroke-width="1.5"/>
+<path d="M1104,306 L1116,318 M1116,306 L1104,318" stroke="#FF4D00" stroke-width="1.5"/>
+<text x="1110" y="286" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="600" fill="#F2F2EF" text-anchor="middle">Healthy after install?</text>
+<path d="M1130,312 L1185,312" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow-signal)"/>
+<text x="1140" y="304" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#A3A39D" text-anchor="start">yes</text>
+<circle cx="1200" cy="312" r="13" fill="#171717" stroke="#F2F2EF" stroke-width="3"/>
+<path d="M1110,332 L1110,344" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow)"/>
+<text x="1118" y="343" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#A3A39D" text-anchor="start">no</text>
+<rect x="1050" y="346" width="120" height="40" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="1110.0" y="362.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">Roll back</text>
+<text x="1110.0" y="379.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#F2F2EF" text-anchor="middle">automatically</text>
+<path d="M1170,366 L1200,366 L1200,327" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#flow-dark-arrow)"/>
+</svg>

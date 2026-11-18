@@ -4,8 +4,7 @@ Reference for what runs today. For the overview, see the [README](../README.md).
 
 ## Platform summary
 
-- The diagram shows where HomeLab is heading: one API for every client. Today med-ask reaches
-  only LiteLLM, over the `homelab-models` network.
+- Today med-ask reaches only LiteLLM, over the `homelab-models` network.
 - `embed-large` stays on the node for questions; `embed-large-bulk` uses the same vector space
   on the owner’s Mac through a login-managed llama.cpp router for bulk ingest. See the
   [Mac serving runbook](operations.md#mac-bulk-embedding-serving).

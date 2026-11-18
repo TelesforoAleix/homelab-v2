@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 1200 470" width="1200" height="470" role="img" aria-labelledby="system-dark-title system-dark-desc">
+<title id="system-dark-title">Home Lab system context</title>
+<desc id="system-dark-desc">A phone and client applications reach the Home Lab platform on an always-on Linux server. Factory, a private development system on the same server, sends work to the platform's run API. The platform routes model requests to hosted providers through one gateway key, or to local models on an Apple Silicon Mac.</desc>
+<defs>
+<marker id="system-dark-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#F2F2EF"/></marker>
+<marker id="system-dark-arrow-signal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#FF4D00"/></marker>
+</defs>
+<rect x="0" y="0" width="1200" height="470" fill="#171717"/>
+<text x="40" y="68" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="start" letter-spacing="1">SYSTEM CONTEXT</text>
+<rect x="400" y="36" width="180" height="60" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="490.0" y="61.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="16" font-weight="600" fill="#F2F2EF" text-anchor="middle">Phone</text>
+<text x="490.0" y="80.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#A3A39D" text-anchor="middle">my channel, Telegram</text>
+<rect x="640" y="36" width="236" height="60" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="758.0" y="61.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="16" font-weight="600" fill="#F2F2EF" text-anchor="middle">Client applications</text>
+<text x="758.0" y="80.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#A3A39D" text-anchor="middle">med-ask, image studio</text>
+<rect x="40" y="132" width="860" height="300" rx="4" fill="#171717" stroke="#3A3A37" stroke-width="1"/>
+<text x="64" y="160" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="start" letter-spacing="1">LINUX SERVER · ALWAYS ON</text>
+<rect x="64" y="178" width="232" height="230" rx="3" fill="#171717" stroke="#3A3A37" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="88" y="210" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="18" font-weight="600" fill="#F2F2EF" text-anchor="start">Factory</text>
+<text x="272" y="210" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="end" letter-spacing="1">PRIVATE</text>
+<path d="M88,224 L272,224" fill="none" stroke="#3A3A37" stroke-width="1"/>
+<text x="88" y="258" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="15" font-weight="400" fill="#F2F2EF" text-anchor="start">Planning and slices</text>
+<text x="88" y="292" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="15" font-weight="400" fill="#F2F2EF" text-anchor="start">Briefs and prompts</text>
+<text x="88" y="326" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="15" font-weight="400" fill="#F2F2EF" text-anchor="start">Record of what ran</text>
+<path d="M88,358 L272,358" fill="none" stroke="#3A3A37" stroke-width="1"/>
+<text x="88" y="388" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="start" letter-spacing="1">OWNS THE PROCESS</text>
+<rect x="380" y="178" width="496" height="230" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="404" y="210" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="18" font-weight="600" fill="#F2F2EF" text-anchor="start">Home Lab platform</text>
+<text x="852" y="210" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="end" letter-spacing="1">THIS REPOSITORY</text>
+<path d="M404,224 L852,224" fill="none" stroke="#3A3A37" stroke-width="1"/>
+<text x="404" y="258" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="15" font-weight="400" fill="#F2F2EF" text-anchor="start">API and run API</text>
+<text x="640" y="258" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="15" font-weight="400" fill="#F2F2EF" text-anchor="start">Durable jobs on Postgres</text>
+<text x="404" y="292" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="15" font-weight="400" fill="#F2F2EF" text-anchor="start">Model routing by purpose</text>
+<text x="640" y="292" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="15" font-weight="400" fill="#F2F2EF" text-anchor="start">Sandboxed agent runs</text>
+<text x="404" y="326" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="15" font-weight="400" fill="#F2F2EF" text-anchor="start">Knowledge with sources</text>
+<text x="640" y="326" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="15" font-weight="400" fill="#F2F2EF" text-anchor="start">Telegram bot</text>
+<path d="M404,358 L852,358" fill="none" stroke="#3A3A37" stroke-width="1"/>
+<text x="404" y="388" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="start" letter-spacing="1">OWNS THE MACHINERY · MODELS, CONTAINERS, KEYS, SPEND</text>
+<path d="M296,293 L378,293" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#system-dark-arrow-signal)"/>
+<text x="337" y="280" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="middle" letter-spacing="1">RUN API</text>
+<path d="M490,96 L490,176" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#system-dark-arrow)"/>
+<path d="M758,96 L758,176" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#system-dark-arrow)"/>
+<rect x="960" y="186" width="200" height="64" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="1060.0" y="213.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="16" font-weight="600" fill="#F2F2EF" text-anchor="middle">Hosted providers</text>
+<text x="1060.0" y="232.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#A3A39D" text-anchor="middle">one gateway key</text>
+<rect x="960" y="336" width="200" height="64" rx="3" fill="#171717" stroke="#F2F2EF" stroke-width="1"/>
+<text x="1060.0" y="363.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="16" font-weight="600" fill="#F2F2EF" text-anchor="middle">Apple Silicon Mac</text>
+<text x="1060.0" y="382.4" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="14" font-weight="400" fill="#A3A39D" text-anchor="middle">local models on request</text>
+<path d="M876,218 L958,218" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#system-dark-arrow)"/>
+<path d="M876,368 L958,368" fill="none" stroke="#F2F2EF" stroke-width="1" marker-end="url(#system-dark-arrow)"/>
+<text x="1060" y="432" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#A3A39D" text-anchor="middle" letter-spacing="1">MODEL ROUTES</text>
+</svg>
