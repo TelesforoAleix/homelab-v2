@@ -1009,7 +1009,7 @@ including quotes). Only counts are exposed, without text or match details.
 ## Media client contract
 
 The image studio uses the existing loopback model gateway with its own bearer client key.
-The [README contract](README.md#image-studio-operations-and-video-jobs) records the exact
+The [README contract](docs/platform.md#image-studio-operations-and-video-jobs) records the exact
 fields and model/price table. Discovery adds an `operations` mapping to `/v1/model/info`:
 `generate_image`, `edit_image`, `upscale_image`, `image_to_video`, `upscale_video`, `edit_video`.
 Each listed model's `model_info` supplies `operations`, `default_for`, USD `price` and

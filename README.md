@@ -1,130 +1,139 @@
-# Home Lab v2
+# Home Lab
 
-My personal AI system: model access, knowledge retrieval with sources, and durable background jobs.
+A self-hosted applied-AI platform providing shared model access, retrieval and secure execution
+for independent applications, with an AI-assisted development system that builds and maintains
+those applications and the platform itself.
 
-> [!WARNING]
-> **In development.** Model access, knowledge retrieval with cited answers and durable jobs run on the node today; applications such as med-ask build on it.
+> [!NOTE]
+> **Operational, under active development.** The platform, Factory and several applications run
+> every day on a self-hosted server; the eval and the items under [*Where it is going*](#where-it-is-going)
+> are still being built.
 
-## Overview
+## Why it exists
 
-Every side project needed model access without keys scattered across repositories, search over
-my own knowledge with answers that show their sources, and work that keeps running in the background.
-HomeLab builds these once on a small always-on server that my projects plug into.
-This second version keeps the lessons from the learning-first v1 and leans on mature tools.
+My projects need models, search over my own knowledge, and work that runs in the background.
+Without a shared base, each project repeats the same keys, routing and job code. I also want to
+learn applied AI engineering by building systems that I use every day.
 
-## Architecture
+Home Lab provides the infrastructure for model routing, APIs and secure execution. Built on top
+of it, Factory orchestrates AI-assisted software development. It separates planning and
+orchestration from sandboxed agent execution, automated review and deployment. Factory is
+private for now.
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/architecture-dark.svg"><img alt="HomeLab architecture: built clients, API, Models, Knowledge, Jobs, Sources, Providers and Postgres; planned Second Brain UI, Coding agents, Tools, Job API and local batch jobs." src="docs/diagrams/architecture-light.svg"></picture>
+## The system
 
-Solid parts are built; dashed parts are planned.
+I designed Home Lab and I operate it. It runs on a small Linux server (a Lenovo M700). An Apple
+Silicon Mac is a worker for local models. From my laptop and my phone, I reach Workshop,
+Factory's private web console, over a private network. The phone also has a Telegram bot for
+alerts and notices. Applications ask for a *purpose*, such as chat, embed or vision, and never
+for a model.
 
-- The diagram shows where HomeLab is heading: one API for every client. Today med-ask reaches
-  only LiteLLM, over the `homelab-models` network.
-- `embed-large` stays on the node for questions; `embed-large-bulk` uses the same vector space
-  on the owner’s Mac through a login-managed llama.cpp router for bulk ingest. See the
-  [Mac serving runbook](docs/operations.md#mac-bulk-embedding-serving).
-- Mac login agents run a stamped, private [installed copy from main](docs/operations.md#install-and-update-the-mac-tools),
-  independent of the working checkout. Update with `git pull --ff-only` and `mac/install-mac-tools`.
-- The [Mac profile command](docs/operations.md#mac-usage-profiles) selects Working or Inference,
-  reports observed state as JSON, and returns to Working after idle inference. Each profile
-  sets services to off, on request, or on, with allowed models and a default from a private
-  registry. It can download, verify and test-load new models and reports warning-only
-  profile memory budgets that include mapped weights; see [profile model policy](docs/operations.md#per-profile-service-and-model-policy). After 10
-  continuous minutes on battery, Inference pauses its model services and resumes on AC.
-  Working leaves the owner’s AC and Battery settings alone. Inference requires AC power,
-  changes only AC power mode/sleep and the global GPU limit, and restores their recorded
-  values on return. Relaunched apps
-  restore windows and tabs according to their own settings: Chrome’s “Continue where you left
-  off” and macOS’s “Close windows when quitting an application” are owner choices.
-- A SwiftUI [menu bar app](docs/operations.md#menu-bar-app-usage-and-night-window) drives the
-  same command: one-click switching, per-service control, a Profiles editor for service states,
-  allowed/default models and warning-only memory budgets, requests waiting for Inference,
-  Claude/Codex usage, and an owner-set night window into Inference that is off by default.
-- Knowledge endpoints: `POST /v1/knowledge/query` and `/v1/knowledge/answer`; jobs persist in Postgres.
-- Hosted images use three `image-*` purposes through LiteLLM. Native image upscale and
-  background video jobs share their $20 monthly gateway-key budget. `GET /v1/model/info`
-  lists models by operation with prices and capabilities.
-  Image responses report decimal USD in `x-homelab-cost-usd` when known, including charged
-  failures. `GET /v1/images/cost` returns the bearer key's UTC month, `total_usd` string and
-  `charged_calls` count for images and video together. The owner receives monthly 80% and 100% budget alerts through Telegram.
-- [ARCHITECTURE.md](ARCHITECTURE.md) explains the boundaries and rules;
-  [DECISIONS.md](DECISIONS.md) records the choices behind them.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/system-dark.svg">
+  <img alt="System context: from my phone and laptop, over a private network, I reach Workshop, Factory's web console, and the platform's Telegram bot. Client applications reach the Home Lab platform on an always-on Linux server. Factory, a private development system on the same server, sends work to the platform's run API, and the platform routes model requests to hosted providers through one gateway key or to local models on an Apple Silicon Mac." src="docs/diagrams/system-light.svg" width="100%">
+</picture>
 
-[Coding tickets](docs/operations.md#runs-service) run one at a time on the node through the
-platform's unprivileged `runs` service. `config/executors.yaml` selects the worker at the
-request's level: Codex first, then Claude when usage limits require fallback. Both use the
-fixed launcher's `cli-run` profile. Tickets retain the task path's fresh clone, pinned paths,
-allowed-file import, check, commit step and repository-scoped GitHub App push. A failed check
-gets one retry from a fresh clone with its output as feedback, then escalates. There is no
-review inside a ticket; the client reviews the slice before merge. If neither executor is
-usable, the run waits `usage_limit` until a scheduled queue retry. Each attempt records the
-executor that ran.
+**Home Lab is the execution platform; Factory is the development orchestrator.**
 
-The [fixed container launcher](docs/operations.md#install-the-fixed-fence-launcher) starts every
-container; `runs` has no Docker socket or tool logins. Whole-slice CLI turns, write/read cuts,
-read-only reviews, conversation resumes and usage fallback are enabled through
-`HOMELAB_RUN_ROLES=slice,cut,review`. Ended CLI copies are removed through the launcher
-immediately on failure/cancellation and after three days otherwise; later messages prepare a
-fresh branch copy and retain the harness session. The old host runner is stopped and disabled,
-kept installed only for rollback; its `homelab_roles` table is unused by `runs`.
+- **Factory owns the process:** planning, cutting work into slices, prompts, and the record of
+  what ran.
+- **The platform owns the machinery:** models, containers, execution, routing, keys and spend.
+- **Each side works without the other.**
+- **Workshop** is Factory's private web console: a pipeline board, planner chats, an inbox of
+  ideas, and pages for runs, costs and settings. I use it from my laptop and my phone.
 
-Tasks are [submitted](ARCHITECTURE.md#task-store) to Postgres and queued by Procrastinate.
-Pi ticket entries, including evals that name Pi, use public configurations under
-`configurations/pi/`, fetched from merged `origin/main` in an independent clone. They record
-configuration hashes, image digest and source commit and pass the same check and commit gates,
-without a review. Only Pi reaches LiteLLM, with a one-run purpose token and request budget;
-prepare reaches only the package indexes through a proxy.
+## How one piece of work flows
 
-Pi eval tickets may select `eval/<provider>/<model>` through one `eval/*` gateway route by naming
-a [configuration folder](configurations/README.md). Only an eval-marked task can receive its
-exact-purpose token; ordinary client keys, chat and bot callers cannot use the eval route.
-The existing task request and time limits apply; unknown model IDs fail upstream.
+This flow runs today.
 
-The [version-one run API](docs/run-api.md) accepts application-owned, idempotent ticket writes
-and eval runs on loopback. The `runs` execution service starts with the platform, with slice, cut
-and review roles enabled. A root-owned key file holds bearer digests, scopes and each key's
-repository/default-branch map; other applications cannot read a run. Runs share the existing
-Postgres task store and queues, report attempts and usage, and support ordered dependencies and queued
-cancellation. The enabled slice, cut and review roles include their documented read modes;
-requests containing `limits` still return `409` before storage. Eval marks supply an exact
-executor with no fallback and use each role's normal path.
-Marked writes deliver only to `eval/` branches; unmarked writes cannot deliver there, and
-all pushes keep the private-content check. The agent-free `check` role grades a commit with
-selected overlay files in a sealed container and records its exit code and bounded output.
-The old `/v1/tasks/eval` routes and diff-export reading are removed.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/work-flow-dark.svg">
+  <img alt="Process in five lanes (me, planner, Factory, platform, agent): I log an idea; the planner researches, designs and stress-tests it with me until the design is agreed, then cuts it into slices; the platform starts a sandbox where an agent writes the change; Factory opens the pull request while an AI reviewer reviews it; failed CI goes back to the agent for repair; a class 4 change waits for my decision; after the merge the commit is installed and checked, and an unhealthy install rolls back automatically." src="docs/diagrams/work-flow-light.svg" width="100%">
+</picture>
 
-A [read-only code context server](docs/operations.md#code-context-server) gives Mac coding agents
-symbol navigation over SSH. It runs Serena without network access against separate,
-periodically refreshed copies of configured repositories on the encrypted volume.
+The deployer installs Factory and applications; this platform is still deployed by hand.
 
-The Telegram bot runs as a sandboxed host service using python-telegram-bot in its own
-hash-pinned virtual environment. It long-polls Telegram and remains available
-before the data volumes are unlocked. After unlock, an optional read-only planning mirror
-supplies `/pending`, `/recap [hours]`, `/slice <id>` and notices for new outbox events.
-Allowlisted free-text questions use the `frontline` purpose through LiteLLM on
-`127.0.0.1:4000`, grounded in privately configured planning files and pending work.
-In-memory episodes keep follow-ups together; replying to an older answer reopens its episode.
-The model can read one extra bounded clone file and propose one order; it cannot execute.
-The bot validates proposals and shows Yes/No buttons. Only an allowlisted tap queues an order
-on the encrypted volume. A [tailnet-only HTTP endpoint on TCP 8110](docs/operations.md#bot-order-endpoint)
-hands queued orders to a future Mac runner; Tailscale policy gates it, with no key.
-The inbox keeps ideas, links, unprocessed attachments and messages for repository orchestrators.
-The model classifies free text and asks at most two short clarifying questions; “just save it”
-keeps what is known. `/inbox [id]` lists or shows kept items. Public links have a guarded
-fetch and isolated summary; files are limited to 20 MiB each and 2 GiB in total.
-The inbox lives beside orders on the encrypted volume. Mac orchestrators use the root-owned
-[`homelab-inbox` helper over SSH](docs/operations.md#inbox-helper-over-ssh) to list new items,
-stream attachments and mark records read; it adds no network route.
-Answers and new proposals require unlock and the model gateway; host commands remain available while locked.
-Private configuration and a read-only deploy key stay on the node; see the
-[bot runbook](docs/operations.md#run-it).
+## What I designed and decided
 
-Docker state and rebuildable files live on the encrypted second SSD at `/srv/homelab-bulk`;
-databases, originals and corpus stay on `/srv/homelab`. After boot the owner unlocks main,
-which supplies bulk’s key, then Docker and the applications start. See
-[Rebuilding the node](docs/operations.md#rebuilding-the-node) for setup and recovery.
+I own the system architecture, the technical decisions, the execution boundaries and the
+acceptance criteria. AI coding agents implement the changes. I validate them through reviews,
+tests and operational feedback.
 
-## Quick start
+- **Purposes, not model names.** LiteLLM is the single route table. Applications ask for a
+  purpose (chat, embed, grade, vision). Only the LiteLLM container holds the gateway key.
+- **Mature libraries own the machinery.** LiteLLM routes, LlamaIndex retrieves, Procrastinate
+  runs jobs, python-telegram-bot runs the bot. Version 1 used only the standard library, and
+  that constraint was its main cost.
+- **Process and machinery are separate.** Factory decides what to build and records it. The
+  platform runs it, and holds the keys and the spend limits.
+- **Containment.** Agents run in sandbox containers. A fixed launcher starts every container, and
+  the `runs` service has no Docker socket. The launcher and the deployer are the only root helpers.
+- **Risk-based autonomy.** Changes fall into four risk levels, from fully automatic to mandatory
+  human approval. Secrets, destructive operations, money limits and new public exposure need my
+  approval. See [`.github/change-classes`](.github/change-classes).
+- **Executors are data.** [`config/executors.yaml`](config/executors.yaml) lists the executors for
+  each level in order: Codex first, Claude when usage limits require it. Small tickets can run on
+  the open-source Pi agent with a low-cost hosted model.
+
+## What the platform does
+
+| Part | What runs today |
+|---|---|
+| Model routing | Applications ask for a purpose: chat, embed, vision, grade and others. A LiteLLM route table sends each request to a hosted provider through one gateway key (Vercel AI Gateway), or to a local model. Embeddings for questions run on the server. Bulk embedding and vision can run on the Mac, through a llama.cpp router that starts a model on request and stops it when idle. The Mac publishes what it can serve and the server polls it, so the Mac can be away. |
+| Mac profiles | Two usage profiles, Working and Inference, with a menu-bar app. A queue runs long GPU jobs one at a time. |
+| Knowledge | Ingestion with sources (LlamaIndex), Postgres with pgvector, and answers that cite their sources. |
+| Durable jobs | Procrastinate on Postgres. A job is stored before it is acknowledged. |
+| Agent runs | The run API (`POST /v1/runs`) takes tickets, whole slices, cuts, reviews and eval runs. The run API uses application-scoped keys. Agent configurations are data folders with a hash, and every run records what ran. |
+| Images and video | Image and video generation purposes for the image studio, with one monthly budget on the gateway key and alerts at 80% and 100%. |
+| Security | Encrypted volumes (LUKS), SSH keys only, a private admin network, non-root service containers. A fixed launcher and a deployer are the only root helpers. A private-content check runs before any push to a public repository. CI scans for secrets. |
+| Operations | Daily database dumps with a restore check, weekly encrypted copies, and failure alerts to my phone. |
+| Clients | [med-ask](https://github.com/TelesforoAleix/med-ask) (search over medical textbooks, with sources), the image studio, and the Telegram bot. |
+
+The full reference is in [docs/platform.md](docs/platform.md).
+
+## Where it is going
+
+**Now, being built**
+
+- An eval that compares models and agent configurations on quality, speed and cost. Its case
+  sets come from my own past work. Pages show eval results and run traces.
+- Every agent run goes through the platform's run API, and the old runner retires.
+
+**Next**
+
+- Smaller models where they are enough. The eval shows which work a low-cost or local model can
+  take. Each task goes to the smallest model that does it reliably, and slices are cut into
+  smaller tasks for these models.
+- The Mac as a local worker: local models take light work first, and hosted models are the
+  fallback.
+- Management from Workshop: providers, keys per application, access and spending limits.
+- Safer operations: platform services as versioned images with automatic installs, and a
+  restore that I rehearse.
+- Small decision models behind a purpose, for classification and narrow choices.
+- Factory as a public repository, after its first eval.
+
+**Later, when a project needs it**
+
+- Tools for agents: knowledge as an MCP server, a web-research MCP server, and a tool gate that
+  the platform controls.
+- Agent workflows that can pause and resume (LangGraph), structured output and streaming.
+- Voice: speech-to-text behind a purpose, and voice notes through Telegram.
+
+A project's need sets the order first, then measurement. I design and stress-test each item
+before agents build it in small slices.
+
+## For agents and operators
+
+- [AGENTS.md](AGENTS.md): how to work in this repository.
+- [ARCHITECTURE.md](ARCHITECTURE.md): boundaries, routes and the eight rules.
+- [DECISIONS.md](DECISIONS.md): the choices behind them.
+- [docs/platform.md](docs/platform.md): reference for what runs today.
+- [docs/operations.md](docs/operations.md): operator runbook for the stack, Mac services, node
+  rebuilds and originals copies.
+- [docs/run-api.md](docs/run-api.md) and [docs/deployer.md](docs/deployer.md): the run API and
+  the application deployer.
+
+### Quick start
 
 ```bash
 # Development (no services)
@@ -134,7 +143,7 @@ uv run pytest
 
 Running the stack needs a provisioned node; see the [operator runbook](docs/operations.md#run-it).
 
-## Project structure
+### Project structure
 
 | Path | What |
 |---|---|
@@ -149,131 +158,3 @@ Running the stack needs a provisioned node; see the [operator runbook](docs/oper
 | `mac/` | Usage profiles, measurements, model router and action listener |
 
 First version: [homelab-v1](https://github.com/TelesforoAleix/homelab-v1)
-
-Used by: [med-ask](https://github.com/TelesforoAleix/med-ask)
-
-[Operator runbook](docs/operations.md): running the stack, Mac services, node rebuilds and originals copies.
-
-## Mac job queue
-
-The installed `homelab-profile` runs resumable commands one at a time through launchd, in
-any profile. Commands use an absolute executable and argv, without a shell:
-
-```bash
-homelab-profile queue add corpus --cwd /absolute/project -- /absolute/python /absolute/label.py
-homelab-profile queue list
-homelab-profile queue play
-homelab-profile queue stop
-homelab-profile queue top corpus
-homelab-profile queue remove corpus
-homelab-profile queue requeue corpus
-```
-
-Every command prints JSON; `status` includes the same queue data. `top` moves a waiting job
-forward without interrupting a run. `stop` terminates the whole process group (SIGKILL after
-10 seconds), turns play off and puts that job first, waiting. `play` resumes from whatever the
-command saved. A nonzero exit retries once, then stays failed while the queue moves on;
-`requeue` resets a failed or stopped job's attempts and appends it. Remove waiting, failed or finished
-jobs to delete their local logs and progress files.
-
-The platform bot tells the owner's private chat when a job fails after its retry (name,
-exit code and last five log lines), and when the last waiting job ends: "Mac queue empty;
-the Mac is free". Other completions, stops and battery pauses are silent. Sends run outside
-the queue lock with a short timeout; failures are logged on the Mac and dropped without retry.
-
-Nothing starts on battery. Ten continuous minutes on battery stop the running job while
-keeping play on (`paused_on_battery`); ten continuous minutes back on AC resume it. The menu
-reports when power is holding the queue and the remaining debounce time. A running
-job keeps the Mac awake, but closing the lid still sleeps it. Scheduled jobs retain their
-profile/AC/idle requirements and take the next slot before queued work. Queue jobs count as
-activity for the automatic return to Working, without changing profiles themselves.
-
-Logs (0600) stay under `~/.local/state/homelab-profile/` until removal. A command may overwrite
-the file named by `HOMELAB_QUEUE_PROGRESS` with one short progress line. Status reports that
-line, elapsed seconds, attempt, log path, process-group physical footprint (`physical_footprint_mb`)
-and available memory (`free_memory_mb`) in MiB. Footprint includes charged Metal allocations
-but excludes clean mapped model-file pages; available memory uses macOS `memory_pressure`'s
-free percentage (including immediately reclaimable memory), rounded by macOS to whole percent.
-Install updates from merged main using `mac/install-mac-tools`; the queue worker is the
-`org.homelab.profile.queue` login agent.
-
-The menu’s **Job queue** section sits below services: Play/Stop, battery pause, running job,
-elapsed time, attempt, progress and footprint beside available memory. Waiting jobs stay in
-order with **To front** and **Remove**; failed jobs offer **Requeue** and **Remove**, finished
-jobs **Remove**. Moving to front leaves the running job alone; Stop immediately stops the
-attempt, so unsaved items are redone on resume. Status refreshes every five seconds while the
-menu is open. Add jobs through the command above.
-
-## Image studio: operations and video jobs
-
-Use the model gateway at `http://127.0.0.1:4000` with `Authorization: Bearer <client-key>`.
-`GET /v1/model/info` returns `data: [{model_name, model_info}]` plus an `operations` object
-mapping these stable names to model-purpose lists: `generate_image`, `edit_image`,
-`upscale_image`, `image_to_video`, `upscale_video`, `edit_video`. Each media profile lists
-`operations`, `default_for`, `price` (USD, with tiers or an explicitly marked starting price)
-and `capabilities` (durations, resolutions, aspect ratios, audio, end frame, reference-image
-and reference-video counts, mask). An empty operation list means unsupported. One to four
-verified models may serve an operation; each supported operation has one default.
-
-| Operation | Purposes (default first) | Published price in USD |
-|---|---|---|
-| `generate_image`, `edit_image` | `image-gpt-2.5-flare`, `image-gpt-2.5-sunburst`, `image-nano-banana-2.1` | GPT output estimate: low .00588, medium .0132, high .05268, xhigh .09366, max .21072 per image; reference estimate .0122. Nano: 1K .0336, 2K .0504, 4K .1134 |
-| `upscale_image` | `image-upscale-wonder` | Starting at .08/image; full size tariff unavailable |
-| `image_to_video` | `video-grok-lite`, `video-kling-turbo`, `video-grok` | Lite: .02/.03/.14 per second at 480p/720p/1080p. Kling: .042 std, .07 pro per second (720p selects std, 1080p pro). Grok: .05/.07 per second at 480p/720p |
-| `upscale_video` | `video-upscale-proteus` | Starting at .08/video; full duration/resolution tariff unavailable |
-| `edit_video` | `video-grok` | .05/.07 per second at 480p/720p |
-
-Existing image generation/edit requests retain their shapes. Image upscale uses
-`POST /v1/images/edits`, multipart fields `model=image-upscale-wonder`, exactly one `image`
-(or `image[]`) PNG/JPEG/TIFF file up to 16 MiB, optional `size=WIDTHxHEIGHT` and
-`response_format=b64_json`. It returns `{"data":[{"b64_json":"..."}]}`.
-
-Start video work with `POST /v1/videos`, a JSON object with `model`, `operation`, `prompt`
-and inline media. Send a stable `Idempotency-Key` header (1–128 letters, digits or `_.:-`)
-when retrying a start: the same client key and idempotency value return the same job, even
-if the retry body differs. Without it, each accepted POST creates a new paid job. For example:
-
-```json
-{"model":"video-grok-lite","operation":"image_to_video","prompt":"A slow camera move",
- "image":"data:image/png;base64,...","duration":1,"resolution":"854x480","generateAudio":false}
-```
-
-`image_to_video` requires either `image` or a nonempty `referenceImages` array up to the
-profile's reference limit. `video-grok` accepts one to five reference images without a start
-or end image. A start image with references requires explicit profile support; no current
-profile supports that combination. No listed model accepts `endImage`. Kling inherits the
-start image's aspect ratio and refuses `aspectRatio`; its resolution selects quality mode.
-`upscale_video` requires `video: "data:video/mp4;base64,..."` and `resolution`; omit `prompt`
-or send an empty string. Optional `source` supplies actual input `{width,height,duration,frameRate}`
-and optional `frameCount`. `edit_video` requires `video` and a nonempty `prompt`; duration,
-resolution, aspect ratio, reference images and audio generation controls are unavailable
-for this model's editing mode. Generation also accepts `aspectRatio` and `generateAudio`;
-omitted generation duration/resolution select the profile's smallest values. Other settings
-are limited to the published profile. Media must be base64 data URIs; remote input URLs,
-provider overrides and query parameters are refused. The JSON body limit is 48 MiB.
-
-Start returns HTTP 202 immediately after storing the job metadata:
-
-```json
-{"id":"<uuid>","operation":"image_to_video","model":"video-grok-lite","status":"queued","cost_usd":null}
-```
-
-`GET /v1/videos/<uuid>` returns that same shape, with status `queued`, `running`, `completed`
-or `failed` and decimal-string `cost_usd` once known. A different bearer key gets 404.
-`GET /v1/videos/<uuid>/content` streams the completed video's bytes with its media type;
-409 means unfinished/failed, 410 means expired. Only content type, content length and
-`x-homelab-cost-usd` can appear on video responses. No provider URL or diagnostic is returned.
-Fetch content promptly: results expire upstream; Home Lab's memory cache lasts at most one
-hour and holds at most 16 results. Single-request content is lost on a gateway restart.
-
-Small requests use Vercel's async API; larger inline inputs use a background single request.
-At most four jobs run concurrently (429 when busy); jobs stop waiting after one hour.
-Async jobs with a saved Vercel reference resume when the gateway next receives a video request.
-Interrupted single requests become failed and are never automatically repeated: their inputs
-were not persisted, and an interrupted request may already have been charged.
-
-Video charges, including charged failures, add **once per job** to the same per-key UTC
-monthly total returned by `GET /v1/images/cost`: `{"month":"YYYY-MM","total_usd":"decimal",
-"charged_calls":1}`. Repeated status/content reads add no charge. Missing cost stays unknown;
-video estimates never debit the total. The existing $20 Vercel key budget and 80%/100% alerts
-cover images and video together. Keys, prompts and media never enter the jobs table or logs.

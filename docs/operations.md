@@ -3638,7 +3638,7 @@ the source before relying on the weekly copies. Rebuild code and derived stores 
 
 ## Video jobs and image upscale
 
-The [media client contract](../README.md#image-studio-operations-and-video-jobs) lists paths,
+The [media client contract](platform.md#image-studio-operations-and-video-jobs) lists paths,
 fields, models and prices. Video uses the existing image key; the Vercel $20 budget, monthly
 reset, and host 80%/100% alerts apply to combined image/video spending. The historical
 `GET /v1/images/cost` path and `homelab-image-cost-notice` unit names are unchanged.
