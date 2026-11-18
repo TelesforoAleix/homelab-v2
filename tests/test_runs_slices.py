@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -538,3 +539,201 @@ def test_stop_decodes_unknown_run_response(tmp_path, monkeypatch):
     thread.start()
     launcher.stop_run("missing")
     thread.join()
+
+
+@pytest.fixture
+def whole_slice_delivery(tmp_path, monkeypatch):
+    """Exercise the real bundle checker and push gate, with no launcher or network."""
+    import subprocess
+
+    from homelab.runs import delivery
+
+    def arrange(history="none", *, kind="handover", harness="codex"):
+        copy = tmp_path / "copy"
+        copy.mkdir()
+
+        def git(*args):
+            return subprocess.run(
+                ["git", "-C", str(copy), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+        git("init", "-q", "-b", "slice/test")
+        git("config", "user.name", "Fixture")
+        git("config", "user.email", "fixture@example.invalid")
+        (copy / "app").write_text("base")
+        git("add", ".")
+        git("commit", "-qm", "Base")
+        base = git("rev-parse", "HEAD")
+        if history == "empty":
+            git("commit", "--allow-empty", "-qm", "Empty commit")
+        elif history != "none":
+            (copy / "app").write_text("first change")
+            git("commit", "-qam", "First change")
+            if history in {"two", "reverted"}:
+                (copy / "app").write_text("base" if history == "reverted" else "second change")
+                git("commit", "-qam", "Second change")
+        tip = git("rev-parse", "HEAD")
+        export = tmp_path / "export.bundle"
+        git("bundle", "create", str(export), "HEAD", "refs/heads/slice/test")
+        record = {
+            "request": {
+                "role": "slice",
+                "mode": "write",
+                "repository": "owner/repo",
+                "branch": "slice/test",
+                "base_commit": base,
+                "work": {"allowed_files": ["app"], "pinned_paths": []},
+            },
+            "work_id": "run-" + "a" * 32,
+            "executor": executor(harness).selection(),
+            "session_id": None,
+        }
+        captures, pushes = [], []
+
+        def capture(request, out, err, seconds, **kwargs):
+            captures.append(request)
+            err.write_bytes(b"")
+            if request["profile"] == "bundle":
+                out.write_bytes(export.read_bytes())
+            else:
+                assert request["profile"] == "cli-run"
+                final = {"kind": kind, "body": "Private final"}
+                events = (
+                    [
+                        {"type": "thread.started", "thread_id": "session-fixture"},
+                        {
+                            "type": "item.completed",
+                            "item": {
+                                "type": "agent_message",
+                                "text": json.dumps(final),
+                            },
+                        },
+                        {
+                            "type": "turn.completed",
+                            "usage": {
+                                "input_tokens": 10,
+                                "output_tokens": 5,
+                            },
+                        },
+                    ]
+                    if harness == "codex"
+                    else [
+                        {
+                            "type": "result",
+                            "session_id": "session-fixture",
+                            "structured_output": final,
+                            "usage": {"input_tokens": 10, "output_tokens": 5},
+                        },
+                    ]
+                )
+                out.write_text("\n".join(map(json.dumps, events)))
+            return 0, "exited"
+
+        monkeypatch.setattr(slices.launcher, "capture", capture)
+        monkeypatch.setattr(
+            delivery,
+            "GitHubApp",
+            lambda: SimpleNamespace(token=lambda _: "FAKE-APP-TOKEN"),
+        )
+        monkeypatch.setattr(delivery, "remote_refs", lambda *a: ("trunk", {}))
+        monkeypatch.setattr(delivery, "repository_is_private", lambda *a: True)
+        monkeypatch.setattr(delivery, "private_content_check", lambda *a, **kw: None)
+        original = delivery.git
+
+        def push(directory, *args, **kwargs):
+            if args[0] == "push":
+                pushes.append(args)
+                return SimpleNamespace(returncode=0)
+            return original(directory, *args, **kwargs)
+
+        monkeypatch.setattr(delivery, "git", push)
+        return SimpleNamespace(
+            record=record,
+            tip=tip,
+            captures=captures,
+            pushes=pushes,
+            export=export,
+        )
+
+    return arrange
+
+
+@pytest.mark.parametrize("history", ["none", "one", "two", "empty", "reverted"])
+def test_whole_slice_delivery_returns_actual_commits(whole_slice_delivery, tmp_path, history):
+    case = whole_slice_delivery(history)
+    commits = slices.deliver(case.record, tmp_path)
+    assert commits == ([] if history == "none" else [case.tip])
+    assert len(case.pushes) == (0 if history == "none" else 1)
+    if case.pushes:
+        assert case.pushes[0][-1] == case.tip + ":refs/heads/slice/test"
+    assert [call["profile"] for call in case.captures] == ["bundle"]
+    assert not list(tmp_path.glob("verify-*"))
+
+
+@pytest.mark.parametrize("history", ["none", "two"])
+@pytest.mark.parametrize("harness", ["codex", "claude"])
+@pytest.mark.parametrize(
+    "kind,status,reason",
+    [
+        ("handover", "done", None),
+        ("question", "question", None),
+        ("escalation", "escalated", "executor_gave_up"),
+        ("waiting", "waiting", "client_step"),
+    ],
+)
+def test_whole_slice_turn_keeps_final_state_and_actual_commits(
+    whole_slice_delivery, tmp_path, history, harness, kind, status, reason
+):
+    case = whole_slice_delivery(history, kind=kind, harness=harness)
+    result, session, commits, metrics = slices.execute_turn(
+        case.record, "Goal", tmp_path, "turn-fixture"
+    )
+    assert result == {
+        "status": status,
+        "status_reason": reason,
+        "resumable": True,
+        "final_message": "Private final",
+        "resume_at": None,
+    }
+    assert session == "session-fixture"
+    assert metrics["requests"] == 1 and metrics["fresh"] == 10 and metrics["output"] == 5
+    assert metrics["seconds"] >= 0
+    assert commits == ([] if history == "none" else [case.tip])
+    assert len(case.pushes) == (0 if history == "none" else 1)
+    assert [call["profile"] for call in case.captures] == ["cli-run", "bundle"]
+
+
+@pytest.mark.parametrize("history", ["none", "one"])
+@pytest.mark.parametrize("fault", ["bundle_exit", "bundle_stopped", "invalid_bundle", "cancelled"])
+def test_whole_slice_delivery_still_validates_and_honors_cancellation(
+    whole_slice_delivery, tmp_path, monkeypatch, history, fault
+):
+    case = whole_slice_delivery(history)
+    capture = slices.launcher.capture
+    if fault == "invalid_bundle":
+        case.export.write_bytes(b"not a bundle")
+    elif fault in {"bundle_exit", "bundle_stopped"}:
+
+        def failed_export(*args, **kwargs):
+            capture(*args, **kwargs)
+            return (1, "exited") if fault == "bundle_exit" else (0, "cancelled")
+
+        monkeypatch.setattr(slices.launcher, "capture", failed_export)
+    with pytest.raises(
+        slices.Refused, match="^interrupted$" if fault == "cancelled" else "^push_refused$"
+    ):
+        slices.deliver(case.record, tmp_path, cancelled=lambda: fault == "cancelled")
+    assert case.pushes == []
+    assert not list(tmp_path.glob("verify-*"))
+
+
+def test_run_api_documents_whole_slice_no_commit_result():
+    guide = Path(__file__).resolve().parents[1] / "docs/run-api.md"
+    text = " ".join(guide.read_text().split())
+    assert (
+        "For whole-slice write runs, `commits` is empty when the executor made no commit "
+        "(the checked bundle tip equals `base_commit`); otherwise it contains only the pushed tip."
+    ) in text

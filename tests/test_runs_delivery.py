@@ -390,3 +390,74 @@ def test_ticket_configuration_fetch_uses_its_own_repository_token(tmp_path, monk
     assert repositories == ["TelesforoAleix/homelab-v2"]
     assert all(token not in repr(command) for command in commands)
     assert token not in caplog.text and "PRIVATE ERROR" not in caplog.text
+
+
+def test_push_checked_unchanged_tip_returns_empty_without_remote_work(
+    bundle, tmp_path, monkeypatch
+):
+    copy, path, document, _ = bundle
+    git(copy, "reset", "--hard", document["base_commit"])
+    git(copy, "bundle", "create", str(path), "HEAD", "refs/heads/slice/test")
+    # An empty diff is valid even with no allowed files and the entire tree pinned.
+    document["work"].update(allowed_files=[], pinned_paths=["src"])
+    with delivery.checked_bundle(path, document, tmp_path) as (directory, tip):
+        assert tip == document["base_commit"]
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("an unchanged tip must not authenticate, inspect the remote, scan or push")
+
+        monkeypatch.setattr(delivery, "GitHubApp", forbidden)
+        monkeypatch.setattr(delivery, "remote_refs", forbidden)
+        monkeypatch.setattr(delivery, "repository_is_private", forbidden)
+        monkeypatch.setattr(delivery, "private_content_check", forbidden)
+        monkeypatch.setattr(delivery, "git", forbidden)
+        assert delivery.push_checked(directory, document, tip) == []
+    assert not directory.exists()
+
+
+@pytest.mark.parametrize("history", ["one", "two", "empty", "reverted"])
+def test_push_checked_reports_only_tip_after_new_commits(bundle, tmp_path, monkeypatch, history):
+    copy, path, document, _ = bundle
+    if history == "two":
+        (copy / "src/app").write_text("second change")
+        git(copy, "commit", "-qam", "Second change")
+    elif history == "empty":
+        git(copy, "reset", "--hard", document["base_commit"])
+        git(copy, "commit", "--allow-empty", "-qm", "Empty commit")
+    elif history == "reverted":
+        (copy / "src/app").write_text("base")
+        git(copy, "commit", "-qam", "Restore base tree")
+    tip = git(copy, "rev-parse", "HEAD")
+    git(copy, "bundle", "create", str(path), "HEAD", "refs/heads/slice/test")
+    github(monkeypatch, private=True)
+    scans, pushes = [], []
+    monkeypatch.setattr(
+        delivery,
+        "private_content_check",
+        lambda document, directory, tip, **kwargs: scans.append((tip, kwargs)) or None,
+    )
+    with delivery.checked_bundle(path, document, tmp_path) as (directory, checked_tip):
+        original = delivery.git
+
+        def push(directory, *args, **kwargs):
+            if args[0] == "push":
+                pushes.append((args, kwargs))
+                return SimpleNamespace(returncode=0)
+            return original(directory, *args, **kwargs)
+
+        monkeypatch.setattr(delivery, "git", push)
+        commits = delivery.push_checked(directory, document, checked_tip)
+        assert scans == [(tip, {"private": True})]
+        assert len(pushes) == 1
+        args, kwargs = pushes[0]
+        assert args == (
+            "push",
+            "--porcelain",
+            "--no-verify",
+            "--no-follow-tags",
+            "--",
+            "https://github.com/owner/repo.git",
+            tip + ":refs/heads/slice/test",
+        )
+        assert kwargs == {"token": "FAKE-APP-TOKEN", "check": False}
+        assert commits == [tip]
