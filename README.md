@@ -50,27 +50,30 @@ Solid parts are built; dashed parts are planned.
 - [ARCHITECTURE.md](ARCHITECTURE.md) explains the boundaries and rules;
   [DECISIONS.md](DECISIONS.md) records the choices behind them.
 
-[Coding tasks](docs/operations.md#coding-tasks-in-a-container) run one at a time on the node:
-`homelab-task-run` gives a ticket to the Pi agent in an isolated container on one working copy,
-then judges the result with a pinned check. Separate containers prepare, work, check and commit.
-The [fixed container launcher](docs/operations.md#install-the-fixed-fence-launcher) also offers
-these task shapes to uid 21020 (`homelab-runs`), alongside its Factory profiles. The platform
-image contains an [unprivileged `runs` service](docs/operations.md#runs-service), which starts
-with the platform and uses the launcher for every container and repository-scoped GitHub App
-tokens for clones and pushes. The old host runner is stopped and disabled; it remains installed
-only as the rollback until its removal. Whole-slice CLI turns, write/read cuts, read-only reviews,
-conversation resumes and usage fallback are enabled through `HOMELAB_RUN_ROLES=slice,cut,review`.
-Ended CLI copies are removed through the launcher immediately on failure/cancellation and
-after three days otherwise; later messages prepare a fresh branch copy and retain the harness
-session. The [node rehearsal](docs/operations.md#runs-rehearsal-on-the-node) temporarily enables
-the roles and restores the old runner afterwards. The switch was completed on 2026-11-17;
-the [switch procedure](docs/operations.md#switch-to-runs) and rollback steps remain valid until
-the old runner is removed. A tmpfiles rule recreates the shared lock at boot.
-Only the agent reaches LiteLLM, on `homelab-tasks`, with a one-run token for its purpose and a
-request budget; prepare reaches only the package indexes, through a proxy.
-Tasks are [submitted](ARCHITECTURE.md#task-store) as a file to a durable store and queue in
-Postgres. The [task runner](ARCHITECTURE.md#task-runner), a host service, runs them with retries
-across routes, and pushes each one's commit to its slice branch. Pi worker setups live in public `configurations/pi/`; each run records the configuration file hashes, image digest and source commit. The runner fetches configurations from merged `origin/main` in its own clone.
+[Coding tickets](docs/operations.md#runs-service) run one at a time on the node through the
+platform's unprivileged `runs` service. `config/executors.yaml` selects the worker at the
+request's level: Codex first, then Claude when usage limits require fallback. Both use the
+fixed launcher's `cli-run` profile. Tickets retain the task path's fresh clone, pinned paths,
+allowed-file import, check, commit step and repository-scoped GitHub App push. A failed check
+gets one retry from a fresh clone with its output as feedback, then escalates. There is no
+review inside a ticket; the client reviews the slice before merge. If neither executor is
+usable, the run waits `usage_limit` until a scheduled queue retry. Each attempt records the
+executor that ran.
+
+The [fixed container launcher](docs/operations.md#install-the-fixed-fence-launcher) starts every
+container; `runs` has no Docker socket or tool logins. Whole-slice CLI turns, write/read cuts,
+read-only reviews, conversation resumes and usage fallback are enabled through
+`HOMELAB_RUN_ROLES=slice,cut,review`. Ended CLI copies are removed through the launcher
+immediately on failure/cancellation and after three days otherwise; later messages prepare a
+fresh branch copy and retain the harness session. The old host runner is stopped and disabled,
+kept installed only for rollback; its `homelab_roles` table is unused by `runs`.
+
+Tasks are [submitted](ARCHITECTURE.md#task-store) to Postgres and queued by Procrastinate.
+Pi entries in the executor table and eval tickets still use public configurations under
+`configurations/pi/`, fetched from merged `origin/main` in an independent clone. They record
+configuration hashes, image digest and source commit and pass the same check and commit gates,
+without a review. Only Pi reaches LiteLLM, with a one-run purpose token and request budget;
+prepare reaches only the package indexes through a proxy.
 
 Eval tasks may select `eval/<provider>/<model>` through one `eval/*` gateway route by naming
 a [configuration folder](configurations/README.md). Only an eval-marked task can receive its

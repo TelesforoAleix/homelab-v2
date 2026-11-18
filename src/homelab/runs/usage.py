@@ -8,6 +8,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+_cache_mutexes = {}
+
 
 @dataclass(frozen=True)
 class Reading:
@@ -71,6 +73,8 @@ def claude_reading(text, now):
 def choose(executors, read, now):
     resets = []
     for executor in executors:
+        if executor.configuration:
+            return executor, None
         reading = read(executor.harness)
         if reading is None:
             resets.append(now + 3600)
@@ -91,7 +95,7 @@ class ClaudeCache:
 
     def __init__(self, path: Path, probe, *, clock=time.time):
         self.path, self.probe, self.clock = path, probe, clock
-        self.mutex = threading.Lock()
+        self.mutex = _cache_mutexes.setdefault(str(path.resolve()), threading.Lock())
 
     def read(self):
         with self.mutex:

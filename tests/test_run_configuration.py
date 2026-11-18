@@ -16,10 +16,7 @@ def test_initial_executor_table():
     assert set(table) == {"ticket", "slice", "cut", "review"}
     for role in table.values():
         assert set(role) == {"light", "standard", "strong"}
-    assert all(
-        row[0].model_dump(exclude_none=True) == {"configuration": "pi/base"}
-        for row in table["ticket"].values()
-    )
+    assert table["ticket"] == table["slice"]
     assert table["slice"]["light"][0].model == "gpt-6-luna"
     assert table["slice"]["standard"][0].effort == "medium"
     assert table["review"]["strong"][0].model == "opus"

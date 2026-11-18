@@ -124,36 +124,6 @@ def test_push_ignores_copy_config_and_keeps_token_out_of_command_and_disk(tmp_pa
     assert not list(tmp_path.iterdir())
 
 
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("VERDICT: PASS\nTrailing explanation", ("pass", "Trailing explanation")),
-        ("Notes\nVERDICT: FIX\nMore notes", ("fix", "Notes\nMore notes")),
-        ("VERDICT: FIX", ("fix", "")),
-        ("VERDICT: PASS\nVERDICT: PASS", None),
-        ("VERDICT: PASS\nVERDICT: FIX", None),
-        (" VERDICT: PASS", None),
-        ("VERDICT: PASS extra", None),
-        ("No verdict", None),
-    ],
-)
-def test_verdict_exactly_one_line_anywhere_in_final_message(tmp_path, text, expected):
-    events = tmp_path / "review.jsonl"
-
-    def message(content):
-        return {
-            "type": "message_end",
-            "message": {
-                "role": "assistant",
-                "stopReason": "stop",
-                "content": [{"type": "text", "text": content}],
-            },
-        }
-
-    events.write_text(json.dumps(message("VERDICT: FIX")) + "\n" + json.dumps(message(text)) + "\n")
-    assert task_run.read_verdict(events) == expected
-
-
 class Database:
     def __init__(self, granted=True):
         self.granted, self.queries, self.closed = granted, [], False
@@ -199,32 +169,16 @@ def test_lock_fails_closed_without_host_state(tmp_path):
 def test_embedded_commit_and_other_commands_retain_host_behavior():
     from tests.test_task_run import runner as old
 
-    for name in ("PREPARE", "CHECK", "COMMIT", "AGENT", "REVIEWER"):
+    for name in ("PREPARE", "CHECK", "COMMIT", "AGENT"):
         assert getattr(task_run, name) == getattr(old, name)
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        "test_a_commit_that_pushes_ends_done_in_one_attempt",
-        "test_a_failed_check_retries_once_on_its_route_with_its_output",
-        "test_a_second_failed_check_moves_to_the_next_route_without_the_output",
-        "test_every_route_failing_escalates_with_the_last_reason",
-    ],
-)
-def test_attempt_order_matches_host_runner(name, tmp_path, monkeypatch):
-    from homelab.runs import runner
-    from tests import test_task_runner as old
-
-    monkeypatch.setattr(old, "runner", runner)
-    getattr(old, name)(monkeypatch, tmp_path)
-
-
-@pytest.mark.parametrize("fix", [False, True])
-def test_complete_pi_attempt_uses_launcher_and_keeps_costs(tmp_path, monkeypatch, fix):
+@pytest.mark.parametrize("harness", [None, "codex", "claude"])
+def test_complete_attempt_uses_launcher_without_review(tmp_path, monkeypatch, harness):
     import hashlib
 
-    from homelab.runs import launcher
+    from homelab.runs import launcher, slices
+    from homelab.tasks.executors import Executor
     from tests.test_task_run import ROOT
 
     work = tmp_path / "copy"
@@ -240,27 +194,22 @@ def test_complete_pi_attempt_uses_launcher_and_keeps_costs(tmp_path, monkeypatch
 
     def capture(request, out, err, seconds, *, stdin=None, **kwargs):
         requests.append(request)
-        shape = request["shape"]
+        shape = request.get("shape")
         Path(err).write_bytes(b"")
         if shape == "prepare":
             Path(out).write_text("a" * 40 + "\n")
-        elif shape in ("agent", "review"):
+        elif shape == "agent":
             assert stdin.read()
             token = request["env"]["HOMELAB_TASK_TOKEN"]
             cost = task_run.COSTS / hashlib.sha256(token.encode()).hexdigest()
             cost.write_text('{"cost_usd":0.1}\n')
-            text = (
-                "Notes\nVERDICT: FIX\nMore notes"
-                if fix and sum(r["shape"] == "review" for r in requests) == 1
-                else "VERDICT: PASS\nAfter"
-            )
             events = [
                 {
                     "type": "message_end",
                     "message": {
                         "role": "assistant",
                         "stopReason": "stop",
-                        "content": [{"type": "text", "text": text}],
+                        "content": [{"type": "text", "text": "Done"}],
                         "usage": {"input": 10, "output": 2, "cacheRead": 3},
                     },
                 },
@@ -268,6 +217,15 @@ def test_complete_pi_attempt_uses_launcher_and_keeps_costs(tmp_path, monkeypatch
                 {"type": "agent_settled", "aborted": False},
             ]
             Path(out).write_text("\n".join(json.dumps(e) for e in events) + "\n")
+        elif shape == "data":
+            _, spec = request["arguments"]
+            Path(out).write_text("[]" if json.loads(spec)["op"] == "import" else "")
+        elif request["profile"] == "cli-run":
+            selected = Executor(harness=harness, model="fixture-model", effort="high")
+            assert request["tool"] == harness
+            assert request["command"] == slices.command(selected, "", stdin=True, ticket=True)
+            assert json.loads(stdin.read())["work"]["ticket"] == "A ticket"
+            Path(out).write_text("{}")
         elif shape == "check":
             Path(out).write_bytes(b"DIFF\x00bytes")
             Path(err).write_text(task_run.CHECK_STARTED + "\n")
@@ -276,6 +234,7 @@ def test_complete_pi_attempt_uses_launcher_and_keeps_costs(tmp_path, monkeypatch
         return 0, "exited"
 
     monkeypatch.setattr(launcher, "capture", capture)
+    monkeypatch.setattr(launcher, "request", lambda _: {"ok": True})
     ticket = tmp_path / "ticket"
     ticket.write_text("A ticket")
     args = task_run.parse(
@@ -292,22 +251,28 @@ def test_complete_pi_attempt_uses_launcher_and_keeps_costs(tmp_path, monkeypatch
             "Fixture",
             "--author-email",
             "fixture@example.invalid",
-            "--review-purpose",
-            "task-reviewer",
             "--configuration",
             str(ROOT / "configurations/pi/base"),
         ]
     )
+    if harness:
+        args.executor = Executor(harness=harness, model="fixture-model", effort="high")
+        args.cli_name = "ticket-7-1"
     record = task_run.run(args)
     assert record["ended"] == "committed"
-    expected = ["prepare", "agent", "check", "review"]
-    if fix:
-        expected += ["agent", "check", "review"]
-    assert [r["shape"] for r in requests] == expected + ["commit"]
-    assert all(r["profile"] == "task" for r in requests)
-    assert record["cost_usd"] == (0.2 if fix else 0.1)
-    assert all(r["cost_usd"] == 0.1 for r in record["reviews"])
-    assert record["steps"] == (2 if fix else 1)
+    expected = (
+        ["prepare", "data", "data", "cli-run", "data", "data", "check", "commit"]
+        if harness
+        else ["prepare", "agent", "check", "commit"]
+    )
+    assert [r.get("shape", r["profile"]) for r in requests] == expected
+    if harness:
+        assert record["executor"] == args.executor.selection()
+        assert record["configuration_hash"] == args.executor.fingerprint()
+        assert "cost_usd" not in record
+    else:
+        assert record["cost_usd"] == 0.1 and record["steps"] == 1
+    assert "reviews" not in record and "review_purpose" not in record
     assert not list(task_run.TOKENS.iterdir())
 
 

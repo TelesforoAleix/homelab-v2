@@ -9,7 +9,6 @@ import argparse
 import base64
 import contextlib
 import io
-import itertools
 import json
 import logging
 import os
@@ -27,18 +26,18 @@ from pathlib import Path
 
 import psycopg
 
-from homelab.runs import launcher, locking, task_run
+from homelab.runs import launcher, locking, task_run, usage
 from homelab.runs.app import GitHubApp
 from homelab.runs.app import Refused as GitHubTokenRefused
 from homelab.settings import get_settings
 from homelab.tasks import claim, finish
+from homelab.tasks.executors import Executor, load_executors
 
 VOLUME = Path("/srv/homelab")
 WORK = VOLUME / "task-work"
 RUNS = VOLUME / "runs"
 
 CONFIG_REPOSITORY = "https://github.com/TelesforoAleix/homelab-v2.git"
-CONFIGURATION = "pi/base"
 
 
 DENY_LIST = Path("/run/secrets/deny-list")
@@ -49,11 +48,9 @@ GIT_SECONDS = 600
 CHECK_OUTPUT_BYTES = 16 * 1024
 COMMIT_MESSAGE = ".task-commit-message"
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9._-]*\Z")
-PURPOSE = re.compile(r"[a-z0-9][a-z0-9.-]{0,63}\Z")
 COMMIT = re.compile(r"[0-9a-f]{40,64}\Z")
-# How a run can end with feedback to give: these get one more run on the same route, from a fresh
-# clone. A failed or oversized review is not among them; it goes on to the next route.
-RETRIES = {"check_failed", "check_timeout", "review_rejected"}
+# Failed checks get one retry in a fresh clone, carrying only the check output.
+RETRIES = {"check_failed", "check_timeout"}
 CHECK_LOG = re.compile(r"check(-[0-9]+)?\.log\Z")
 
 logger = logging.getLogger("homelab-runs")
@@ -80,7 +77,11 @@ def store(module, *args, event=None):
             raise LostLock("runner_database_lost")
         try:
             if module == "claim":
-                return claim.recover(connection) if args else claim.claim(connection)
+                return (
+                    claim.recover(connection)
+                    if args
+                    else claim.claim(connection, legacy_roles=False)
+                )
             return finish.record(connection, finish.parse(json.dumps(event).encode()))
         except psycopg.OperationalError:
             raise LostLock("runner_database_lost") from None
@@ -178,7 +179,7 @@ def fresh_copy(task):
 
 
 def ticket(task, feedback):
-    """The ticket. `feedback` is None, or ("check", output) or ("review", notes) of a lost try."""
+    """The ticket. `feedback` is None, or ("check", output) of a lost try."""
     paths = "\n".join(f"- {path}" for path in task["allowed_files"])
     text = (
         f"# {task['title']}\n\n{task['goal']}\n\n"
@@ -193,16 +194,10 @@ def ticket(task, feedback):
             "\nAn earlier try at this task failed its check, and was discarded. "
             f"The end of the check's output:\n\n```\n{feedback[1]}\n```\n"
         )
-    elif feedback is not None:
-        quoted = "".join(f"> {line}\n" for line in feedback[1].splitlines())
-        text += (
-            "\nAn earlier try at this task was rejected by review, and was discarded. "
-            f"The reviewer's notes:\n\n{quoted}"
-        )
     return text
 
 
-def configuration_snapshot(folder, configuration=None):
+def configuration_snapshot(folder, configuration):
     """Fetch main independently of both the stack and task working copies."""
     clone = folder / "clone"
     env = git_env()
@@ -250,32 +245,26 @@ def configuration_snapshot(folder, configuration=None):
         snapshot.mkdir()
         with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
             archive.extractall(snapshot, filter="data")
-        return snapshot / "configurations" / (configuration or CONFIGURATION), commit
+        return snapshot / "configurations" / configuration, commit
     except (OSError, ValueError, UnicodeError, tarfile.TarError, subprocess.SubprocessError):
         raise Refused("configuration_snapshot_failed") from None
 
 
-def run_ticket(task, copy, purpose, review_purpose, feedback, *, cli=None, number=None):
+def run_ticket(task, copy, executor, feedback, *, number):
     command = [
         "--working-copy",
         str(copy),
         "--check",
         task["check_command"],
-        "--purpose",
-        purpose,
-        "--review-purpose",
-        review_purpose,
         "--author-name",
         os.environ["HOMELAB_TASK_AUTHOR_NAME"],
         "--author-email",
         os.environ["HOMELAB_TASK_AUTHOR_EMAIL"],
     ]
-    if cli is not None:
+    if executor.harness:
         command += [
-            "--cli-model",
-            cli["model"],
-            "--cli-effort",
-            cli["effort"],
+            "--executor",
+            json.dumps(executor.selection()),
             "--cli-name",
             f"ticket-{task['id']}-{number}",
         ]
@@ -284,25 +273,23 @@ def run_ticket(task, copy, purpose, review_purpose, feedback, *, cli=None, numbe
     for path in task["allowed_files"]:
         command += ["--allow", path]
     with tempfile.TemporaryDirectory(prefix="homelab-config-") as temporary:
-        name = task.get("eval_configuration")
+        configuration_name = executor.configuration or "pi/base"
         if task.get("eval_set") is not None:
+            name = task.get("eval_configuration")
             if not isinstance(name, str) or not re.fullmatch(
                 r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name
             ):
                 raise Refused("eval_configuration_refused")
-            configuration, revision = configuration_snapshot(Path(temporary), "pi/" + name)
-            index = command.index("--purpose")
-            del command[index : index + 2]
+            configuration_name = "pi/" + name
             command += [
                 "--eval-mark",
                 json.dumps(
                     {"set": task["eval_set"], "case": task["eval_case"], "configuration": name}
                 ),
             ]
-        else:
-            configuration, revision = configuration_snapshot(Path(temporary))
+        configuration, revision = configuration_snapshot(Path(temporary), configuration_name)
         command += ["--configuration", str(configuration), "--configuration-commit", revision]
-        return invoke_ticket(task, feedback, command, cli, number)
+        return invoke_ticket(task, feedback, command, executor.harness, number)
 
 
 def invoke_ticket(task, feedback, command, cli, number):
@@ -313,7 +300,7 @@ def invoke_ticket(task, feedback, command, cli, number):
             run = task_run.run(task_run.parse([*command, "--ticket", stream.name]))
         except task_run.Refused:
             return {"ended": "run_refused"}
-    if cli is not None:
+    if cli:
         logger.info(
             "cli task=%d number=%d ignored_changes=%d",
             task["id"],
@@ -510,19 +497,24 @@ def push(task, copy, commit):
     return "push_rejected" if moved else "push_failed"
 
 
-def attempt(task, route, review_route, number, feedback):
+def attempt(task, executor, number, feedback):
     """One attempt on one route, from a fresh clone; returns (its end, feedback for a retry)."""
+    route = executor.selection()
     started = time.monotonic()
-    record({"event": "begin_attempt", "task_id": task["id"], "number": number, "route": route})
+    record(
+        {
+            "event": "begin_attempt",
+            "task_id": task["id"],
+            "number": number,
+            "route": route,
+            "executor": route,
+        }
+    )
     copy = fresh_copy(task)
     if copy is None:
         run = {"ended": "clone_failed"}
-    elif route["kind"] == "cli":
-        run = run_ticket(
-            task, copy, "task-worker", review_route["purpose"], feedback, cli=route, number=number
-        )
     else:
-        run = run_ticket(task, copy, route["purpose"], review_route["purpose"], feedback)
+        run = run_ticket(task, copy, executor, feedback, number=number)
     ended = run["ended"]
     if ended == "committed":
         ended = "eval_kept" if task.get("eval_set") is not None else push(task, copy, run["commit"])
@@ -545,19 +537,15 @@ def attempt(task, route, review_route, number, feedback):
             "output_tokens": tokens.get("output", 0),
             "seconds": round(time.monotonic() - started, 1),
             **known_cost(run),
-            "review_route": review_route,
-            "reviews": [review_of(item) for item in run.get("reviews") or []],
         }
     )
     logger.info(
         "attempt task=%d number=%d purpose=%s ended=%s",
         task["id"],
         number,
-        route.get("purpose", route["kind"]),
+        executor.harness or executor.configuration,
         log_reason(ended),
     )
-    if ended == "review_rejected":
-        return ended, ("review", run.get("review_notes") or "")
     return ended, (("check", check_output_of(run)) if ended in RETRIES else None)
 
 
@@ -623,70 +611,67 @@ def known_cost(item):
     return {} if item.get("cost_usd") is None else {"cost_usd": item["cost_usd"]}
 
 
-def review_of(item):
-    tokens = item.get("tokens") or {}
-    return {
-        "result": item["result"],
-        "steps": item.get("steps", 0),
-        "fresh_tokens": tokens.get("fresh", 0),
-        "cached_tokens": tokens.get("cached", 0),
-        "output_tokens": tokens.get("output", 0),
-        "seconds": item.get("seconds", 0),
-        **known_cost(item),
-    }
-
-
-def usable_routes(task, key="routes"):
-    routes = []
-    for route in task.get(key) or []:
-        kind = route.get("kind") if isinstance(route, dict) else None
-        if kind == "litellm" and PURPOSE.fullmatch(str(route.get("purpose"))):
-            routes.append(route)
-        elif (
-            kind == "cli"
-            and key == "routes"
-            and route.get("tool") == "codex"
-            and isinstance(route.get("model"), str)
-            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", route["model"])
-            and route.get("effort") in ("none", "minimal", "low", "medium", "high", "xhigh")
-        ):
-            routes.append(route)
-        else:
-            logger.warning("route skipped task=%d reason=unusable_route", task["id"])
-    return routes
-
-
-def run_routes(task, routes, review_route, numbers):
-    """Each route in order, a failed check or a rejection once more on the same route.
-
-    Returns the last end.
-    """
-    ended = "no_attempt"
-    for route in routes:
-        ended, feedback = attempt(task, route, review_route, next(numbers), None)
-        if ended in RETRIES:
-            ended, _ = attempt(task, route, review_route, next(numbers), feedback)
-        if ended.startswith("push") or ended == "eval_kept":
-            return ended
-    return ended
-
-
 def work(task):
-    """Every attempt a task gets; returns its final status and reason."""
-    routes = usable_routes(task)
-    if not routes:
-        return "escalated", "no_usable_route"
-    reviewers = usable_routes(task, "review_routes")
-    if not reviewers:
-        return "escalated", "no_usable_review_route"
-    numbers = itertools.count(task["next_attempt"])
-    ended = run_routes(task, routes, reviewers[0], numbers)
-    if ended == "push_rejected":
-        # The branch moved: once more from its new tip, with every route available again.
-        ended = run_routes(task, routes, reviewers[0], numbers)
-    if ended == "eval_kept":
-        return "done", "eval_kept"
-    return ("done", None) if ended == "pushed" else ("escalated", ended)
+    """Select only by table order and usage; checks get one fresh-copy retry."""
+    from homelab.runs import slices
+
+    choices = (
+        [Executor(configuration="pi/" + task["eval_configuration"])]
+        if task.get("eval_set") is not None
+        else load_executors()["ticket"][task["level"]]
+    )
+    RUNS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=RUNS, prefix="usage-") as temporary:
+        folder = Path(temporary)
+        cache = usage.ClaudeCache(RUNS / "claude-usage.json", lambda: slices.claude_probe(folder))
+        readings = {}
+
+        def read(harness):
+            if harness not in readings:
+                try:
+                    readings[harness] = (
+                        slices.codex_usage(folder) if harness == "codex" else cache.read()
+                    )
+                except launcher.Refused:
+                    readings[harness] = None
+            return readings[harness]
+
+        number, feedback = task["next_attempt"], None
+        check_retried = push_retried = False
+        for reason, run_id, config_hash in task.get("attempt_history", []):
+            if reason == "push_rejected":
+                push_retried, check_retried, feedback = True, False, None
+            elif reason in RETRIES:
+                check_retried = True
+                if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", run_id):
+                    raise Refused("check_feedback_unavailable")
+                parent = RUNS
+                if task.get("eval_set") is not None:
+                    parent = parent / "eval" / task["eval_set"] / task["eval_case"] / config_hash
+                feedback = ("check", check_output_of({"run_folder": str(parent / run_id)}))
+        while True:
+            executor, reset = usage.choose(choices, read, time.time())
+            if executor is None:
+                return "waiting", reset
+            ended, check_feedback = attempt(task, executor, number, feedback)
+            number += 1
+            if ended == "usage_limit":
+                # A limit reported during execution may be newer than the preflight reading.
+                now = time.time()
+                readings.pop(executor.harness, None)
+                current = read(executor.harness)
+                reset = current.reset if current and current.reset > now else now + 3600
+                readings[executor.harness] = usage.Reading(100, reset, now)
+                continue
+            if ended in RETRIES and not check_retried:
+                check_retried, feedback = True, check_feedback
+                continue
+            if ended == "push_rejected" and not push_retried:
+                push_retried, feedback, check_retried = True, None, False
+                continue
+            if ended == "eval_kept":
+                return "done", "eval_kept"
+            return ("done", None) if ended == "pushed" else ("escalated", ended)
 
 
 def run_task(task):
@@ -702,6 +687,17 @@ def run_task(task):
         status, reason = "failed", f"runner_error_{type(error).__name__}"
     finally:
         remove_copy(task)
+    if status == "waiting":
+        record(
+            {
+                "event": "defer_usage",
+                "task_id": task["id"],
+                "job_id": task["job_id"],
+                "reset": reason,
+            }
+        )
+        logger.info("task waiting id=%d reason=usage_limit", task["id"])
+        return
     record(
         {
             "event": "end_task",
@@ -796,13 +792,9 @@ def keep_lock(stop):
 
 
 def main(argv=None):
-    global CONFIGURATION, connection
+    global connection
     parser = argparse.ArgumentParser()
-    parser.add_argument("--configuration", default="pi/base")
-    args = parser.parse_args(argv)
-    if not re.fullmatch(r"pi/[A-Za-z0-9][A-Za-z0-9._-]*", args.configuration):
-        parser.error("invalid configuration path")
-    CONFIGURATION = args.configuration
+    parser.parse_args(argv)
     if os.geteuid() != 21020:
         logger.error("runner refused reason=invalid_uid")
         return 2

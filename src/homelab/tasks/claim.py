@@ -33,7 +33,7 @@ FIELDS = (
 )
 
 
-def claim(connection: Any) -> dict[str, Any] | None:
+def claim(connection: Any, *, legacy_roles: bool = True) -> dict[str, Any] | None:
     """Take the next runnable job and its task, in one transaction.
 
     Procrastinate's own function moves the job to `doing` under SKIP LOCKED, so a job goes to one
@@ -66,12 +66,30 @@ def claim(connection: Any) -> dict[str, Any] | None:
                    updated_at = now() WHERE id = %s""",
                 (task["id"],),
             )
-            roles = dict(
-                connection.execute(
-                    """SELECT role, routes FROM homelab_roles
-                       WHERE role IN ('worker', 'ticket-reviewer')"""
+            if legacy_roles:
+                roles = dict(
+                    connection.execute(
+                        """SELECT role, routes FROM homelab_roles
+                           WHERE role IN ('worker', 'ticket-reviewer')"""
+                    ).fetchall()
+                )
+                metadata = {
+                    "routes": roles.get("worker", []),
+                    "review_routes": roles.get("ticket-reviewer", []),
+                }
+            else:
+                request = connection.execute(
+                    "SELECT request FROM homelab_runs WHERE task_id = %s", (task["id"],)
+                ).fetchone()
+                history = connection.execute(
+                    """SELECT reason, run_id, configuration_hash FROM homelab_task_attempts
+                       WHERE task_id = %s ORDER BY number""",
+                    (task["id"],),
                 ).fetchall()
-            )
+                metadata = {
+                    "level": request[0]["level"] if request else "standard",
+                    "attempt_history": history,
+                }
             (attempts,) = connection.execute(
                 "SELECT coalesce(max(number), 0) FROM homelab_task_attempts WHERE task_id = %s",
                 (task["id"],),
@@ -79,8 +97,7 @@ def claim(connection: Any) -> dict[str, Any] | None:
             return {
                 **task,
                 "job_id": job_id,
-                "routes": roles.get("worker", []),
-                "review_routes": roles.get("ticket-reviewer", []),
+                **metadata,
                 "next_attempt": attempts + 1,
             }
 

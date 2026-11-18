@@ -71,17 +71,35 @@ ownership checks. Today's executor cannot resume a conversation, so it returns
 and `strong`, each an ordered, nonempty list. An entry is either `{configuration: pi/base}` or
 `{harness: codex|claude, model: ..., effort: ...}`; Codex requires effort. Unknown fields,
 missing rows, mixed kinds and unavailable Pi folders fail API startup. The first entry is
-recorded; the table does not replace or edit `homelab_roles`.
+recorded at submission; dispatch records the executor that actually runs and its hash.
+`runs` does not read `homelab_roles`; that table remains for the stopped rollback host runner.
 
 Pi hashes use the existing configuration manifest: SHA-256 of compact JSON encoding of sorted
 `[relative path, file SHA-256]` pairs, covering all regular UTF-8 files. CLI hashes cover canonical
 JSON of the selected harness, model and effort. Attempt hashes remain the actual hashes
 reported by the runner, separately from the selection recorded at submission.
 
-A normal `ticket` write run using the baseline configuration becomes one task for today's
-runner. `slice`, `cut` and `review` without an eval mark return `409 role_not_available`.
+A normal `ticket` write becomes one task on the serial task queue. The runner uses
+`usage.choose` on the `ticket` entries at the requested level, in order:
+
+| Level | First | At its usage limit |
+|---|---|---|
+| light | Codex gpt-6-luna, low | Claude sonnet |
+| standard | Codex gpt-6.1-terra, medium | Claude sonnet |
+| strong | Codex gpt-6.1-sol, high | Claude opus |
+
+Fallback uses the same subscription windows, unknown-reading policy and Claude probe cache
+as slices. With none usable the run waits `usage_limit`, with `resume_at` set to the earliest
+reset and a Procrastinate retry scheduled for that time. Both harness workers use
+`slices.command` through the launcher's `cli-run` profile. Tickets keep the fresh clone,
+pinned paths, allowed files, check, commit step and push. A failed check gets one retry in a
+fresh clone with its output as feedback, then escalates. Other failures do not advance the
+executor list. No review runs inside a ticket; the client reviews the slice before merge.
+A `configuration:` entry remains valid and uses its Pi worker without a review.
+`slice`, `cut` and `review` without an eval mark return `409 role_not_available` unless enabled
+as described below.
 An `eval` mark requires `runs:eval`, chooses its named Pi configuration (`base` or `pi/base`),
-and populates the existing task eval fields. The runner then keeps its change as a diff and
+and populates the existing task eval fields. It runs Pi without a review. The runner keeps its change as a diff and
 never calls its push step. GET includes `diff_base64` from the existing read-only eval export
 mount, with the same 2 MiB bound and symlink/path checks as the legacy endpoint.
 
@@ -89,9 +107,8 @@ Read mode and any request containing `limits` are refused at create with HTTP 40
 `error:role_not_available`, `status_reason:role_not_available`, and the message
 "Read mode and per-run limits arrive with the execution service." This includes an empty
 `limits` object or explicit null: omit the field for today's executor. The refusal leaves no
-run, task or queue job. The executor table's shape is unchanged; its referenced Pi configuration
-supplies today's execution limits. A non-baseline table selection for a non-eval ticket fails
-without a job because today's host always selects its baseline configuration for that path.
+run, task or queue job. The executor table's shape is unchanged. Pi configurations supply
+their execution limits; harness ticket turns retain their 20-minute deadline.
 
 The host clones the selected branch's complete single-branch history for either history hint.
 Null `allowed_files` uses the existing sandbox's unrestricted default; a null check uses
