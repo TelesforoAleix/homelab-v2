@@ -121,7 +121,10 @@ only in `homelab_runs.goal`, not in task rows, request JSON or queue arguments. 
 keep their existing goal storage and behavior. Logs never include goals, assets or final
 messages.
 
-`commits` lists the pushed SHAs for `slice` and `ticket` runs. A pushed ticket appends the
+`commits` lists the pushed SHAs for `slice` and `ticket` runs.
+For whole-slice write runs, `commits` is empty when the executor made no commit
+(the checked bundle tip equals `base_commit`); otherwise it contains only the pushed tip.
+A pushed ticket appends the
 successful attempt's `base..commit` SHAs, oldest first and without duplicates, to any already
 recorded, in the transaction that ends the run. Rejected or discarded attempts, other endings
 and kept evals leave `commits` unchanged. Tickets keep `final_message:null`; usage and attempt
