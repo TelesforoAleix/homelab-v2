@@ -268,8 +268,7 @@ def deliver(record, folder, *, cancelled=lambda: False):
     with checked_bundle(bundle, document, folder) as (directory, tip):
         if cancelled():
             raise Refused("interrupted")
-        push_checked(directory, document, tip)
-        return [tip]
+        return push_checked(directory, document, tip)
 
 
 def execute_turn(record, prompt, folder, turn_id, *, cancelled=lambda: False):
