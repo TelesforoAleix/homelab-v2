@@ -115,7 +115,7 @@ def test_recover_aborts_job_for_already_failed_run(enabled):
     claimed = slices.claim(enabled)
     slices.begin(enabled, claimed, claimed["executor"])
     enabled.execute(
-        """UPDATE homelab_runs SET status = 'failed', status_reason = 'test',
+        """UPDATE homelab_runs SET status = 'failed', status_reason = 'sandbox_error',
         resumable = false WHERE id = %s""",
         (run_id,),
     )

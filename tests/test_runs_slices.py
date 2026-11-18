@@ -423,10 +423,7 @@ def test_requests_match_launcher_stdin_contract(tmp_path, monkeypatch):
     prompt.write_text("prompt")
     monkeypatch.setattr(task_run, "issue_token", lambda *a, **kw: tmp_path / "grant")
     monkeypatch.setattr(task_run, "read_cost", lambda *a: None)
-    for reviewing in (False, True):
-        task_run.ask_model(
-            context, "step", "purpose", 1, "script", prompt, ("out", "err"), reviewing=reviewing
-        )
+    task_run.ask_model(context, "step", "purpose", 1, "script", prompt, ("out", "err"))
     slices.claude_probe(tmp_path)
     turn = {
         "request": {"mode": "read"},
@@ -435,7 +432,7 @@ def test_requests_match_launcher_stdin_contract(tmp_path, monkeypatch):
         "session_id": None,
     }
     slices.execute_turn(turn, "prompt", tmp_path, "turn")
-    assert required == seen & required
+    assert required - {"review"} == seen & required
     assert {"cli-run-input", "cli-run-no-input"} <= seen
 
 

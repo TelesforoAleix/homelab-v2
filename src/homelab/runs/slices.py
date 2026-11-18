@@ -110,7 +110,7 @@ def prepare(record, folder, *, cancelled=lambda: False):
     return work_id
 
 
-def command(executor, prompt, session=None, *, stdin=False):
+def command(executor, prompt, session=None, *, stdin=False, ticket=False):
     if executor.harness == "codex":
         result = [
             "codex",
@@ -121,7 +121,7 @@ def command(executor, prompt, session=None, *, stdin=False):
             "-c",
             f'model_reasoning_effort="{executor.effort}"',
         ]
-        result += ["--output-schema", SCHEMA_PATH]
+        result += ["--skip-git-repo-check"] if ticket else ["--output-schema", SCHEMA_PATH]
         return [*result, "-o", "/run/factory/last.json", "--json", "--", "-" if stdin else prompt]
     result = ["claude", "-p", "--model", executor.model]
     if executor.effort:
@@ -132,8 +132,7 @@ def command(executor, prompt, session=None, *, stdin=False):
         *result,
         "--output-format",
         "json",
-        "--json-schema",
-        json.dumps(SCHEMA),
+        *([] if ticket else ["--json-schema", json.dumps(SCHEMA)]),
         *([] if stdin else ["--", prompt]),
     ]
 

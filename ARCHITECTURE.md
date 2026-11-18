@@ -534,6 +534,11 @@ No hosted observability callbacks are configured. `/health` keeps `status`, `ver
 
 ## Coding tasks
 
+The active `runs` service executes tickets as described in [Run API](#run-api) and the
+[runbook](docs/operations.md#runs-service). The following host-script layouts describe the
+stopped, installed rollback runner. Its optional review remains available only on that path;
+`runs` never reviews a ticket.
+
 `homelab-task-run` runs one ticket against one working copy; see the
 [runbook](docs/operations.md#coding-tasks-in-a-container). Pi is the agent. It has no sandbox of
 its own, and model-generated commands and repository content are untrusted, so the containers
@@ -622,8 +627,8 @@ reading untrusted text; the commit step's rules on allowed paths and pins stay t
 
 ### Task runner
 
-`homelab-task-runner` is a systemd service on the host, because it starts containers and pushes, and
-no container may do either. It is a slow loop, one task at a time. It waits while the data volume
+`homelab-task-runner` is the stopped and disabled rollback service on the host. When enabled,
+it starts containers and pushes, one task at a time. It waits while the data volume
 is locked or a run by hand holds the lock, and every 30 seconds when the queue is empty.
 
 ```text
@@ -753,16 +758,17 @@ starting. The coding-task and run records use five tables:
 | Table | One row per | Holds |
 |---|---|---|
 | `homelab_runs` | application-owned run | request hash, goal, metadata, executor/hash, task link, status, change revision |
-| `homelab_roles` | role | `routes`: an ordered JSON list; the next entry is one tier up |
+| `homelab_roles` | legacy role | rollback host runner routes; unused by `runs` |
 | `homelab_tasks` | task | the file's fields, status, reason, timestamps |
 | `homelab_task_attempts` | attempt of a task | number, role, route, status, why it ended, run id, check exit code |
 | `homelab_task_traces` | model-using job | task, attempt, role, route, kind, steps, tokens, cost, seconds, result |
 
 A route is `{"kind": "litellm", "purpose": ...}` or `{"kind": "cli", "tool": ..., "model": ...}`.
 Start inserts `worker`, `ticket-reviewer` and `side-job` if they are missing, each with one route
-to `task-worker`, and leaves existing rows alone. Today's worker routes live in this table,
-which is edited directly; a trigger keeps `updated_at` true. Attempts and traces copy their role
-and route, so history survives an edit. Runs compare in plain SQL:
+to `task-worker`, and leaves existing rows alone. Only the rollback host runner reads these
+routes; `runs` selects executors from `config/executors.yaml`. The legacy table is edited
+directly; a trigger keeps `updated_at` true. Attempts and traces copy their role and route,
+so history survives an edit. Runs compare in plain SQL:
 
 ```sql
 SELECT role, route, kind, count(*), sum(output_tokens), sum(cost_usd), avg(seconds)
@@ -785,12 +791,23 @@ a branch equal to its listed default or `main` returns 409. Another application'
 No repository policy lives in Postgres. API startup validates the file and
 `config/executors.yaml`; malformed data prevents start. The executor table maps each role and
 level to an ordered list of Pi configurations or CLI harnesses; the first entry and its hash
-are recorded without changing `homelab_roles`. Whole-run dispatch replaces that initial choice
-with the first executor permitted by usage, before starting its first attempt.
+are recorded at submission. Dispatch replaces that initial choice with the executor permitted
+by usage before each ticket attempt or the first whole-run attempt. `runs` never reads
+`homelab_roles`; the table and legacy claim protocol remain for the installed rollback runner.
 
-A ticket write or eval becomes one ordinary task, deferred through Procrastinate in the run's
-transaction. `after` request ids become task dependencies; a non-`done` predecessor cancels its
-queued descendants with `predecessor`. Unrelated active runs of the application exclude another
+A ticket write or eval becomes one ordinary task on the serial `tasks` queue, deferred through
+Procrastinate in the run's transaction. Non-eval tickets choose their `ticket` role/level entries
+with the same `usage.choose` policy as slices: only a usage limit permits the next entry, and
+no usable entry means `waiting: usage_limit` until Procrastinate's scheduled retry. The ticket
+row matches the slice row at all levels. Codex and Claude commands both come from
+`slices.command`, through `cli-run`, operating on a plain copy; allowed, unpinned regular files
+return through offline data containers. Prepare, fresh clones, pins, check, commit and App push
+remain the task path's gates. A failed check retries once from a fresh clone with the check's
+output, then escalates. Other execution failures escalate without trying a different executor.
+There is no per-ticket review or review feedback. The client reviews the slice before merge.
+Pi entries (including eval's named configuration) run Pi without usage probes or review; evals
+retain their diff instead of pushing. `after` request ids become task dependencies; a
+non-`done` predecessor cancels its queued descendants with `predecessor`. Unrelated active runs of the application exclude another
 write on that branch. Each run-linked task stores an empty goal; claim resolves the sole copy
 in `homelab_runs.goal` and adds assets in memory. Request metadata and queue arguments never
 copy that goal. Database triggers synchronize status, attempts and usage changes. Bridge writers
@@ -813,12 +830,13 @@ branch; new submissions still require its repository/default-branch policy. Fact
 unlinked eval tasks remain readable and deduplicated. Eval tasks continue using the host's
 existing diff export and never push. No host runner, launcher or gateway change is needed.
 
-## Container task runner (installed, disabled)
+## Container task runner
 
 The platform image contains `python -m homelab.runs`. Compose defines it as `runs` under the
 opt-in `runs` profile, uid 21020 with no capabilities, Docker socket, host helper or published
-port. Ordinary `homelab.service` starts do not enable it. The old host runner is still the
-only active runner; its two scripts and unit are unchanged.
+port. The node's private environment enables that profile for ordinary `homelab.service`
+starts. The old host runner is stopped and disabled, retained only for rollback; its scripts
+and unit remain installed.
 
 Whole-run work uses a separate Procrastinate `runs` queue, with a library repository lock
 and two worker slots across slice, cut and review. Tickets keep their serial `tasks` loop.
@@ -826,8 +844,8 @@ and two worker slots across slice, cut and review. Tickets keep their serial `ta
 receive the setting, whose Compose default is empty. Only review requires read mode; cut
 accepts write mode to commit failing tests, as well as read mode. Review tries Claude first
 (sonnet at light/standard, opus at strong), then Codex gpt-6.1-sol high.
-The later switch must enable both this setting and the Compose profile, after stopping the
-host runner and meeting the existing lock and directory prerequisites.
+The node enables both this setting and the Compose profile; the stopped host runner, lifetime
+locks and shared-directory prerequisites remain part of rollback and recovery.
 
 The launcher creates `run-<uuid>` work/run folders as uid 21000. No mirror is retained:
 each copy clones the existing branch or the remote default tip for a new branch, without
@@ -883,16 +901,14 @@ a no-follow check and a Docker bind. `runs` mounts task work read-only and never
 it. The launcher rejects overlapping shapes or folder lifecycle operations on one work id,
 so another launched container cannot swap a bind source during validation. A fixed clone shape uses only that work bind and the existing fence proxy/network; the
 launcher validates repository and branch and invokes system Git directly, without a shell,
-hooks, credential helpers or login mounts. Prepare, Pi, review, check and commit retain their
-five shapes. CLI routes use the existing `cli-run` profile; networkless data containers copy
+hooks, credential helpers or login mounts. Prepare, Pi, check and commit use the task
+shapes. CLI workers use the existing `cli-run` profile; networkless data containers copy
 only regular files into and out of separately launcher-created, uid 21000 task-attempt folders.
 No mounted folder belongs to `runs`. Configuration snapshots and private run records belong
 to `runs` and are never mounted by the launcher.
 
-Attempt ordering, feedback retries, review fix round, checks, commits, eval retention, costs
-and failure notices follow the host runner. The new verdict parser accepts exactly one exact
-`VERDICT: PASS` or `VERDICT: FIX` line anywhere in the final assistant message, and rejects zero
-or multiple lines. A sanitized temporary Git directory exposes only the clone's objects and
+Check retries, commits, eval retention, costs and failure notices use the task machinery.
+A sanitized temporary Git directory exposes only the clone's objects and
 refs for the unchanged deny-list/canary scan and push, never its config or hooks. Each push
 mints a fresh RS256 App JWT with OpenSSL, requests an installation token restricted to one
 repository, then uses HTTPS with an explicit URL/refspec and an authorization header held

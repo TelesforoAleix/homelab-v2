@@ -1032,3 +1032,21 @@ retries the stop for the affected launcher run before recording a sandbox failur
 `unknown_run` stop is confirmation that no launcher run remains. If stopping still cannot
 be confirmed, the existing service-level fail-closed path remains in force, preventing a
 new claim while a container may still be live. Other workers are not stopped by this retry.
+
+
+**2026-11-18 — Tickets execute the catalogue and use the check as their gate.**
+`config/executors.yaml` is the only ticket worker selection source. The ticket row matches the
+slice row at each level; `usage.choose` supplies the same ordered fallback and reset policy.
+Only a usage limit advances the list. With no usable executor the serial task returns to
+Procrastinate with a scheduled retry and its run waits `usage_limit`. Each attempt records
+its actual executor/hash. Codex and Claude share `slices.command` on `cli-run`, with a ticket
+option for the plain copy (no Git metadata or final-message schema); existing slice commands
+are unchanged. The complete rendered ticket travels in the existing stdin work envelope to
+preserve the API's goal and asset bounds without putting content in command arguments.
+The task path retains fresh clones, pinned paths, regular allowed-file import,
+the check, commit and push, including one rerun on push rejection. A failed check retries once
+with its output, then escalates. Tickets have no hosted review or review feedback; the client
+reviews the slice before merge. Eval and other Pi configurations still run Pi, without review.
+`runs` claims without reading `homelab_roles`; the legacy claim CLI, table, schema and installed
+rollback runner remain unchanged in purpose until that runner is removed. No migration,
+launcher/node change, executor-table shape change or run-contract change is needed.

@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 import psycopg
 from pydantic import Field, TypeAdapter, ValidationError, model_validator
 
 from homelab.settings import get_settings
+from homelab.tasks.executors import Executor
 from homelab.tasks.runs import lock_task
 from homelab.tasks.store import Refused
 from homelab.tasks.submit import Strict
@@ -26,6 +28,7 @@ class BeginAttempt(Strict):
     task_id: int
     number: int = Field(ge=1)
     route: dict[str, Any]
+    executor: Executor | None = None
 
 
 class Review(Strict):
@@ -74,11 +77,18 @@ class EndTask(Strict):
     reason: str | None = None
 
 
-Event = Annotated[BeginAttempt | EndAttempt | EndTask, Field(discriminator="event")]
-EVENT: TypeAdapter[BeginAttempt | EndAttempt | EndTask] = TypeAdapter(Event)
+class DeferUsage(Strict):
+    event: Literal["defer_usage"]
+    task_id: int
+    job_id: int
+    reset: float = Field(gt=0, allow_inf_nan=False)
 
 
-def parse(raw: bytes) -> BeginAttempt | EndAttempt | EndTask:
+Event = Annotated[BeginAttempt | EndAttempt | EndTask | DeferUsage, Field(discriminator="event")]
+EVENT: TypeAdapter[BeginAttempt | EndAttempt | EndTask | DeferUsage] = TypeAdapter(Event)
+
+
+def parse(raw: bytes) -> BeginAttempt | EndAttempt | EndTask | DeferUsage:
     try:
         return EVENT.validate_json(raw)
     except ValidationError as error:
@@ -88,11 +98,17 @@ def parse(raw: bytes) -> BeginAttempt | EndAttempt | EndTask:
 
 
 def begin_attempt(connection: Any, event: BeginAttempt) -> None:
-    connection.execute(
+    inserted = connection.execute(
         """INSERT INTO homelab_task_attempts (task_id, number, role, route)
            VALUES (%s, %s, 'worker', %s::jsonb) ON CONFLICT DO NOTHING""",
         (event.task_id, event.number, json.dumps(event.route)),
     )
+    if inserted.rowcount and event.executor is not None:
+        connection.execute(
+            """UPDATE homelab_runs SET executor = %s::jsonb, configuration_hash = %s,
+                   resume_at = NULL, resumable = false WHERE task_id = %s""",
+            (json.dumps(event.executor.selection()), event.executor.fingerprint(), event.task_id),
+        )
 
 
 def end_attempt(connection: Any, event: EndAttempt) -> None:
@@ -197,10 +213,32 @@ def end_task(connection: Any, event: EndTask) -> list[int]:
     return released
 
 
-def record(connection: Any, event: BeginAttempt | EndAttempt | EndTask) -> list[int]:
+def defer_usage(connection, event):
+    # Keep the serial task queue: Procrastinate owns the scheduled retry, not a timer loop.
+    changed = connection.execute(
+        """UPDATE homelab_tasks SET status = 'queued', started_at = NULL,
+               updated_at = now() WHERE id = %s AND status = 'running'""",
+        (event.task_id,),
+    ).rowcount
+    if changed:
+        connection.execute(
+            "SELECT procrastinate_retry_job_v2(%s, %s, NULL, NULL, NULL)",
+            (event.job_id, datetime.fromtimestamp(event.reset, UTC)),
+        )
+        connection.execute(
+            """UPDATE homelab_runs SET status = 'waiting', status_reason = 'usage_limit',
+                   resume_at = %s, finished_at = NULL, resumable = false WHERE task_id = %s""",
+            (datetime.fromtimestamp(event.reset, UTC), event.task_id),
+        )
+    return []
+
+
+def record(connection: Any, event: BeginAttempt | EndAttempt | EndTask | DeferUsage) -> list[int]:
     """Apply one event; returns the ids of the tasks it released."""
     with connection.transaction():
         lock_task(connection, event.task_id)
+        if isinstance(event, DeferUsage):
+            return defer_usage(connection, event)
         if isinstance(event, EndTask):
             return end_task(connection, event)
         if isinstance(event, BeginAttempt):

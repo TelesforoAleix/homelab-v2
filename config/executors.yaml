@@ -1,10 +1,13 @@
 ticket:
   light:
-    - configuration: pi/base
+    - {harness: codex, model: gpt-6-luna, effort: low}
+    - {harness: claude, model: sonnet}
   standard:
-    - configuration: pi/base
+    - {harness: codex, model: gpt-6.1-terra, effort: medium}
+    - {harness: claude, model: sonnet}
   strong:
-    - configuration: pi/base
+    - {harness: codex, model: gpt-6.1-sol, effort: high}
+    - {harness: claude, model: opus}
 slice:
   light:
     - {harness: codex, model: gpt-6-luna, effort: low}

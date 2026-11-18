@@ -1526,6 +1526,10 @@ container; quitting the MCP session stops it.
 
 ## Coding tasks in a container
 
+The installed host scripts in this section are the stopped rollback path. Active ticket runs
+use the [runs service](#runs-service), which selects its worker from the executor table and
+has no per-ticket review. The host scripts below retain their optional review unchanged.
+
 `homelab-task-run` gives one ticket to the Pi agent and judges the result, one run at a time. By
 hand nothing is committed or pushed. See [Coding tasks](../ARCHITECTURE.md#coding-tasks) for the
 boundary; [the task runner](#the-task-runner) drives the same script for queued tasks.
@@ -1693,6 +1697,45 @@ so ordinary `homelab.service` starts include it. Since the switch on 2026-11-17,
 execution service. The old `homelab-task-runner.service` is stopped and disabled, retained only
 as the rollback until its removal. The host's two task scripts and runner unit remain installed.
 
+**Ticket path.** `config/executors.yaml` is the sole worker selection source for `runs`.
+Its `ticket` row matches the `slice` row at every level: light Codex gpt-6-luna low then Claude
+sonnet; standard Codex gpt-6.1-terra medium then Claude sonnet; strong Codex gpt-6.1-sol high then
+Claude opus. Tickets are always available on the serial `tasks` queue, independently of
+`HOMELAB_RUN_ROLES`. Both harness workers use `slices.command` and the launcher `cli-run`
+profile, passing the intact ticket in the existing stdin envelope's `work.ticket` field so
+contract-sized goals and assets fit; no Codex-specific command wrapper remains. The first
+usable entry runs; fallback is only for a usage limit, using the slice thresholds and the shared hourly Claude probe cache.
+With none usable the run waits `usage_limit`, records `resume_at`, and Procrastinate schedules
+the task's retry at the earliest reset. Unknown readings wait an hour.
+
+A ticket keeps its fresh clone, prepare, pins, allowed-file import, check, commit and push.
+A failed check gets one retry from a fresh clone with its output as feedback, then escalates;
+other execution failures escalate without trying the next entry. The existing one rerun after
+a rejected push remains. There is no review step, review purpose, reviewer route or review
+feedback in this service. The client reviews the slice before merge. `homelab_roles` is never
+read by `runs`; it and the installed host runner remain for rollback. No schema migration is
+needed. Pi entries in non-eval rows still run their named configuration. Eval tickets still
+select their named Pi configuration, keep the diff and never push, now without review.
+
+Private ticket files live under `/srv/homelab/runs/<run id>/`, owned by uid 21020, mode 0700:
+
+| File | Holds |
+|---|---|
+| `run.json` | Run id, base/working copy, purpose, pins, check command and exit code, `check_log`, commit, ending and times. Pi retains its configuration manifest/hash/source commit, `steps`, `tokens`, `compactions`, `retries`, `end_event`, `last_stop` and measured `cost_usd`. Harness runs add `executor`, hash that selection in `configuration_hash`, report available harness requests/tokens/cost and `cli_ignored_changes`; unknown cost is absent. No `review_purpose`, `reviews` or `review_notes`. |
+| `prepare.log` | Dependency installation |
+| `diff.patch`, `check.log` | Diff before pin restoration, and check output |
+| `events.jsonl`, `agent.log` | Pi events/stderr, only for Pi workers |
+| `commit.log` | Commit refusal details, when present |
+
+Each retry has a fresh run folder. There are no review files or review fix-round files.
+Harness stdout/stderr and transfer files are removed after each turn. The plain CLI copy is
+removed after the turn, and the task copy after the task finishes or waits. Only allowed,
+unpinned regular files and `.task-commit-message` return; links, deletions, `.git` and `.venv`
+do not. The commit-message file is metadata and need not be listed in `allowed_files`.
+Run and attempt executor/hash fields reflect the worker that ran, including fallback.
+After merging this change, **Restart runs on the merged commit**. The client then runs a
+ticket-flow slice on Codex to verify delivery; no node action is part of this implementation.
+
 **Whole-slice, cut and review path.** The node's private environment sets
 `HOMELAB_RUN_ROLES=slice,cut,review`, passed independently to the API and `runs`. Review
 requires `mode: read`; slice and cut support either mode. A write cut can commit the ticket
@@ -1771,8 +1814,8 @@ once. A second interruption fails it permanently and cancels queued descendants.
 runner locks and watchdog remain in force while workers stop. No new uid, network, host bind,
 Docker socket access or login access for `runs` is added.
 
-For tickets, the queue/store, attempt order, one retry with check/review feedback, one review fix round,
-check, commit, costs and eval-attempt retention follow the host runner. CLI routes keep the
+For tickets, the queue/store, one retry with check output, check, commit, costs and
+eval-attempt retention use the task machinery. CLI workers keep the
 existing launcher `cli-run` profile and their 20-minute turn limit. Networkless `data` task
 containers export/import regular files through pipes; only allowed, unpinned regular files
 return. Deletions, links, Git metadata and `.venv` do not return. The launcher creates the
@@ -1807,9 +1850,6 @@ See [GitHub's JWT contract](https://docs.github.com/en/apps/creating-github-apps
 and [installation-token parameters](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app).
 No Python JWT dependency is added.
 
-The new review parser requires exactly one line equal to `VERDICT: PASS` or `VERDICT: FIX`
-anywhere in the final assistant message. Zero or multiple lines end `review_failed`.
-Other lines become bounded review notes. This does not change the host runner's parser.
 Private logs and run records live under `/srv/homelab/runs`, owned by uid 21020, mode 0700;
 evals retain the same `eval/<set>/<case>/<hash>/<run id>` structure there. Final diff exports
 still go to the API's existing `task-runs/eval-diffs` directory through its separate bind.
@@ -2144,10 +2184,11 @@ entry in the usual submission file, then submit with
 `sudo docker exec -i homelab-worker-1 python -m homelab.tasks.submit < tasks.json`.
 Each name is 1–64 letters, digits, dots, underscores or hyphens, starting with a letter or
 digit; configuration must exist under `configurations/pi/` in the submitting release.
-Use a scratch repository and a slice branch as for ordinary tasks. Prepare, agent, check and
-review run normally; a commit ends `done` with `eval_kept` and never reaches push or needs a
+Use a scratch repository and a slice branch as for ordinary tasks. Prepare, agent and check
+run normally, without a review; a commit ends `done` with `eval_kept` and never reaches push or needs a
 push key. Other endings and retries keep their existing reasons. Every run folder is kept at
-`/srv/homelab/task-runs/eval/<set>/<case>/<configuration hash>/<run id>/`, root-only.
+`/srv/homelab/runs/eval/<set>/<case>/<configuration hash>/<run id>/`, private to uid 21020
+(the rollback host runner uses `task-runs` as root).
 An unmarked task keeps its ordinary behavior.
 
 Eval configurations may name `eval/<provider>/<model>` through the single `eval/*` route.
@@ -2213,8 +2254,8 @@ the last ended attempt's diff.
 When keeping an eval attempt, the runner copies only the final round's diff to
 `/srv/homelab/task-runs/eval-diffs/<run_id>.patch`, using a temporary file and atomic
 rename. The folder is `root:10001`, mode `0750`; patches are `root:10001`, mode `0640`.
-Root and the API's group 10001 can read these diffs. Agent events, review logs and all
-other run-store content remain root-only. No diff written means no exported file;
+Root and the API's group 10001 can read these diffs. Agent events and other run-store content remain private to the runner; historical review logs
+remain in older run folders. No diff written means no exported file;
 runs kept before this change are not backfilled.
 
 Only the API mounts `${HOMELAB_TASK_RUNS_PATH:-/srv/homelab/task-runs}/eval-diffs`
@@ -2232,7 +2273,7 @@ and Compose guard-file changes before merge.
 Read `sudo docker exec homelab-worker-1 homelab eval results --set T`.
 Each tab-separated line contains case, configuration hash, runs, passed, then mean steps,
 fresh tokens, cached tokens, output tokens, seconds and USD cost. A run is a completed attempt;
-passed means check and review accepted a commit. Usage includes worker and reviews; seconds
+passed means the check accepted a commit. Historical results may include review traces; seconds
 cover the whole attempt. Cost is empty if any worker or review cost is unknown. Results come
 only from Postgres; prompts and outputs stay in the run folders. Bare `homelab eval` still
 runs the knowledge eval.

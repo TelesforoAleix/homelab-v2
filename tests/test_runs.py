@@ -100,7 +100,7 @@ def test_create_retry_conflict_and_content_isolation(api, caplog):
         assert all(MARKER not in row[0] for row in rows)
     assert MARKER not in caplog.text
     record = CLIENT.get(f"/v1/runs/{run_id}", headers=HEADERS).json()
-    assert record["executor"] == {"configuration": "pi/base"}
+    assert record["executor"] == load_executors()["ticket"]["standard"][0].selection()
     assert len(record["configuration_hash"]) == 64
     assert record["attribution"] == {"case": "one"}
     assert MARKER not in json.dumps(record)

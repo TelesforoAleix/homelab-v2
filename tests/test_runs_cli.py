@@ -8,10 +8,15 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from homelab.runs import cli, launcher
+import pytest
+
+from homelab.runs import cli, launcher, slices
+from homelab.tasks.executors import Executor
 
 
-def test_cli_data_bridge_and_existing_profile(tmp_path, monkeypatch):
+@pytest.mark.parametrize("harness", ["codex", "claude"])
+@pytest.mark.parametrize("large", [False, True])
+def test_cli_data_bridge_and_existing_profile(tmp_path, monkeypatch, harness, large):
     task = tmp_path / "task"
     plain = tmp_path / "plain"
     task.mkdir()
@@ -29,7 +34,7 @@ def test_cli_data_bridge_and_existing_profile(tmp_path, monkeypatch):
     folder = tmp_path / "records"
     folder.mkdir()
     ticket = tmp_path / "ticket"
-    ticket.write_text("A CLI ticket")
+    ticket.write_text("A CLI ticket" if not large else "🌍" * 200_000 + "\n" + "Asset" * 40_000)
     context = SimpleNamespace(folder=folder, owner=(task, os.getuid(), os.getgid()), seconds=3)
     requests = []
     operations = []
@@ -44,18 +49,21 @@ def test_cli_data_bridge_and_existing_profile(tmp_path, monkeypatch):
         requests.append(value)
         Path(stderr).write_bytes(b"")
         if value["profile"] == "cli-run":
-            assert value["tool"] == "codex" and value["exports"] == []
-            assert value["command"] == [
-                "codex",
-                "exec",
-                "-m",
-                "fixture-model",
-                "-c",
-                'model_reasoning_effort="high"',
-                "--skip-git-repo-check",
-                "--",
-                ticket.read_text(),
-            ]
+            assert value["tool"] == harness and value["exports"] == []
+            assert value["command"] == slices.command(args.executor, "", stdin=True, ticket=True)
+            assert value["stdin"] is True
+            payload = json.loads(stdin.read())
+            assert payload["work"]["ticket"] == ticket.read_text()
+            from tests.test_launcher import launcher as installed_launcher
+
+            assert (
+                ticket.read_text()
+                in json.loads(
+                    installed_launcher.cli_input(stdin.fileno())
+                    .decode()
+                    .split("Run work policy (JSON):\n", 1)[1]
+                )["ticket"]
+            )
             assert not (plain / ".git").exists() and not (plain / ".venv").exists()
             assert not (plain / "outside-link").exists()
             (plain / "src/app.py").write_text("changed")
@@ -83,7 +91,9 @@ def test_cli_data_bridge_and_existing_profile(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "request", request)
     monkeypatch.setattr(launcher, "capture", capture)
     args = SimpleNamespace(
-        cli_name="ticket-7-1", cli_model="fixture-model", cli_effort="high", allow=["src"]
+        cli_name="ticket-7-1",
+        executor=Executor(harness=harness, model="fixture-model", effort="high"),
+        allow=["src"],
     )
     record = {}
     assert cli.worker(args, context, ["tests"], ticket, record) is None

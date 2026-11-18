@@ -8,7 +8,7 @@ import secrets
 import tempfile
 from pathlib import Path
 
-from homelab.runs import launcher, task_run
+from homelab.runs import launcher, slices, task_run
 
 # Reuse the old no-follow regular-file copier inside the image, as the original runner did.
 DATA = (
@@ -112,23 +112,42 @@ def worker(args, context, pins, ticket, record):
             "profile": "cli-run",
             "run_id": "cli-" + secrets.token_hex(12),
             "folders": {"work": name, "run": name},
-            "tool": "codex",
+            "tool": args.executor.harness,
             "exports": [],
-            "command": [
-                "codex",
-                "exec",
-                "-m",
-                args.cli_model,
-                "-c",
-                f'model_reasoning_effort="{args.cli_effort}"',
-                "--skip-git-repo-check",
-                "--",
-                Path(ticket).read_text(),
-            ],
+            "stdin": True,
+            "command": slices.command(args.executor, "", stdin=True, ticket=True),
         }
-        code, stopped = launcher.capture(
-            request, context.folder / "cli.out", context.folder / "cli.log", task_run.CLI_SECONDS
+        # The rendered ticket includes policy and feedback beyond the API goal bound. Keep
+        # it intact in the existing work envelope rather than putting content in argv.
+        payload = {
+            "goal": "Complete the ticket supplied in the work policy's ticket field.",
+            "assets": [],
+            "work": {"ticket": Path(ticket).read_text()},
+        }
+        with tempfile.TemporaryFile() as source:
+            source.write(json.dumps(payload, ensure_ascii=False).encode())
+            source.seek(0)
+            code, stopped = launcher.capture(
+                request,
+                context.folder / "cli.out",
+                context.folder / "cli.log",
+                task_run.CLI_SECONDS,
+                stdin=source,
+            )
+        output = slices.parse_output(
+            args.executor.harness, (context.folder / "cli.out").read_text(errors="replace")
         )
+        record["steps"] = output.metrics["requests"]
+        record["tokens"] = {key: output.metrics[key] for key in ("fresh", "cached", "output")}
+        if output.metrics["usd"] is not None:
+            record["cost_usd"] = output.metrics["usd"]
+        if output.limited or (
+            code != 0
+            and slices.LIMIT_MESSAGE.search(
+                (context.folder / "cli.log").read_text(errors="replace")
+            )
+        ):
+            return "usage_limit"
         if stopped != "exited":
             return "cli_" + stopped
         if code != 0:

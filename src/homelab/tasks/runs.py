@@ -65,6 +65,7 @@ def available(body, executor: Executor) -> bool:
     """Do not queue a writer for an execution policy today's host cannot honor."""
     return (
         body.eval is not None
+        or body.role == "ticket"
         or executor.configuration == "pi/base"
         or (body.role in enabled_roles() and executor.harness is not None)
     )
