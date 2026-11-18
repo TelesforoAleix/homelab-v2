@@ -202,3 +202,191 @@ def test_deny_failures_keep_contract_reason_without_pushing(bundle, tmp_path, mo
         monkeypatch.setattr(delivery, "git", refuse_push)
         with pytest.raises(delivery.Refused, match="^push_refused$"):
             delivery.push_checked(directory, document, tip)
+
+
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("outcome", ["pushed", "push_rejected", "push_failed"])
+def test_ticket_push_returns_only_delivered_range_in_order(
+    bundle, tmp_path, monkeypatch, private, outcome
+):
+    from homelab.runs import runner
+
+    copy, _, document, first = bundle
+    git(copy, "update-ref", "refs/remotes/origin/slice/test", document["base_commit"])
+    (copy / "src/app").write_text("second change")
+    git(copy, "commit", "-qam", "Second change")
+    tip = git(copy, "rev-parse", "HEAD")
+    deny = tmp_path / "deny-list"
+    deny.write_text("unrelated term")
+    monkeypatch.setattr(runner, "DENY_LIST", deny)
+    monkeypatch.setattr(runner, "refuse_branch", lambda _: None)
+    monkeypatch.setattr(runner, "repository_is_private", lambda _: private)
+    monkeypatch.setattr(runner, "installation_token", lambda _: "FAKE-TICKET-TOKEN")
+    real_run = subprocess.run
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if "push" in command:
+            return SimpleNamespace(
+                returncode=0 if outcome == "pushed" else 1,
+                stdout="!\tbranch\t[rejected]" if outcome == "push_rejected" else "",
+            )
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    result = runner.push(document, copy, tip)
+    assert result == (outcome, [first, tip] if outcome == "pushed" else [])
+    assert len([call for call in calls if "rev-list" in call and "--reverse" in call]) == 1
+
+
+def test_ticket_public_scan_refuses_intermediate_private_content(bundle, tmp_path, monkeypatch):
+    from homelab.runs import runner
+
+    copy, _, document, _ = bundle
+    git(copy, "update-ref", "refs/remotes/origin/slice/test", document["base_commit"])
+    (copy / "src/leak").write_text(runner.DENY_CANARY)
+    git(copy, "add", ".")
+    git(copy, "commit", "-qm", "Intermediate change")
+    (copy / "src/leak").unlink()
+    git(copy, "commit", "-qam", "Remove intermediate file")
+    tip = git(copy, "rev-parse", "HEAD")
+    deny = tmp_path / "deny-list"
+    deny.write_text("unrelated term")
+    monkeypatch.setattr(runner, "DENY_LIST", deny)
+    monkeypatch.setattr(runner, "refuse_branch", lambda _: None)
+    monkeypatch.setattr(runner, "repository_is_private", lambda _: False)
+    monkeypatch.setattr(runner, "installation_token", lambda _: pytest.fail("must not push"))
+    end, commits = runner.push(document, copy, tip)
+    assert end.startswith("push_private_content:")
+    assert commits == []
+
+
+@pytest.mark.parametrize("code", [0, 1])
+def test_ticket_default_lookup_and_clone_authenticate_without_logging(
+    tmp_path, monkeypatch, caplog, code
+):
+    import logging
+
+    from homelab.runs import runner
+    from tests.test_launcher import launcher as installed
+
+    token = "FAKE-PRIVATE-READ-TOKEN"
+    header = delivery.authorization(token)
+    repositories = []
+
+    def mint(repository):
+        repositories.append(repository)
+        return token
+
+    monkeypatch.setattr(runner, "installation_token", mint)
+    monkeypatch.setattr(runner, "RUNS", tmp_path)
+    monkeypatch.setattr(runner, "WORK", tmp_path)
+    monkeypatch.setattr(runner.launcher, "request", lambda _: {"ok": True})
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        assert kwargs["env"]["GIT_CONFIG_VALUE_0"] == header
+        assert kwargs["env"]["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraHeader"
+        assert "http.followRedirects=false" in command
+        return SimpleNamespace(
+            returncode=code,
+            stdout=b"ref: refs/heads/trunk\tHEAD\n" + b"a" * 40 + b"\trefs/heads/trunk\n",
+            stderr=b"PRIVATE GIT ERROR",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    def capture(request, out, err, seconds):
+        assert request["env"] == {"GIT_CONFIG_VALUE_0": header}
+        # Validate against the installed launcher contract; credentials stay out of its argv.
+        assert installed.clone_environment(request) == request["env"]
+        command = installed.clone_arguments(request)
+        assert "http.followRedirects=false" in command
+        commands.append(command)
+        out.write_text("")
+        err.write_text("PRIVATE CLONE ERROR")
+        return code, "exited"
+
+    monkeypatch.setattr(runner.launcher, "capture", capture)
+    caplog.set_level(logging.DEBUG)
+    task = {"id": 7, "repository": "owner/private-repo", "branch": "slice/test"}
+    assert runner.default_branch(task["repository"]) == ("trunk" if code == 0 else None)
+    assert runner.fresh_copy(task) == (tmp_path / "7" if code == 0 else None)
+    assert repositories == [task["repository"], task["repository"]]
+    for command in commands:
+        assert token not in repr(command) and header not in repr(command)
+        assert "https://github.com/owner/private-repo.git" in command
+    assert token not in caplog.text and header not in caplog.text
+    assert "PRIVATE" not in caplog.text
+
+
+@pytest.mark.parametrize("branch", ["main", "trunk"])
+def test_ticket_authenticated_default_lookup_still_refuses_protected_branches(monkeypatch, branch):
+    from homelab.runs import runner
+
+    monkeypatch.setattr(runner, "installation_token", lambda _: "FAKE-READ-TOKEN")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(
+            returncode=0,
+            stdout=b"ref: refs/heads/trunk\tHEAD\n" + b"a" * 40 + b"\trefs/heads/trunk\n",
+        ),
+    )
+    with pytest.raises(runner.Refused, match="^default_branch_refused$"):
+        runner.refuse_branch({"repository": "owner/private-repo", "branch": branch})
+
+
+@pytest.mark.parametrize("private", [False, True])
+def test_ticket_metadata_read_is_authenticated_and_content_free(monkeypatch, caplog, private):
+    from homelab.runs import runner
+
+    token = "FAKE-PRIVATE-METADATA-TOKEN"
+    monkeypatch.setattr(runner, "installation_token", lambda _: token)
+    real_client = httpx.Client
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        assert request.headers["Authorization"] == "Bearer " + token
+        assert token not in str(request.url)
+        return httpx.Response(200, json={"private": private})
+
+    monkeypatch.setattr(
+        delivery.httpx,
+        "Client",
+        lambda **kw: real_client(**kw, transport=httpx.MockTransport(respond)),
+    )
+    assert runner.repository_is_private("owner/private-repo") is private
+    assert len(calls) == 1
+    assert token not in caplog.text
+
+
+def test_ticket_configuration_fetch_uses_its_own_repository_token(tmp_path, monkeypatch, caplog):
+    from homelab.runs import runner
+
+    repositories, commands = [], []
+    token = "FAKE-CONFIGURATION-READ-TOKEN"
+    monkeypatch.setattr(
+        runner, "installation_token", lambda repository: repositories.append(repository) or token
+    )
+
+    def run(command, **kwargs):
+        commands.append(command)
+        assert kwargs["env"]["GIT_CONFIG_VALUE_0"] == delivery.authorization(token)
+        if "clone" in command:
+            assert "http.followRedirects=false" in command
+        if "rev-parse" in command:
+            return SimpleNamespace(stdout=b"a" * 40 + b"\n")
+        if "archive" in command:
+            raise subprocess.CalledProcessError(1, command, stderr=b"PRIVATE ERROR")
+        return SimpleNamespace(stdout=b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(runner.Refused, match="^configuration_snapshot_failed$"):
+        runner.configuration_snapshot(tmp_path, "pi/base")
+    assert repositories == ["TelesforoAleix/homelab-v2"]
+    assert all(token not in repr(command) for command in commands)
+    assert token not in caplog.text and "PRIVATE ERROR" not in caplog.text

@@ -6,7 +6,6 @@ Only the transport and the push credential change; no work-copy content is execu
 """
 
 import argparse
-import base64
 import contextlib
 import io
 import json
@@ -20,8 +19,6 @@ import tarfile
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import psycopg
@@ -125,20 +122,13 @@ def installation_token(repository):
 
 def default_branch(repository):
     """Ask the remote, outside any working copy. None when it will not say."""
+    from homelab.runs import delivery
+
     try:
-        result = subprocess.run(
-            ["git", "ls-remote", "--symref", "--", clone_url(repository), "HEAD"],
-            env=git_env(),
-            cwd="/",
-            capture_output=True,
-            text=True,
-            timeout=GIT_SECONDS,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
+        default, _ = delivery.remote_refs(repository, installation_token(repository))
+        return default
+    except (delivery.Refused, GitHubTokenRefused, UnicodeError):
         return None
-    found = re.search(r"^ref: refs/heads/(\S+)\tHEAD$", result.stdout, re.M)
-    return found[1] if result.returncode == 0 and found else None
 
 
 def refuse_branch(task):
@@ -159,6 +149,9 @@ def remove_copy(task):
 
 
 def fresh_copy(task):
+    from homelab.runs.delivery import authorization
+
+    token = installation_token(task["repository"])
     remove_copy(task)
     work_id = str(task["id"])
     launcher.request({"op": "task-create", "work_id": work_id})
@@ -172,6 +165,7 @@ def fresh_copy(task):
             "run_id": "clone-" + os.urandom(12).hex(),
             "repository": task["repository"],
             "branch": task["branch"],
+            "env": {"GIT_CONFIG_VALUE_0": authorization(token)},
         }
         folder = Path(temporary)
         code, stopped = launcher.capture(request, folder / "out", folder / "err", GIT_SECONDS)
@@ -199,11 +193,14 @@ def ticket(task, feedback):
 
 def configuration_snapshot(folder, configuration):
     """Fetch main independently of both the stack and task working copies."""
+    from homelab.runs.delivery import git_environment
+
     clone = folder / "clone"
-    env = git_env()
     commands = [
         [
             "git",
+            "-c",
+            "http.followRedirects=false",
             "clone",
             "--quiet",
             "--no-checkout",
@@ -219,6 +216,8 @@ def configuration_snapshot(folder, configuration):
         ["git", "-C", str(clone), "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"],
     ]
     try:
+        repository = CONFIG_REPOSITORY.removeprefix("https://github.com/").removesuffix(".git")
+        env = git_environment(installation_token(repository))
         for command in commands:
             result = subprocess.run(
                 command,
@@ -246,7 +245,14 @@ def configuration_snapshot(folder, configuration):
         with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
             archive.extractall(snapshot, filter="data")
         return snapshot / "configurations" / configuration, commit
-    except (OSError, ValueError, UnicodeError, tarfile.TarError, subprocess.SubprocessError):
+    except (
+        OSError,
+        ValueError,
+        UnicodeError,
+        tarfile.TarError,
+        subprocess.SubprocessError,
+        GitHubTokenRefused,
+    ):
         raise Refused("configuration_snapshot_failed") from None
 
 
@@ -323,19 +329,15 @@ def check_output_of(run):
 
 def repository_is_private(repository):
     """Only an explicit GitHub private response permits skipping the check."""
+    from homelab.runs import delivery
+
     try:
-        request = urllib.request.Request(
-            f"https://api.github.com/repos/{repository}",
-            headers={"Accept": "application/vnd.github+json", "User-Agent": "homelab-task-runner"},
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            data = json.load(response)
-        return isinstance(data, dict) and data.get("private") is True
-    except (OSError, ValueError, TypeError):
+        return delivery.repository_is_private(repository, installation_token(repository))
+    except (delivery.Refused, GitHubTokenRefused):
         return False
 
 
-def private_content_check(task, copy, commit, *, private=None):
+def private_content_check(task, copy, commit, *, private=None, commits=None):
     """Inspect each outgoing commit without emitting the inspected content."""
     if private is True or (private is None and repository_is_private(task["repository"])):
         return None
@@ -367,9 +369,10 @@ def private_content_check(task, copy, commit, *, private=None):
         return result.stdout
 
     try:
-        base = f"refs/remotes/origin/{task['branch']}"
-        git("merge-base", "--is-ancestor", base, commit)
-        commits = git("rev-list", f"{base}..{commit}").decode("ascii").splitlines()
+        if commits is None:
+            base = f"refs/remotes/origin/{task['branch']}"
+            git("merge-base", "--is-ancestor", base, commit)
+            commits = git("rev-list", "--reverse", f"{base}..{commit}").decode("ascii").splitlines()
         for revision in commits:
             message = git("show", "-s", "--format=%B", revision).decode("utf-8", "replace")
             if hit(message):
@@ -439,20 +442,27 @@ def sealed_git_dir(copy):
 
 
 def push(task, copy, commit):
-    """Fresh repo-scoped token, explicit URL/refspec, no copy configuration or hooks."""
+    """Return (end, pushed SHAs); inspect the exact outgoing range before delivery."""
+    from homelab.runs import delivery
+
     try:
         refuse_branch(task)
     except Refused as refusal:
-        return f"push_{refusal}"
+        return f"push_{refusal}", []
     if not COMMIT.fullmatch(commit):
-        return "push_bad_commit"
+        return "push_bad_commit", []
     try:
         with sealed_git_dir(copy) as git_dir:
-            refusal = private_content_check(task, git_dir, commit)
+            base = f"refs/remotes/origin/{task['branch']}"
+            delivery.git(git_dir, "merge-base", "--is-ancestor", base, commit)
+            commits = delivery.git(git_dir, "rev-list", "--reverse", f"{base}..{commit}")
+            commits = commits.stdout.decode("ascii").splitlines()
+            if any(not COMMIT.fullmatch(sha) for sha in commits):
+                return "push_bad_commit", []
+            refusal = private_content_check(task, git_dir, commit, commits=commits)
             if refusal:
-                return refusal
+                return refusal, []
             token = installation_token(task["repository"])
-            authorization = base64.b64encode(("x-access-token:" + token).encode()).decode()
             result = subprocess.run(
                 [
                     "git",
@@ -478,27 +488,29 @@ def push(task, copy, commit):
                     push_url(task["repository"]),
                     f"{commit}:refs/heads/{task['branch']}",
                 ],
-                env=git_env(
-                    GIT_CONFIG_COUNT="1",
-                    GIT_CONFIG_KEY_0="http.extraHeader",
-                    GIT_CONFIG_VALUE_0="Authorization: Basic " + authorization,
-                ),
+                env=delivery.git_environment(token),
                 cwd="/",
                 capture_output=True,
                 text=True,
                 timeout=GIT_SECONDS,
                 check=False,
             )
-    except (OSError, subprocess.SubprocessError, GitHubTokenRefused):
-        return "push_failed"
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        GitHubTokenRefused,
+        delivery.Refused,
+        UnicodeError,
+    ):
+        return "push_failed", []
     if result.returncode == 0:
-        return "pushed"
+        return "pushed", commits
     moved = re.search(r"^!\t.*\[rejected\]", result.stdout, re.M)
-    return "push_rejected" if moved else "push_failed"
+    return ("push_rejected" if moved else "push_failed"), []
 
 
 def attempt(task, executor, number, feedback):
-    """One attempt on one route, from a fresh clone; returns (its end, feedback for a retry)."""
+    """One fresh-copy attempt; returns (end, retry feedback, pushed SHAs)."""
     route = executor.selection()
     started = time.monotonic()
     record(
@@ -516,8 +528,12 @@ def attempt(task, executor, number, feedback):
     else:
         run = run_ticket(task, copy, executor, feedback, number=number)
     ended = run["ended"]
+    commits = []
     if ended == "committed":
-        ended = "eval_kept" if task.get("eval_set") is not None else push(task, copy, run["commit"])
+        if task.get("eval_set") is not None:
+            ended = "eval_kept"
+        else:
+            ended, commits = push(task, copy, run["commit"])
     keep_eval_run(task, run)
     tokens = run.get("tokens") or {}
     record(
@@ -546,7 +562,7 @@ def attempt(task, executor, number, feedback):
         executor.harness or executor.configuration,
         log_reason(ended),
     )
-    return ended, (("check", check_output_of(run)) if ended in RETRIES else None)
+    return ended, (("check", check_output_of(run)) if ended in RETRIES else None), commits
 
 
 def keep_eval_run(task, run):
@@ -652,8 +668,8 @@ def work(task):
         while True:
             executor, reset = usage.choose(choices, read, time.time())
             if executor is None:
-                return "waiting", reset
-            ended, check_feedback = attempt(task, executor, number, feedback)
+                return "waiting", reset, []
+            ended, check_feedback, commits = attempt(task, executor, number, feedback)
             number += 1
             if ended == "usage_limit":
                 # A limit reported during execution may be newer than the preflight reading.
@@ -670,17 +686,18 @@ def work(task):
                 push_retried, feedback, check_retried = True, None, False
                 continue
             if ended == "eval_kept":
-                return "done", "eval_kept"
-            return ("done", None) if ended == "pushed" else ("escalated", ended)
+                return "done", "eval_kept", []
+            return ("done", None, commits) if ended == "pushed" else ("escalated", ended, [])
 
 
 def run_task(task):
     logger.info("task started id=%d", task["id"])
+    commits = []
     try:
         if not REPOSITORY.fullmatch(task["repository"]) or ".." in task["repository"]:
             raise Refused("repository_refused")
         refuse_branch(task)
-        status, reason = work(task)
+        status, reason, commits = work(task)
     except Refused as refusal:
         status, reason = "failed", str(refusal)
     except Exception as error:  # A bad task must not stop the queue; systemd sees only real faults.
@@ -705,6 +722,7 @@ def run_task(task):
             "job_id": task["job_id"],
             "status": status,
             "reason": reason,
+            "commits": commits,
         }
     )
     logger.info("task ended id=%d status=%s reason=%s", task["id"], status, log_reason(reason))

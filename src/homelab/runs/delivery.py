@@ -21,14 +21,17 @@ def authorization(token):
     return "Authorization: Basic " + base64.b64encode(("x-access-token:" + token).encode()).decode()
 
 
+def git_environment(token):
+    """Keep repository-scoped credentials in memory, outside Git URLs and argv."""
+    return git_env(
+        GIT_CONFIG_COUNT="1",
+        GIT_CONFIG_KEY_0="http.https://github.com/.extraHeader",
+        GIT_CONFIG_VALUE_0=authorization(token),
+    )
+
+
 def git(directory, *args, token=None, check=True):
-    environment = git_env()
-    if token is not None:
-        environment.update(
-            GIT_CONFIG_COUNT="1",
-            GIT_CONFIG_KEY_0="http.https://github.com/.extraHeader",
-            GIT_CONFIG_VALUE_0=authorization(token),
-        )
+    environment = git_env() if token is None else git_environment(token)
     try:
         result = subprocess.run(
             [
@@ -136,15 +139,11 @@ def checked_bundle(bundle, document, parent):
         yield directory, tip
 
 
-def push_checked(directory, document, tip):
-    token = GitHubApp().token(document["repository"])
-    default, _ = remote_refs(document["repository"], token)
-    if document["branch"] in {"main", default}:
-        raise Refused("push_refused")
+def repository_is_private(repository, token):
     try:
         with httpx.Client(timeout=30, trust_env=False, follow_redirects=False) as client:
             response = client.get(
-                f"https://api.github.com/repos/{document['repository']}",
+                f"https://api.github.com/repos/{repository}",
                 headers={
                     "Authorization": "Bearer " + token,
                     "Accept": "application/vnd.github+json",
@@ -156,6 +155,15 @@ def push_checked(directory, document, tip):
                 raise ValueError
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         raise Refused("push_refused") from None
+    return private
+
+
+def push_checked(directory, document, tip):
+    token = GitHubApp().token(document["repository"])
+    default, _ = remote_refs(document["repository"], token)
+    if document["branch"] in {"main", default}:
+        raise Refused("push_refused")
+    private = repository_is_private(document["repository"], token)
     if private_content_check(document, directory, tip, private=private):
         raise Refused("push_refused")
     result = git(

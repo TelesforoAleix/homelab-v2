@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from homelab.runs import app, locking, task_run
+from homelab.runs import app, delivery, locking, task_run
 
 
 def decode(value):
@@ -93,9 +93,13 @@ def test_github_failure_does_not_expose_token_or_response(app_files):
 def test_push_ignores_copy_config_and_keeps_token_out_of_command_and_disk(tmp_path, monkeypatch):
     from homelab.runs import runner
 
+    monkeypatch.setattr(
+        delivery, "git", lambda *a: SimpleNamespace(stdout=("a" * 40 + "\n").encode())
+    )
+
     calls = []
     monkeypatch.setattr(runner, "refuse_branch", lambda task: None)
-    monkeypatch.setattr(runner, "private_content_check", lambda *args: None)
+    monkeypatch.setattr(runner, "private_content_check", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "installation_token", lambda repo: "FAKE-PUSH-TOKEN")
     monkeypatch.setattr(
         runner, "sealed_git_dir", lambda copy: contextmanager(lambda: iter([tmp_path]))()
@@ -107,10 +111,9 @@ def test_push_ignores_copy_config_and_keeps_token_out_of_command_and_disk(tmp_pa
             calls.append((command, kwargs)) or SimpleNamespace(returncode=0, stdout="")
         ),
     )
-    assert (
-        runner.push({"repository": "owner/repo", "branch": "slice/test"}, tmp_path, "a" * 40)
-        == "pushed"
-    )
+    assert runner.push(
+        {"repository": "owner/repo", "branch": "slice/test"}, tmp_path, "a" * 40
+    ) == ("pushed", ["a" * 40])
     command, kwargs = calls[-1]
     assert command[-2:] == [
         "https://github.com/owner/repo.git",
@@ -454,15 +457,18 @@ def test_sanitized_git_view_never_reads_work_copy_config(tmp_path):
 def test_push_deny_list_still_precedes_token_and_push(tmp_path, monkeypatch):
     from homelab.runs import runner
 
+    monkeypatch.setattr(
+        delivery, "git", lambda *a: SimpleNamespace(stdout=("a" * 40 + "\n").encode())
+    )
+
     monkeypatch.setattr(runner, "refuse_branch", lambda _: None)
     monkeypatch.setattr(
-        runner, "private_content_check", lambda *args: "push_private_content: path:1"
+        runner, "private_content_check", lambda *args, **kwargs: "push_private_content: path:1"
     )
     monkeypatch.setattr(runner, "installation_token", lambda _: pytest.fail("must not mint"))
-    assert (
-        runner.push({"repository": "owner/repo", "branch": "slice/test"}, tmp_path, "a" * 40)
-        == "push_private_content: path:1"
-    )
+    assert runner.push(
+        {"repository": "owner/repo", "branch": "slice/test"}, tmp_path, "a" * 40
+    ) == ("push_private_content: path:1", [])
 
 
 def test_default_branch_refusal_precedes_minting(tmp_path, monkeypatch):
@@ -471,9 +477,9 @@ def test_default_branch_refusal_precedes_minting(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "default_branch", lambda _: "trunk")
     monkeypatch.setattr(runner, "installation_token", lambda _: pytest.fail("must not mint"))
     for branch in ("main", "trunk"):
-        assert (
-            runner.push({"repository": "owner/repo", "branch": branch}, tmp_path, "a" * 40)
-            == "push_default_branch_refused"
+        assert runner.push({"repository": "owner/repo", "branch": branch}, tmp_path, "a" * 40) == (
+            "push_default_branch_refused",
+            [],
         )
 
 

@@ -1050,3 +1050,15 @@ reviews the slice before merge. Eval and other Pi configurations still run Pi, w
 `runs` claims without reading `homelab_roles`; the legacy claim CLI, table, schema and installed
 rollback runner remain unchanged in purpose until that runner is removed. No migration,
 launcher/node change, executor-table shape change or run-contract change is needed.
+
+**2026-11-18 — Ticket delivery carries its outgoing SHAs into task completion.**
+The sealed Git view lists `origin/<branch>..commit` oldest first before push, including for
+private repositories; the public deny-list scan reuses that list. Only a successful push
+passes it through the attempt and work results to the internal finish event. Task completion
+appends it in first-seen order without duplicates inside the existing transaction, beside
+the trigger that ends the linked run. Failed/rejected attempts and kept evals contribute
+nothing; repeated finish events change nothing. No migration or public contract field changes.
+Ticket default lookups and clones share the slice path's Git authorization helpers; metadata
+reads share its authenticated privacy lookup. The independent public configuration fetch
+also authenticates with a token scoped to its own repository. Credentials remain in memory
+and clone environment headers, with redirects disabled and no URL/argument/log credentials.
