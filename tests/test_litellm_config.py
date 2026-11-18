@@ -281,6 +281,7 @@ def test_private_mac_url_reaches_proxy_and_worker_with_safe_unset_default():
         ROOT / "DECISIONS.md",
         ROOT / "README.md",
         ROOT / "docs/operations.md",
+        ROOT / "docs/platform.md",
         ROOT / "ARCHITECTURE.md",
     ]:
         assert not re.search(r"\b100\.\d+\.\d+\.\d+\b|[\w-]+\.ts\.net\b", path.read_text())
