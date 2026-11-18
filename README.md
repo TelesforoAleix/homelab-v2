@@ -4,8 +4,8 @@ A self-hosted applied-AI platform, and the base for an AI development system tha
 
 > [!NOTE]
 > **Status: in development, running daily.** The platform runs 24/7 on a small server, and
-> applications such as [med-ask](https://github.com/TelesforoAleix/med-ask) build on it. Each
-> section below says what runs today; the last one says what is next.
+> applications such as [med-ask](https://github.com/TelesforoAleix/med-ask) build on it. The
+> sections below say what runs today; "Where it is going" says what is planned.
 
 ## Why it exists
 
@@ -21,19 +21,22 @@ private for now.
 ## The system
 
 I designed Home Lab and I operate it. It runs on a small Linux server (a Lenovo M700). An Apple
-Silicon Mac is a worker for local models. My phone is my channel to the system, through a
-Telegram bot. Applications ask for a *purpose*, such as chat, embed or vision, and never for a
-model.
+Silicon Mac is a worker for local models. From my laptop and my phone, I reach Workshop,
+Factory's private web console, over a private network. The phone also has a Telegram bot for
+alerts and notices. Applications ask for a *purpose*, such as chat, embed or vision, and never
+for a model.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/system-dark.svg">
-  <img alt="System context: my phone and the client applications reach the Home Lab platform on an always-on Linux server. Factory, a private development system on the same server, sends work to the platform's run API, and the platform routes model requests to hosted providers through one gateway key or to local models on an Apple Silicon Mac." src="docs/diagrams/system-light.svg" width="100%">
+  <img alt="System context: from my phone and laptop, over a private network, I reach Workshop, Factory's web console, and the platform's Telegram bot. Client applications reach the Home Lab platform on an always-on Linux server. Factory, a private development system on the same server, sends work to the platform's run API, and the platform routes model requests to hosted providers through one gateway key or to local models on an Apple Silicon Mac." src="docs/diagrams/system-light.svg" width="100%">
 </picture>
 
-**Factory owns the process**: planning, cutting work into slices, prompts, and the record of
-what ran. **The platform owns the machinery**: models, containers, execution, routing, keys and
-spend. Each side must work without the other. Factory has a private web console (Workshop) with
-a pipeline board, planner chats, an inbox of ideas, and pages for runs and costs.
+- **Factory owns the process:** planning, cutting work into slices, prompts, and the record of
+  what ran.
+- **The platform owns the machinery:** models, containers, execution, routing, keys and spend.
+- **Each side works without the other.**
+- **Workshop** is Factory's private web console: a pipeline board, planner chats, an inbox of
+  ideas, and pages for runs, costs and settings. I use it from my laptop and my phone.
 
 ## How one piece of work flows
 
@@ -44,20 +47,7 @@ This flow runs today.
   <img alt="Process in five lanes (me, planner, Factory, platform, agent): I log an idea; the planner researches, designs and stress-tests it with me until the design is agreed, then cuts it into slices; the platform starts a sandbox where an agent writes the change; Factory opens the pull request while an AI reviewer reviews it; failed CI goes back to the agent for repair; a class 4 change waits for my decision; after the merge the commit is installed and checked, and an unhealthy install rolls back automatically." src="docs/diagrams/work-flow-light.svg" width="100%">
 </picture>
 
-1. I log an idea, from my phone or the console.
-2. A planner (a Claude session) researches, designs and stress-tests it with me, one question at a time.
-3. The planner cuts it into slices: one agent session, branch, pull request and done-criterion each.
-4. The platform picks the executor for the slice's level from [`config/executors.yaml`](config/executors.yaml).
-5. The agent works in a sandbox container: one copy of the repository, network only to its model
-   provider, GitHub and package registries, no server secrets.
-6. Factory opens the pull request. CI and an AI reviewer (Claude) check it at the same time.
-7. When CI is green, Factory merges. A deployer installs, checks health and rolls back by itself.
-   It deploys Factory and applications; this platform is still deployed by hand.
-8. A class 4 change waits for me (see below).
-
-**Two levels of work.** I keep a private planning repository for direction, decisions, designs,
-the backlog and briefs. Project repositories, such as this one, hold only what exists and works.
-Only a self-contained brief crosses from planning to a project, and a project never refers back.
+The deployer installs Factory and applications; this platform is still deployed by hand.
 
 ## What I designed and decided
 
@@ -98,31 +88,36 @@ tests and operational feedback.
 
 The full reference is in [docs/platform.md](docs/platform.md).
 
-## Evidence
+## Where it is going
 
-- First ticket batch on a low-cost hosted model: 13 of 13 tickets done, for $0.43 in total.
-- A real slice cut into 4 tickets: done in about 4 minutes, for about $0.03.
-- 93.5% of input tokens for ticket runs came from the prompt cache on the hosted route.
-- The first retrieval eval: hit@5 100% and MRR 0.978 on 69 questions (2026-10-02).
-- About 2,600 tests in this repository.
+**Now, being built**
 
-## What I am exploring
+- An eval that compares models and agent configurations on quality, speed and cost. Its case
+  sets come from my own past work. Pages show eval results and run traces.
+- Every agent run goes through the platform's run API, and the old runner retires.
 
-> How far can AI agents take software development on their own (safely, cheaply and in a way I
-> can measure), and where does a human still add the most value?
+**Next**
 
-1. **Capability where it pays.** Which work needs a frontier model, and which can a small or
-   local model do as well? I measure models on my own past work, not on public benchmarks.
-2. **Autonomy that is safe by design.** How much can agents plan, merge and deploy alone? Human
-   approval is sized to what a mistake would cost.
-3. **Context, not prompts.** How does a system prepare what an agent needs to know, so each agent
-   starts small and focused? Strategy stays apart from execution, and work is handed over as a
-   self-contained brief.
-4. **The human's new role.** When agents write the code, I work as architect, decision maker and
-   reviewer.
+- Smaller models where they are enough. The eval shows which work a low-cost or local model can
+  take. Each task goes to the smallest model that does it reliably, and slices are cut into
+  smaller tasks for these models.
+- The Mac as a local worker: local models take light work first, and hosted models are the
+  fallback.
+- Management from Workshop: providers, keys per application, access and spending limits.
+- Safer operations: platform services as versioned images with automatic installs, and a
+  restore that I rehearse.
+- Small decision models behind a purpose, for classification and narrow choices.
+- Factory as a public repository, after its first eval.
 
-**Next (planned):** an eval that compares models and agent configurations on quality, speed and cost. Its
-case sets come from this project's own history.
+**Later, when a project needs it**
+
+- Tools for agents: knowledge as an MCP server, a web-research MCP server, and a tool gate that
+  the platform controls.
+- Agent workflows that can pause and resume (LangGraph), structured output and streaming.
+- Voice: speech-to-text behind a purpose, and voice notes through Telegram.
+
+A project's need sets the order first, then measurement. I design and stress-test each item
+before agents build it in small slices.
 
 ## For agents and operators
 
@@ -160,5 +155,3 @@ Running the stack needs a provisioned node; see the [operator runbook](docs/oper
 | `mac/` | Usage profiles, measurements, model router and action listener |
 
 First version: [homelab-v1](https://github.com/TelesforoAleix/homelab-v1)
-
-Used by: [med-ask](https://github.com/TelesforoAleix/med-ask)
