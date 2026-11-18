@@ -50,7 +50,7 @@ def test_results_group_by_case_and_hash_without_multiplying_reviews(connection):
             number=number,
             route=ROUTE,
             status=status,
-            reason="eval_kept" if status == "done" else "check_failed",
+            reason=None if status == "done" else "check_failed",
             configuration_hash=digest,
             steps=2,
             fresh_tokens=10,

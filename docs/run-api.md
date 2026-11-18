@@ -1,15 +1,15 @@
 # Run API and node provisioning
 
 The loopback API at `127.0.0.1:8000` accepts version-one run requests. Postgres owns run records
-beside the existing tasks; Procrastinate owns their queue. The host runner, launcher and gateway
-are unchanged.
+beside the existing tasks; Procrastinate owns their queue. The launcher and gateway are unchanged.
 
 ## Requests and observations
 
 `POST /v1/runs` requires `runs:write`. Submit a stable application-local `request_id`; the first
 submission returns `201 {"run_id":"<uuid>"}`, and a retry of the same validated request returns
 `200` with that id, without another task or job. A changed request returns
-`409 request_conflict`. Omitted optional fields and their explicit defaults compare equally.
+`409 request_conflict`. Omitted optional fields and their explicit defaults compare equally. Real request retries
+retain their pre-overlay fingerprints across this upgrade.
 Unknown fields and invalid types return a redacted `422 invalid_request`; a bad asset digest
 returns `400 asset_hash_mismatch`. Asset digests cover UTF-8 text. Serialized assets together
 are limited to 200,000 UTF-8 bytes, with at most 32 entries. Requests are bounded to 4 MiB.
@@ -62,8 +62,10 @@ returns the terminal record. The current host protocol cannot interrupt a runnin
 that request returns `409 not_resumable` and leaves its state honest.
 
 `POST /v1/runs/{run_id}/messages` accepts `{contract:1,message_id,text}` after authorization and
-ownership checks. Today's executor cannot resume a conversation, so it returns
-`409 not_resumable`; records report `resumable:false`. No message content is stored or logged.
+ownership checks. Ticket and check runs return `409 not_resumable`. Whole-run roles can
+resume a question, escalation, client wait or completed conversation, retaining the harness
+session and executor; message ids deduplicate turns. Content stays in the private store and
+never enters logs. See the [service runbook](operations.md#runs-service) for copy retention.
 
 ## Executors and current capability
 
@@ -102,12 +104,64 @@ branch remain refused.
 A `configuration:` entry remains valid and uses its Pi worker without a review.
 `slice`, `cut` and `review` without an eval mark return `409 role_not_available` unless enabled
 as described below.
-An `eval` mark requires `runs:eval`, chooses its named Pi configuration (`base` or `pi/base`),
-and populates the existing task eval fields. It runs Pi without a review. The runner keeps its change as a diff and
-never calls its push step. GET includes `diff_base64` from the existing read-only eval export
-mount, with the same 2 MiB bound and symlink/path checks as the legacy endpoint.
+An `eval` mark requires `runs:eval` in addition to the normal write/read scopes:
 
-Read mode and any request containing `limits` are refused at create with HTTP 409,
+```json
+"eval": {"set": "T", "case": "example",
+         "executor": {"harness": "codex", "model": "<model>", "effort": "high"}}
+```
+
+`set` and `case` are 1–64 letters, digits, dots, underscores or hyphens, starting with a
+letter or digit. `executor` is validated exactly like a catalogue entry: Codex requires
+model and effort, Claude requires model, or use `{configuration: "pi/<name>"}`.
+The old `configuration` field on the mark is removed. Marked runs use exactly the supplied
+entry, with no catalogue lookup or fallback. Usage limits wait `usage_limit` with the normal
+scheduled retry. A Pi entry is accepted only for `ticket`; other roles return
+`409 role_not_available` before storage.
+
+Eval `slice`, `cut` and `review` use their normal whole-run path and require the role to be
+enabled; eval `ticket` uses the normal ticket path. Review remains read-only. The client
+composes an attempt as a slice followed by review, or a cut followed by ordered tickets on
+one branch and then review, with each request naming its own executor. Copy preparation,
+prompts, checks, commit and delivery follow the same paths as real work.
+A marked write may push only to `eval/…`; an unmarked write may never push to `eval/…`.
+Both delivery paths enforce this rule and keep the existing default-branch guard and
+private-content scan. Refused pushes report `push_refused`. Eval commits are delivered and
+recorded like real commits; the API no longer returns `diff_base64` or reads diff exports.
+
+### Sealed check runs
+
+`role: check` requires `mode: write`, an eval mark with **executor omitted**,
+`base_commit` naming the commit to grade, `work.check_command`, and
+`work.overlay: {commit, paths}`. Other common request fields still apply, including goal
+and level; branch may be omitted because a check never delivers. No executor runs.
+`work.overlay` must be omitted on every other role; explicit null is also refused. Example work and mark:
+
+```json
+"role": "check", "mode": "write",
+"base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+"level": "standard",
+"eval": {"set": "T", "case": "example"},
+"work": {"goal": "Grade the attempt", "check_command": "uv run pytest tests/hidden",
+         "overlay": {"commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                     "paths": ["tests/hidden"]}}
+```
+
+The platform fetches both exact commits from the same authorized repository into an isolated
+Git store and imports only the base objects into a fresh launcher-owned task copy. It checks out
+`base_commit`, prepares dependencies as a ticket does, then imports the overlay objects offline and copies only the selected overlay
+files from `overlay.commit`. Paths may name files or directories (recursively); missing paths,
+symlinks, submodules and paths through destination directory links are refused. Git metadata
+and `.venv` cannot be overlaid. Replacement files use new inodes and preserve executable mode.
+The command runs on the existing `check` shape: no network or agent logins, `/work` writable,
+and `.git` and `.venv` read-only. Nothing is committed or pushed; the copy is removed afterward.
+A completed command ends `done` even for a nonzero exit, with
+`check: {exit_code, tail}` in GET/list records. `tail` contains the last 16 KiB of combined
+output decoded as UTF-8 with replacement. Setup/launcher failures fail the run instead.
+Before completion, `check` is null. Check records expose null executor/hash and empty commits;
+the result uses existing private record metadata, without a database migration.
+
+Read mode for tickets/checks or disabled whole-run roles, and any request containing `limits`, are refused at create with HTTP 409,
 `error:role_not_available`, `status_reason:role_not_available`, and the message
 "Read mode and per-run limits arrive with the execution service." This includes an empty
 `limits` object or explicit null: omit the field for today's executor. The refusal leaves no
@@ -121,16 +175,15 @@ only in `homelab_runs.goal`, not in task rows, request JSON or queue arguments. 
 keep their existing goal storage and behavior. Logs never include goals, assets or final
 messages.
 
-`commits` lists the pushed SHAs for `slice` and `ticket` runs.
+`commits` lists the pushed SHAs for write `slice`, `cut` and `ticket` runs.
 For whole-slice write runs, `commits` is empty when the executor made no commit
 (the checked bundle tip equals `base_commit`); otherwise it contains only the pushed tip.
 A pushed ticket appends the
 successful attempt's `base..commit` SHAs, oldest first and without duplicates, to any already
 recorded, in the transaction that ends the run. Rejected or discarded attempts, other endings
-and kept evals leave `commits` unchanged. Tickets keep `final_message:null`; usage and attempt
+leave `commits` unchanged. Tickets keep `final_message:null`; usage and attempt
 outcomes come from the existing task traces. Unknown costs remain null. Run status reasons are
-mapped to the fixed version-one vocabulary while the legacy endpoint preserves original task
-reasons.
+mapped to the fixed version-one vocabulary.
 
 ## Key file and repository policy
 
@@ -154,83 +207,25 @@ The [checked-in example](run-keys.example.json) contains only an all-zero dummy 
 placeholder repository. The API does not fall back to its environment key for authorization.
 
 A new submission for a repository absent from the authenticated key's map returns
-`403 repository_not_allowed`; a branch equal to its listed default branch or `main` returns
+`403 repository_not_allowed`; a delivery branch equal to its listed default branch or `main` returns
 `409 branch_is_default`. Refusals leave no run, task or job. Keep each map current when changing
 repository settings. The host's independent remote default-branch guard still applies before
 execution. Rotated keys must carry their intended repository policy explicitly. If the host
 file is replaced atomically, restart the API to remount the new inode; edits to the existing
 mounted inode are read on the next request.
 
-`/v1/tasks/eval` authorizes through this same key file, requiring write/eval for POST and
-read/eval for GET. It creates a run and returns the original `201 {task:<integer>}` response;
-a duplicate attempt still returns `409 {error:"Attempt already submitted",task:<integer>}`,
-even if the retry's content changes. Its GET shape, attempts, usage and diff are unchanged.
-The alias retains its historical task-body validation and allows independent eval attempts
-on the same branch. New submissions share the authenticated key's repository/default-branch
-checks. Its slice names include the application.
-Factory's pre-upgrade `eval:<attempt>` tasks remain readable and deduplicated; no other
-application can use that compatibility path. The `branch_busy` exclusion applies to `/v1/runs`;
-independent legacy eval attempts keep their existing scheduling behavior.
+The old `POST /v1/tasks/eval` and `GET /v1/tasks/eval/{id}` routes are removed and return 404.
+Use `/v1/runs` for submission and observations. Existing task data and old export mounts are
+left intact; the API and active runner no longer use those exports.
 
 ## Node steps after merge and owner approval
 
-These steps touch the existing credential and guard configuration. The owner must approve
-before the orchestrator performs them. Do not run them from a client container. Review the
-capability boundaries above before approving this deployment.
-
-1. Record the previous commit and keep its checkout and `compose.yaml` available for rollback.
-   New tables are additive. Before a rollback, pause submissions, let claimed run tasks finish
-   and stop `homelab-task-runner.service`. Mark queued run-linked tasks failed with `interrupted`
-   rather than handing their empty bridge goals to the old claim code. Preserve all run rows.
-   Restore the previous checkout/Compose and restart `homelab.service`, then the task runner.
-   No table or volume deletion is needed. Cancelled/failed requests need new request ids to run
-   again. Existing unlinked task rows do not need conversion.
-2. While the old API still runs, create the key file on the node from its existing environment,
-   without printing either key or digest. Replace the example map below with every approved
-   Factory repository and its actual default branch before running. Run as root, with no shell
-   tracing; the script refuses an unchanged placeholder:
-
-   ```sh
-   sudo install -d -o root -g root -m 0755 /etc/homelab
-   sudo python3 - <<'PY'
-   import hashlib
-   import json
-   import os
-   import subprocess
-
-   repositories = {"owner/scratch-repo": "main"}
-   if "owner/scratch-repo" in repositories:
-       raise SystemExit("Replace the placeholder repository policy; nothing written")
-   raw = subprocess.check_output(["docker", "inspect", "homelab-api-1"])
-   environment = json.loads(raw)[0]["Config"]["Env"]
-   values = dict(item.split("=", 1) for item in environment if "=" in item)
-   key = values.get("HOMELAB_EVAL_TASK_KEY", "")
-   if not key:
-       raise SystemExit("Existing eval key is unavailable; nothing written")
-   entries = [{"application": "factory", "sha256": hashlib.sha256(key.encode()).hexdigest(),
-               "scopes": ["runs:write", "runs:read", "runs:eval"],
-               "repositories": repositories}]
-   fd = os.open("/etc/homelab/run-keys.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-   with os.fdopen(fd, "w") as stream:
-       os.fchown(stream.fileno(), 0, 0)
-       os.fchmod(stream.fileno(), 0o644)
-       json.dump(entries, stream)
-       stream.write("\n")
-   PY
-   ```
-
-   This refuses to overwrite an existing file. Inspect only owner/mode with `stat`, never `cat`
-   the installed file into a transcript. Keep the existing bearer key for Factory unchanged.
-3. In `/srv/homelab/homelab-v2`, pull by hand with `git pull --ff-only`; then
-   `sudo systemctl restart homelab.service` builds and starts the images. The worker's existing
-   schema start step installs the additive run table, indexes and triggers. A malformed table
-   or unreadable key file prevents the API from starting; inspect metadata-only service logs.
-4. Confirm `/health`, and use Factory's unchanged bearer key to GET a known existing
-   `/v1/tasks/eval/<id>` and submit/read a scratch eval through the legacy calls. Confirm the
-   response shape, completed diff and absence of a push. Do not print authorization headers,
-   goals, assets or final messages into service logs or the deployment transcript.
-5. Submit one scratch `ticket` write through `/v1/runs`, without explicit limits, on an existing
-   non-default branch. Poll to completion on today's runner; confirm one task/job, the actual
-   attempt hash and usage, and the delivered change on the scratch branch. Repeat the identical
-   request and confirm the same id with HTTP 200 and no second job. Do not declare the rollout
-   verified until both Factory's legacy path and this new path have completed.
+**Restart the platform on the merged commit.** In `/srv/homelab/homelab-v2`, pull by hand with
+`git pull --ff-only`, then `sudo systemctl restart homelab.service` to build the images.
+No host-file, configuration, credential or schema change is needed. Old mounts and the stopped
+rollback runner remain installed. The client, after merge, completes one eval slice run and
+one check run on a public repository; confirm delivered commits and the check exit/tail.
+Do not log authorization headers, goals, tokens or file contents. CI and owner review precede
+merge because the run contract and push rules changed. For rollback, restore the preceding
+checkout and restart the platform; preserve stored records and do not submit the new check
+or executor-mark requests to the older API.

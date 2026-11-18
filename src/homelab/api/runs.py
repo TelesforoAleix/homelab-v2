@@ -45,10 +45,9 @@ def configure_job(**options):
     return submit_app.configure_task(JOB, queue=QUEUE, **options)
 
 
-def selected(body: RunRequest) -> Executor:
+def selected(body: RunRequest) -> Executor | None:
     if body.eval:
-        name = body.eval.configuration
-        return Executor(configuration=name if name.startswith("pi/") else "pi/" + name)
+        return body.eval.executor
     return executors()[body.role][body.level][0]
 
 
@@ -116,7 +115,7 @@ async def post_run(request: Request):
         return failure(error)
 
 
-def attempts(connection, task_id: int) -> tuple[list[dict], dict, str | None]:
+def attempts(connection, task_id: int) -> tuple[list[dict], dict]:
     rows = connection.execute(
         """SELECT a.number, a.status, a.reason, a.started_at, a.ended_at,
                   a.configuration_hash, a.run_id, a.check_exit_code,
@@ -158,15 +157,12 @@ def attempts(connection, task_id: int) -> tuple[list[dict], dict, str | None]:
         else None,
         "minutes": sum(row[13] or 0 for row in rows) / 60,
     }
-    last = next((row for row in reversed(rows) if row[4] is not None), None)
-    return result, metrics, last[6] if last else None
+    return result, metrics
 
 
 def record(connection, saved: dict) -> dict:
-    from homelab.api.eval_tasks import read_diff
-
     document = saved["request"]
-    history, metrics, last_run = attempts(connection, saved["task_id"])
+    history, metrics = attempts(connection, saved["task_id"])
     result = {
         "contract": 1,
         "run_id": saved["id"],
@@ -186,8 +182,8 @@ def record(connection, saved: dict) -> dict:
         "resume_at": saved["resume_at"],
         **{name: saved[name] for name in ("created_at", "updated_at", "started_at", "finished_at")},
     }
-    if document["eval"]:
-        result.update(read_diff(get_settings().eval_diffs_dir, last_run))
+    if document["role"] == "check":
+        result.update(executor=None, configuration_hash=None, check=document.get("check"))
     return result
 
 

@@ -27,7 +27,6 @@ def ticket_runner(api, monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "remove_copy", lambda _: None)
     monkeypatch.setattr(runner, "push", lambda *a: ("pushed", ["b" * 40]))
     monkeypatch.setattr(runner, "notify", lambda *a: None)
-    monkeypatch.setattr(runner, "keep_eval_run", lambda *a: None)
     monkeypatch.setattr(
         runner, "record", lambda e: finish.record(api, finish.parse(json.dumps(e).encode()))
     )
@@ -159,8 +158,10 @@ def test_eval_and_non_eval_pi_configuration_run_without_usage_or_review(
     table["ticket"]["standard"] = [Executor(configuration="pi/base")]
     monkeypatch.setattr(runs, "_table", table)
     monkeypatch.setattr(runner, "load_executors", lambda: table)
-    for number, mark in enumerate((None, {"set": "T", "case": "one", "configuration": "base"})):
-        post(body(request_id=f"pi-{number}", eval=mark))
+    for number, mark in enumerate(
+        (None, {"set": "T", "case": "one", "executor": {"configuration": "pi/base"}})
+    ):
+        post(body(request_id=f"pi-{number}", branch="eval/one" if mark else "work/one", eval=mark))
         runner.run_task(runner.store("claim"))
     assert [executor.configuration for executor, _ in ticket_runner] == ["pi/base", "pi/base"]
     assert api.execute("SELECT count(*) FROM homelab_runs WHERE status = 'done'").fetchone() == (2,)
@@ -208,7 +209,11 @@ def test_runner_passes_named_configuration_and_no_review_argument(tmp_path, monk
     }
     runner.run_ticket(task, tmp_path, Executor(configuration="pi/base"), None, number=1)
     assert seen[0] == "pi/base"
-    assert seen[1].eval_mark == {"set": "T", "case": "one", "configuration": "base"}
+    assert seen[1].eval_mark == {
+        "set": "T",
+        "case": "one",
+        "executor": {"configuration": "pi/base"},
+    }
     assert seen[1].executor is None and not hasattr(seen[1], "review_purpose")
 
 
@@ -295,24 +300,20 @@ def test_ticket_records_only_successful_attempt_commits(
     assert pushes == (["a" * 40, "c" * 40] if first == "push_rejected" else ["c" * 40])
 
 
-@pytest.mark.parametrize(
-    "end", ["clone_failed", "agent_failed", "check_failed", "push_failed", "eval_kept"]
-)
+@pytest.mark.parametrize("end", ["clone_failed", "agent_failed", "check_failed", "push_failed"])
 def test_other_ticket_endings_leave_commits_unchanged(
     api, ticket_runner, monkeypatch, tmp_path, end
 ):
     monkeypatch.setattr(slices, "codex_usage", lambda _: reading(0))
     (tmp_path / "check.log").write_text("Failed check")
     document = body()
-    if end == "eval_kept":
-        document["eval"] = {"set": "T", "case": "one", "configuration": "base"}
     run_id = post(document).json()["run_id"]
     api.execute("UPDATE homelab_runs SET commits = %s", (["e" * 40],))
     monkeypatch.setattr(
         runner,
         "run_ticket",
         lambda *a, **kw: {
-            "ended": "committed" if end in {"push_failed", "eval_kept"} else end,
+            "ended": "committed" if end == "push_failed" else end,
             "commit": "a" * 40,
             "run_folder": str(tmp_path),
         },
@@ -323,7 +324,7 @@ def test_other_ticket_endings_leave_commits_unchanged(
     runner.run_task(runner.store("claim"))
     result = CLIENT.get(f"/v1/runs/{run_id}", headers=HEADERS).json()
     assert result["commits"] == ["e" * 40]
-    assert result["status"] == ("done" if end == "eval_kept" else "escalated")
+    assert result["status"] == "escalated"
 
 
 def test_ticket_finish_appends_in_order_once_and_rolls_back_with_run_end(api):
@@ -362,7 +363,7 @@ def test_ticket_finish_appends_in_order_once_and_rolls_back_with_run_end(api):
 
 
 @pytest.mark.parametrize(
-    "status,reason", [("failed", None), ("escalated", "push_failed"), ("done", "eval_kept")]
+    "status,reason", [("failed", None), ("escalated", "push_failed"), ("done", "discarded")]
 )
 def test_finish_ignores_commits_from_other_endings(api, status, reason):
     post()

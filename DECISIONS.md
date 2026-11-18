@@ -1062,3 +1062,32 @@ Ticket default lookups and clones share the slice path's Git authorization helpe
 reads share its authenticated privacy lookup. The independent public configuration fetch
 also authenticates with a token scoped to its own repository. Credentials remain in memory
 and clone environment headers, with redirects disabled and no URL/argument/log credentials.
+
+
+**2026-11-18 — Eval attempts use real pipelines and sealed grading.**
+The run mark is `{set, case, executor}` rather than a Pi configuration name. Its single entry
+uses the catalogue validator but bypasses catalogue selection and fallback; usage limits
+wait for that entry. Pi remains ticket-only. Enabled slice/cut/review requests follow their
+whole-run path and tickets their existing path, allowing clients to compose the same attempt
+and later review as real work. Both delivery paths require eval writers to use `eval/` and
+refuse that prefix for real writers, retaining the private-content scan and delivered commits.
+Kept diffs, export handling and `/v1/tasks/eval` are removed from the active service; old mounts
+and the disabled rollback runner stay installed.
+
+The eval-only `check` role omits its executor and grades `base_commit` after ticket preparation
+and an overlay of selected regular files from another commit of the same authorized repository.
+An independent authenticated bare Git fetch obtains both exact object ids even when they are
+on different branches; bundle import and overlay writes happen only in launcher data containers.
+Only base objects reach preparation; hidden objects are imported afterward, offline, so
+package access cannot expose hidden tests. No repository code executes in the service. Overlay
+installation refuses links/submodules and
+linked destination directories and replaces files with fresh inodes. The unchanged networkless
+check shape protects Git and `.venv`, with no agent, commit or push. A command completion,
+including nonzero exit, is `done` with its exit and bounded output tail. Store the result inside
+the existing request JSON, with an empty internal selection/hash projected as null executor/hash;
+no schema or launcher change is needed. Whole-run completion updates its task mirror first and
+its authoritative run state last in the same transaction because the existing bridge trigger
+also sees marked whole runs. Real request fingerprints omit the new null overlay field so
+pre-upgrade idempotent retries still match. Review remains the client's separate run; hidden tests reach only
+the grading copy. Deployment is a platform restart and client-owned public eval/check smoke tests
+after review and merge.

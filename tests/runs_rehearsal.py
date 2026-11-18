@@ -110,7 +110,9 @@ class Node:
     def github(self, method, repository, path, body=None):
         if repository not in {PUBLIC, PRIVATE}:
             raise ValueError("repository refused")
-        if method == "DELETE" and not path.startswith("git/refs/heads/rehearsal/"):
+        if method == "DELETE" and not path.startswith(
+            ("git/refs/heads/rehearsal/", "git/refs/heads/eval/rehearsal/")
+        ):
             raise ValueError("branch deletion refused")
         token = command(
             [
@@ -242,9 +244,9 @@ class Rehearsal:
         assert status == 200
         return value["object"]["sha"]
 
-    def scratch(self, repository=PUBLIC):
+    def scratch(self, repository=PUBLIC, *, prefix="rehearsal"):
         base = self.tip(repository, "main")
-        branch = "rehearsal/" + uuid4().hex
+        branch = prefix + "/" + uuid4().hex
         # Record before sending: an ambiguous response must still be cleaned up.
         self.branches.append((repository, branch))
         status, _ = self.node.github(
@@ -405,7 +407,7 @@ class Rehearsal:
         assert result["status"] == "done" and result["status_reason"] is None
         assert len(result["attempts"]) >= 1
         assert self.tip(*target[:2]) != target[2]
-        target = self.scratch()
+        target = self.scratch(prefix="eval/rehearsal")
         path = "rehearsal-eval-" + uuid4().hex + ".txt"
         result = self.wait(
             self.submit(
@@ -414,16 +416,16 @@ class Rehearsal:
                 "Let the task runner check and commit it; report completion.",
                 role="ticket",
                 allowed=[path],
-                eval={"set": "rehearsal", "case": uuid4().hex, "configuration": "base"},
+                eval={
+                    "set": "rehearsal",
+                    "case": uuid4().hex,
+                    "executor": {"configuration": "pi/base"},
+                },
             )
         )
         assert result["status"] == "done" and result["status_reason"] is None
-        assert (
-            result["commits"] == []
-            and isinstance(result.get("diff_base64"), str)
-            and bool(result["diff_base64"])
-        )
-        assert self.tip(*target[:2]) == target[2]
+        assert result["commits"]
+        assert self.tip(*target[:2]) != target[2]
 
     def cleanup(self):
         # Cancellation makes ended harness copies eligible immediately. Busy copies
@@ -463,7 +465,7 @@ class Rehearsal:
         # Attempt every branch even if another cleanup operation failed.
         for repository, branch in self.branches:
             try:
-                if not branch.startswith("rehearsal/"):
+                if not branch.startswith(("rehearsal/", "eval/rehearsal/")):
                     raise ValueError("branch deletion refused")
                 status, _ = self.node.github(
                     "DELETE", repository, "git/refs/heads/" + urllib.parse.quote(branch, safe="/")

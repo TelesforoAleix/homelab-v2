@@ -350,14 +350,14 @@ def total_cost(costs):
 
 
 def valid_eval_mark(mark):
-    return (
-        isinstance(mark, dict)
-        and set(mark) == {"set", "case", "configuration"}
-        and all(
-            isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", value)
-            for value in mark.values()
-        )
-    )
+    if not isinstance(mark, dict) or set(mark) != {"set", "case", "executor"}:
+        return False
+    try:
+        from homelab.api.run_contract import RunEval
+
+        return RunEval.model_validate(mark).executor is not None
+    except ValueError:
+        return False
 
 
 def issue_token(token, purpose, seconds, max_requests, *, eval_mark=None):

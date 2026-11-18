@@ -325,7 +325,11 @@ def test_setting_only_enables_named_roles_and_preserves_other_rejections(enabled
     assert post(body(role="slice", mode="read", limits={})).status_code == 409
     assert (
         post(
-            body(role="slice", mode="read", eval={"set": "T", "case": "C", "configuration": "base"})
+            body(
+                role="slice",
+                mode="read",
+                eval={"set": "T", "case": "C", "executor": {"configuration": "pi/base"}},
+            )
         ).status_code
         == 409
     )

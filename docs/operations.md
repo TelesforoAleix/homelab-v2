@@ -1697,7 +1697,7 @@ so ordinary `homelab.service` starts include it. Since the switch on 2026-11-17,
 execution service. The old `homelab-task-runner.service` is stopped and disabled, retained only
 as the rollback until its removal. The host's two task scripts and runner unit remain installed.
 
-**Ticket path.** `config/executors.yaml` is the sole worker selection source for `runs`.
+**Ticket path.** `config/executors.yaml` selects real ticket workers; eval marks select an exact entry.
 Its `ticket` row matches the `slice` row at every level: light Codex gpt-6-luna low then Claude
 sonnet; standard Codex gpt-6.1-terra medium then Claude sonnet; strong Codex gpt-6.1-sol high then
 Claude opus. Tickets are always available on the serial `tasks` queue, independently of
@@ -1714,8 +1714,8 @@ other execution failures escalate without trying the next entry. The existing on
 a rejected push remains. There is no review step, review purpose, reviewer route or review
 feedback in this service. The client reviews the slice before merge. `homelab_roles` is never
 read by `runs`; it and the installed host runner remain for rollback. No schema migration is
-needed. Pi entries in non-eval rows still run their named configuration. Eval tickets still
-select their named Pi configuration, keep the diff and never push, now without review.
+needed. Pi ticket entries run their named configuration. Eval tickets use the supplied executor
+and the same pipeline, delivering only to `eval/` branches after the normal private-content check.
 
 Private ticket files live under `/srv/homelab/runs/<run id>/`, owned by uid 21020, mode 0700:
 
@@ -1733,8 +1733,8 @@ removed after the turn, and the task copy after the task finishes or waits. Only
 unpinned regular files and `.task-commit-message` return; links, deletions, `.git` and `.venv`
 do not. The commit-message file is metadata and need not be listed in `allowed_files`.
 Run and attempt executor/hash fields reflect the worker that ran, including fallback.
-After merging this change, **Restart runs on the merged commit**. The client then runs a
-ticket-flow slice on Codex to verify delivery; no node action is part of this implementation.
+After merge, **Restart the platform on the merged commit**. The client verifies one eval slice
+and one sealed check on a public repository; this implementation does not run those node steps.
 
 **Whole-slice, cut and review path.** The node's private environment sets
 `HOMELAB_RUN_ROLES=slice,cut,review`, passed independently to the API and `runs`. Review
@@ -1743,8 +1743,8 @@ flow’s failing tests. Explicit `limits` remain unsupported.
 
 These roles use Procrastinate's separate `runs` queue, two CLI worker slots and repository
 locks, across all three roles. Tickets retain their independent one-at-a-time loop. Ordered
-dependencies and cancellation remain application-owned. Executor choice comes only from the
-role/level list in `config/executors.yaml`, never the caller.
+dependencies and cancellation remain application-owned. Real executor choice comes from the
+role/level list in `config/executors.yaml`; eval marks supply an exact executor with no fallback.
 
 | Role | Light | Standard | Strong |
 |---|---|---|---|
@@ -1815,7 +1815,7 @@ runner locks and watchdog remain in force while workers stop. No new uid, networ
 Docker socket access or login access for `runs` is added.
 
 For tickets, the queue/store, one retry with check output, check, commit, costs and
-eval-attempt retention use the task machinery. CLI workers keep the
+attempt records use the task machinery. CLI workers keep the
 existing launcher `cli-run` profile and their 20-minute turn limit. Networkless `data` task
 containers export/import regular files through pipes; only allowed, unpinned regular files
 return. Deletions, links, Git metadata and `.venv` do not return. The launcher creates the
@@ -1845,14 +1845,15 @@ permissions. Git receives the authorization header only through its environment.
 and refspec are explicit, credential helpers/hooks are off, and a temporary Git directory
 exposes only the protected clone's objects/refs, never its config. The remote default branch
 and `main` are refused. The existing deny-list/canary scan runs before each push; it still
-fails closed for unknown visibility or an unreadable list. Eval attempts never push.
+fails closed for unknown visibility or an unreadable list. Marked writes push only to `eval/`
+branches; unmarked writes cannot push there. Both paths enforce this before delivery.
 See [GitHub's JWT contract](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
 and [installation-token parameters](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app).
 No Python JWT dependency is added.
 
 Private logs and run records live under `/srv/homelab/runs`, owned by uid 21020, mode 0700;
-evals retain the same `eval/<set>/<case>/<hash>/<run id>` structure there. Final diff exports
-still go to the API's existing `task-runs/eval-diffs` directory through its separate bind.
+eval tickets use the same attempt folders as real tickets. The active runner no longer exports
+eval diffs, and the API no longer reads them. Old mounts stay installed and unused.
 The `runs` journal contains ids and fixed reasons only. Failure notices use the same bounded
 `Task: <id> <slice> <status> <reason>` text, sent directly to the existing allowlisted chats.
 Notice failures do not change task status; no host/root helper is called.
@@ -1880,7 +1881,7 @@ The service mounts these paths, with `create_host_path: false` throughout:
 | `/srv/homelab/runs` | same | New private state, uid 21020, 0700 |
 | `${HOMELAB_TASK_TOKENS_PATH:-/srv/homelab/task-tokens}` | `/srv/homelab/task-tokens` | Token files; switch preparation below |
 | `${HOMELAB_TASK_COSTS_PATH:-/srv/homelab/task-costs}` | `/srv/homelab/task-costs` | Cost files; switch preparation below |
-| `${HOMELAB_TASK_RUNS_PATH:-/srv/homelab/task-runs}/eval-diffs` | `/srv/homelab/runs/eval-diffs` | Same exports read-only in API; switch preparation below |
+| `${HOMELAB_TASK_RUNS_PATH:-/srv/homelab/task-runs}/eval-diffs` | `/srv/homelab/runs/eval-diffs` | Legacy mount, unused by active runner/API; retained for rollback |
 
 The orchestrator creates `/etc/homelab/runs` as uid/gid 21020, mode 0700. Every file below
 is owned by uid/gid 21020, mode 0400; never commit their values or bake them into an image.
@@ -2001,7 +2002,7 @@ exit
 Require eight `PASS:` lines and no `FAIL:`. Checks cover a single pushed slice commit,
 unchanged read-review tip, question/message idempotency with exactly two attempts and the
 same saved session, a private write cut with a failing test, allowed-path refusal, public
-canary refusal, ordinary ticket delivery and retained eval diff without a push, then
+canary refusal, ordinary ticket delivery and eval branch delivery, then
 cleanup. Session equality is verified with a read-only `psql` transaction through
 `HOMELAB_REHEARSAL_POSTGRES_CONTAINER`, selecting only that run’s `session_id`; the value
 never enters printed output. Cleanup separately reads only the numeric task IDs for this
@@ -2014,7 +2015,7 @@ its own runs so the loop removes their work/run pairs immediately; if necessary 
 only containers mounted on those exact random work IDs, waits for the service to settle,
 and checks that no associated folder or container remains. It attempts every created
 branch deletion even when another cleanup step fails. Ticket work copies are removed by
-the existing task path; eval records/diff exports retain the existing task retention.
+the existing task path; eval records retain the existing task retention.
 Any cleanup failure prints `FAIL:` and returns nonzero. Investigate it before a permanent
 switch; the restore commands still leave roles disabled and the old runner active. The
 script never changes enablement policy. If restoration itself fails, keep the old runner
@@ -2179,104 +2180,40 @@ records and existing API exports. Never recover the queue with two active runner
 
 ### Eval tasks
 
-Add `"eval": {"set": "T", "case": "example", "configuration": "base"}` to a task
-entry in the usual submission file, then submit with
-`sudo docker exec -i homelab-worker-1 python -m homelab.tasks.submit < tasks.json`.
-Each name is 1–64 letters, digits, dots, underscores or hyphens, starting with a letter or
-digit; configuration must exist under `configurations/pi/` in the submitting release.
-Use a scratch repository and a slice branch as for ordinary tasks. Prepare, agent and check
-run normally, without a review; a commit ends `done` with `eval_kept` and never reaches push or needs a
-push key. Other endings and retries keep their existing reasons. Every run folder is kept at
-`/srv/homelab/runs/eval/<set>/<case>/<configuration hash>/<run id>/`, private to uid 21020
-(the rollback host runner uses `task-runs` as root).
-An unmarked task keeps its ordinary behavior.
+Use the [run API](run-api.md), with `runs:write`, `runs:eval` and the key's repository policy.
+The mark is `eval: {set, case, executor}`: one validated Codex, Claude or `pi/<name>` entry.
+There is no table lookup or fallback; usage limits wait for the selected executor. Pi is only
+available on `ticket`. Slice, cut and review use their enabled whole-run paths; tickets use
+the serial task path. Review remains read-only. The client composes the whole-slice or
+cut/ticket attempt and review. Write results are read from the delivered `eval/` branch and
+recorded commits, with the same private-content scan as real work. Unmarked writes cannot
+push to `eval/` branches.
 
-Eval configurations may name `eval/<provider>/<model>` through the single `eval/*` route.
-The configuration purpose selects the worker model for eval tasks; ordinary tasks continue
-using their role route. Only an eval-marked run can issue such a token. Every client network,
-including loopback, requires a live task token with that exact name: client keys receive 403.
-There is no model list or added limit; unknown model IDs fail at Vercel. Each provider/model
-identifier has 1–96 lower-case letters, digits, dots, hyphens or underscores, beginning with a
-letter or digit. `pi/eval-deepseek-v4.1-flash` inherits `pi/base` and its 100 requests/30 minutes.
+For grading, submit `role: check`, `mode: write`, `base_commit` and an eval mark with executor
+omitted. Set `work.check_command` and `work.overlay: {commit, paths}` to the hidden test files
+in another commit of the same repository. The platform imports the base into a fresh
+task copy, prepares dependencies, then imports hidden objects offline and writes only the selected
+regular overlay files,
+and runs the command on the existing networkless `check` shape. Git and `.venv` are read-only;
+there are no agent logins, commits or pushes. The completed run is `done` regardless of command
+exit code, with `check: {exit_code, tail}` in GET/list records. The tail is the last 16 KiB of
+combined output, decoded with replacement. Setup/launcher failures fail the run. Overlay on
+another role is refused. Branch can be omitted for a check. The copy and temporary grading
+files are removed after completion; result metadata stays in the existing run record.
 
+`POST /v1/tasks/eval` and `GET /v1/tasks/eval/{id}` are removed (404), as are `eval_kept`,
+`diff_base64` and active eval export handling. Old exports/mounts and the disabled host runner
+remain installed for later removal; do not use the old runner for the new contract.
+No migration or host installation is needed. After review and merge, **Restart the platform
+on the merged commit**, then the client completes one eval slice and one check on a public
+repository. See [deployment steps](run-api.md#node-steps-after-merge-and-owner-approval).
 
-The loopback platform API at `127.0.0.1:8000` offers the [version-one run API](run-api.md)
-and retains two compatible eval routes. All use the root-owned `/etc/homelab/run-keys.json`,
-mounted read-only into the API. Entries carry application identity, bearer digests, scopes and
-each key's repository/default-branch map. Factory's entry hashes the unchanged existing
-`HOMELAB_EVAL_TASK_KEY`; that environment value no longer authorizes requests directly.
-Both eval routes require `Authorization: Bearer <key>` with `runs:eval`, plus `runs:write`
-for POST or `runs:read` for GET. An unavailable key file returns
-`503 {"error":"Eval tasks are not configured"}` at runtime; startup refuses a missing or malformed
-file. A missing or incorrect bearer key returns `401 {"error":"Eval task key required"}`.
-Existing `/v1/manage/*` reads stay open.
-
-`POST /v1/tasks/eval` accepts exactly one task:
-
-```json
-{
-  "attempt": "docs-1",
-  "repository": "owner/scratch-repo",
-  "branch": "eval/docs-1",
-  "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "title": "Update sample docs",
-  "goal": "Make the requested documentation change",
-  "allowed_files": ["docs/example.md"],
-  "check_command": "sh tests/check.sh",
-  "pinned_paths": ["tests/check.sh"],
-  "eval": {"set": "T", "case": "docs", "configuration": "base"}
-}
-```
-
-The caller creates and pushes the case's starting commit, including its pinned tests,
-on its `eval/<something>` branch before submission. The endpoint validates the historical
-CLI task-body format, creates a run and queues one task at position 1 with slice
-`eval:<application>:<attempt>`. New submissions require a repository listed on that key and
-refuse `main` or the listed default branch.
-`attempt` follows the same 1–64 character naming rule as the eval mark. A successful
-submission returns `201 {"task":123}`. Reusing an attempt, including across repositories,
-returns `409 {"error":"Attempt already submitted","task":123}`. Refused bodies return
-422 with an `error` containing the refusal text, without echoing input. Unknown fields
-are refused. The example commit is a placeholder; supply the actual start commit.
-
-`GET /v1/tasks/eval/123` returns `task`, `status`, `reason`, `attempts`, and
-`diff_base64`; an unknown, non-eval or other application's task returns 404. Factory's
-pre-upgrade `eval:<attempt>` tasks remain readable and deduplicated.
-Each attempt includes `number`, `status`, `reason`, `started_at`, `ended_at`,
-`configuration_hash`, and `usage` (`steps`, `fresh_tokens`, `cached_tokens`,
-`output_tokens`, `cost_usd`). Usage sums all the attempt's traces, including reviews;
-missing values stay null and cost is null if any trace has unknown cost.
-The diff is base64 of the bytes from the highest numbered `diff*.patch` round of the
-last ended attempt. Missing or unreadable diffs are null; a diff over 2 MiB returns
-`"diff_base64": null, "diff_too_large": true`. An active later attempt does not replace
-the last ended attempt's diff.
-
-When keeping an eval attempt, the runner copies only the final round's diff to
-`/srv/homelab/task-runs/eval-diffs/<run_id>.patch`, using a temporary file and atomic
-rename. The folder is `root:10001`, mode `0750`; patches are `root:10001`, mode `0640`.
-Root and the API's group 10001 can read these diffs. Agent events and other run-store content remain private to the runner; historical review logs
-remain in older run folders. No diff written means no exported file;
-runs kept before this change are not backfilled.
-
-Only the API mounts `${HOMELAB_TASK_RUNS_PATH:-/srv/homelab/task-runs}/eval-diffs`
-read-only, at `HOMELAB_EVAL_DIFFS_DIR` (default `/srv/homelab/task-runs/eval-diffs`).
-Diff lookup uses a single-part `run_id` recorded in Postgres and reads `<run_id>.patch`;
-symlink folders and files are refused. The API never mounts the whole run store.
-
-For node provisioning, follow [the run API steps](run-api.md#node-steps-after-merge-and-owner-approval):
-prepare rollback, generate the key-file digest and repository policy without printing credentials,
-pull and restart the platform, then verify the unchanged Factory calls and one new ticket run.
-The run API needs no host-script installation. Existing diff-folder permissions and the
-read-only mount above stay in place. CI must be green and the owner reviews the executor-table
-and Compose guard-file changes before merge.
-
-Read `sudo docker exec homelab-worker-1 homelab eval results --set T`.
-Each tab-separated line contains case, configuration hash, runs, passed, then mean steps,
-fresh tokens, cached tokens, output tokens, seconds and USD cost. A run is a completed attempt;
-passed means the check accepted a commit. Historical results may include review traces; seconds
-cover the whole attempt. Cost is empty if any worker or review cost is unknown. Results come
-only from Postgres; prompts and outputs stay in the run folders. Bare `homelab eval` still
-runs the knowledge eval.
+Pi eval configurations may still name `eval/<provider>/<model>` through the single `eval/*`
+gateway route. Only marked Pi runs can issue a live exact-purpose task token; client keys,
+chat and bot callers cannot use it. Configuration snapshots retain their hashes, image digest
+and source commit. Unknown model identifiers fail upstream and normal execution limits apply.
+`homelab eval results --set T` remains an attempt aggregate (successful delivery, not hidden-test
+grading); Factory grades using the separate check result. Bare `homelab eval` is the knowledge eval.
 
 ## Database dumps and restore checks
 
@@ -2355,8 +2292,9 @@ sudo systemctl restart homelab-task-runner.service
 ```
 
 The gateway configuration and hooks are mounted from the checkout; no host copy or unit change
-is needed. After restart, submit one eval through the keyed endpoint with configuration
-`eval-deepseek-v4.1-flash`, confirm it completes and records `cost_usd`, and check its retained
+is needed. These script-install steps apply only to the stopped rollback runner. For an active
+Pi eval use `/v1/runs` with `executor: {configuration: "pi/eval-deepseek-v4.1-flash"}` on an
+`eval/` branch; confirm delivery and `cost_usd`, and check its private
 `run.json` purpose and configuration hash. With an existing client key, request
 `eval/deepseek/deepseek-v4.1-flash` and confirm 403. Run a normal `task-worker` task and `chat`
 request as regression checks. Use existing private credentials without printing or changing them.
@@ -2607,7 +2545,7 @@ SSH accounts work through Tailscale.
    # Create the diff-only bind source before starting the API; leave the run store root-only.
    sudo install -d -m 0750 -o root -g 10001 /srv/homelab/task-runs/eval-diffs
    # After updating the runner and Compose: restart both, then submit one small eval
-   # and read it back through GET /v1/tasks/eval/<id> with its diff.
+   # and read it back through GET /v1/runs/<id> with its delivered commits.
    # sudo systemctl restart homelab-task-runner.service
    # sudo systemctl restart homelab.service
    # Both scripts must be updated together for CLI worker routes. The task image is unchanged.

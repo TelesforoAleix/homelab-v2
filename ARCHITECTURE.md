@@ -795,7 +795,7 @@ are recorded at submission. Dispatch replaces that initial choice with the execu
 by usage before each ticket attempt or the first whole-run attempt. `runs` never reads
 `homelab_roles`; the table and legacy claim protocol remain for the installed rollback runner.
 
-A ticket write or eval becomes one ordinary task on the serial `tasks` queue, deferred through
+A ticket write or sealed check becomes one ordinary task on the serial `tasks` queue, deferred through
 Procrastinate in the run's transaction. Non-eval tickets choose their `ticket` role/level entries
 with the same `usage.choose` policy as slices: only a usage limit permits the next entry, and
 no usable entry means `waiting: usage_limit` until Procrastinate's scheduled retry. The ticket
@@ -805,8 +805,7 @@ return through offline data containers. Prepare, fresh clones, pins, check, comm
 remain the task path's gates. A failed check retries once from a fresh clone with the check's
 output, then escalates. Other execution failures escalate without trying a different executor.
 There is no per-ticket review or review feedback. The client reviews the slice before merge.
-Pi entries (including eval's named configuration) run Pi without usage probes or review; evals
-retain their diff instead of pushing. `after` request ids become task dependencies; a
+Pi ticket entries run Pi without usage probes or review. `after` request ids become task dependencies; a
 non-`done` predecessor cancels its queued descendants with `predecessor`. Unrelated active runs of the application exclude another
 write on that branch. Each run-linked task stores an empty goal; claim resolves the sole copy
 in `homelab_runs.goal` and adds assets in memory. Request metadata and queue arguments never
@@ -816,19 +815,37 @@ cannot skip a late commit. Unlinked legacy tasks keep their existing queue behav
 
 Queued cancellation records `cancelled_by_client` and cancels descendants; cancellation after
 claim returns `409 not_resumable`. Ticket messages also return `not_resumable` because that path
-cannot resume a conversation. Slice, cut and review requests without an eval mark return
+cannot resume a conversation. Slice, cut and review requests return
 `409 role_not_available` unless `HOMELAB_RUN_ROLES` enables the role (empty by default).
-Read mode for tickets/evals or disabled roles and any supplied `limits` return 409 with
+Read mode for tickets/checks or disabled roles and any supplied `limits` return 409 with
 `status_reason:role_not_available` and a message that they arrive with the execution service,
 leaving no run, task or job. History is recorded while the host keeps its full single-branch
 clone. Delivered commits remain empty and final messages null until supplied by an executor.
 Goals, assets and final messages are never logged.
 
-The legacy `/v1/tasks/eval` routes use the same scoped key file and create runs while retaining
-their response shapes and duplicate-attempt semantics. Independent eval attempts may share a
-branch; new submissions still require its repository/default-branch policy. Factory's existing
-unlinked eval tasks remain readable and deduplicated. Eval tasks continue using the host's
-existing diff export and never push. No host runner, launcher or gateway change is needed.
+Eval marks are `{set, case, executor}`, require `runs:eval`, and validate executor entries
+with the catalogue validator. They use exactly that entry without a catalogue lookup or
+fallback; a usage limit waits normally. Pi is accepted only for tickets; other roles refuse it
+at create. Marked slice/cut/review runs use the same whole-run path as real work, and marked
+tickets the same ticket path. Each request names its own executor; clients compose the slice
+or cut/ticket chain and its later review. Eval writers deliver only to `eval/` branches;
+unmarked writers cannot deliver there. Both push paths retain the private-content check and
+record delivered commits normally. Eval diffs are no longer exported or read by `src/`, and
+`/v1/tasks/eval` returns 404. Its installed mounts and stopped rollback runner stay untouched.
+
+`check` is an eval-only write role with executor omitted. The platform fetches `base_commit`
+and `work.overlay.commit` from the authorized repository into an isolated Git store, transfers
+only base objects through the existing data shape into a fresh task copy, checks out the base,
+prepares as for a ticket, then imports overlay objects offline and writes selected regular
+files. Overlay paths may cover directories;
+missing paths, links, submodules, `.git`/`.venv` and linked destination parents fail closed.
+The check command runs with no network or logins on the existing launcher `check` shape, with
+Git and the environment read-only. It runs no agent, commits nothing and pushes nothing.
+Command completion is `done` with `check: {exit_code, tail}` (last 16 KiB, replacement UTF-8).
+Setup/launcher failures fail the run. Result data lives in the existing request JSON; the
+non-null store executor/hash use an empty selection and its hash, projected as null in GET.
+No migration is needed. Whole-run completion writes its task mirror before its authoritative
+run state in one transaction, preserving marked conversation states against the legacy bridge.
 
 ## Container task runner
 
@@ -862,7 +879,7 @@ from the pinned base, and a base-to-tip diff within allowed paths and outside pi
 An authenticated default-branch recheck and the public-repository deny-list scan precede a
 non-force App push. Rewritten remote history fails delivery.
 
-Executors come only from the ordered role/level catalogue. Codex permits a five-hour window
+Real executors come from the ordered role/level catalogue; evals use their supplied entry. Codex permits a five-hour window
 below 99%; Claude permits below 90% with a reading less than an hour old, or a passed reset.
 Weekly windows are recorded with the readings. Claude probes are lazy, at most hourly, after
 30 minutes of reading age, with the attempt time persisted even on probe failure. Exhausted
@@ -907,7 +924,7 @@ only regular files into and out of separately launcher-created, uid 21000 task-a
 No mounted folder belongs to `runs`. Configuration snapshots and private run records belong
 to `runs` and are never mounted by the launcher.
 
-Check retries, commits, eval retention, costs and failure notices use the task machinery.
+Check retries, commits, costs and failure notices use the task machinery.
 A sanitized temporary Git directory exposes only the clone's objects and
 refs for the unchanged deny-list/canary scan and push, never its config or hooks. Each push
 mints a fresh RS256 App JWT with OpenSSL, requests an installation token restricted to one

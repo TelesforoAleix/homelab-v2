@@ -4,12 +4,11 @@ import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from homelab.api import eval_tasks, run_keys, runs
+from homelab.api import run_keys, runs
 from homelab.api.app import app
 from homelab.tasks import claim, finish
 from homelab.tasks.executors import load_executors
@@ -47,9 +46,6 @@ def body(**changes):
 @pytest.fixture
 def api(connection, monkeypatch, tmp_path):  # noqa: F811
     monkeypatch.setattr(runs, "connect", lambda: nullcontext(connection))
-    monkeypatch.setattr(
-        eval_tasks, "psycopg", SimpleNamespace(connect=lambda *a, **kw: nullcontext(connection))
-    )
     keys = [
         {
             "application": application,
@@ -159,33 +155,17 @@ def test_scopes_and_application_isolation(api):
     assert CLIENT.get("/v1/runs?request_id=ticket-1", headers=OTHER).json()["runs"] == []
 
 
-def test_eval_scope_diff_and_configuration(api, monkeypatch, tmp_path):
-    document = body(eval={"set": "T", "case": "one", "configuration": "base"})
+def test_eval_scope_executor_and_commits(api):
+    document = body(
+        branch="eval/one",
+        eval={"set": "T", "case": "one", "executor": {"configuration": "pi/base"}},
+    )
     assert post(document, OTHER).status_code == 403
     response = post(document)
     assert response.status_code == 201
-    task = claim.claim(api)
+    task = claim.claim(api, legacy_roles=False)
     assert task["eval_set"] == "T" and task["eval_configuration"] == "base"
     assert task["goal"] == MARKER
-    route = {"kind": "litellm", "purpose": "task-worker"}
-    finish.record(
-        api, finish.BeginAttempt(event="begin_attempt", task_id=task["id"], number=1, route=route)
-    )
-    finish.record(
-        api,
-        finish.EndAttempt(
-            event="end_attempt",
-            task_id=task["id"],
-            number=1,
-            route=route,
-            status="done",
-            reason="eval_kept",
-            run_id="eval-one",
-            configuration_hash="a" * 64,
-            steps=2,
-            cost_usd=0.25,
-        ),
-    )
     finish.record(
         api,
         finish.EndTask(
@@ -193,18 +173,13 @@ def test_eval_scope_diff_and_configuration(api, monkeypatch, tmp_path):
             task_id=task["id"],
             job_id=task["job_id"],
             status="done",
-            reason="eval_kept",
+            commits=["b" * 40],
         ),
     )
-    (tmp_path / "eval-one.patch").write_bytes(b"a diff")
-    monkeypatch.setattr(runs, "get_settings", lambda: SimpleNamespace(eval_diffs_dir=tmp_path))
     result = CLIENT.get(f"/v1/runs/{response.json()['run_id']}", headers=HEADERS).json()
-    assert result["status"] == "done"
-    assert result["diff_base64"] == "YSBkaWZm"
-    assert result["commits"] == []
-    assert result["metrics"]["requests"] == 2
-    assert result["metrics"]["usd"] == 0.25
-    assert len(result["attempts"]) == 1
+    assert result["status"] == "done" and result["commits"] == ["b" * 40]
+    assert result["executor"] == {"configuration": "pi/base"}
+    assert "diff_base64" not in result
 
 
 def test_chain_runs_in_order(api):
@@ -277,22 +252,6 @@ def test_concurrent_retry(api, monkeypatch):
     assert api.execute("SELECT count(*) FROM procrastinate_jobs").fetchone() == (1,)
 
 
-def test_legacy_alias_uses_run_store_and_application_ownership(api):
-    from tests.test_eval_tasks import body as eval_body
-
-    document = eval_body(goal=MARKER)
-    response = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=document)
-    assert response.status_code == 201
-    task_id = response.json()["task"]
-    repeat = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json={**document, "goal": "changed"})
-    assert repeat.status_code == 409
-    assert repeat.json() == {"error": "Attempt already submitted", "task": task_id}
-    assert api.execute("SELECT count(*) FROM homelab_runs").fetchone() == (1,)
-    assert CLIENT.get(f"/v1/tasks/eval/{task_id}", headers=HEADERS).status_code == 200
-    assert CLIENT.get(f"/v1/tasks/eval/{task_id}", headers=OTHER).status_code == 403
-    assert api.execute("SELECT goal FROM homelab_tasks").fetchone() == ("",)
-
-
 @pytest.mark.parametrize(
     "changes",
     [
@@ -352,36 +311,6 @@ def test_running_cancellation_is_honest(api):
     assert CLIENT.get(f"/v1/runs/{run_id}", headers=HEADERS).json()["status"] == "running"
 
 
-def test_alias_keeps_independent_eval_attempts_on_the_same_branch(api):
-    from tests.test_eval_tasks import body as eval_body
-
-    first = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=eval_body())
-    second = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=eval_body(attempt="case-2"))
-    assert first.status_code == second.status_code == 201
-    assert first.json()["task"] != second.json()["task"]
-
-
-def test_old_eval_rows_remain_readable_and_deduplicated(api):
-    from homelab.tasks.submit import submit
-    from tests.test_eval_tasks import body as eval_body
-
-    plan = eval_tasks.parse_submission(json.dumps(eval_body()).encode())
-    (task_id,) = submit(api, plan)
-    response = CLIENT.get(f"/v1/tasks/eval/{task_id}", headers=HEADERS)
-    assert response.status_code == 200
-    response = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=eval_body())
-    assert response.status_code == 409 and response.json()["task"] == task_id
-    assert api.execute("SELECT count(*) FROM homelab_tasks").fetchone() == (1,)
-
-
-def test_eval_accepts_configuration_folder_name(api):
-    response = post(body(eval={"set": "T", "case": "one", "configuration": "pi/base"}))
-    assert response.status_code == 201
-    record = CLIENT.get(f"/v1/runs/{response.json()['run_id']}", headers=HEADERS).json()
-    assert record["executor"] == {"configuration": "pi/base"}
-    assert claim.claim(api)["eval_configuration"] == "base"
-
-
 def test_repository_policy_is_per_key_and_not_stored_in_postgres(api, monkeypatch):
     keys = run_keys.load_keys()
     restricted = keys[0].model_copy(
@@ -407,51 +336,6 @@ def test_nondefault_main_is_also_refused_without_a_record(api):
         assert api.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)
 
 
-@pytest.mark.parametrize(
-    "changes, error",
-    [
-        ({"repository": "unknown/repo"}, "repository_not_allowed"),
-        ({"branch": "trunk"}, "branch_is_default"),
-        ({"branch": "main"}, "branch_is_default"),
-    ],
-)
-def test_alias_uses_the_key_repository_policy(api, changes, error):
-    from tests.test_eval_tasks import body as eval_body
-
-    response = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=eval_body(**changes))
-    assert response.status_code == (403 if error == "repository_not_allowed" else 409)
-    assert response.json()["error"] == error
-    for table in ("homelab_runs", "homelab_tasks", "procrastinate_jobs"):
-        assert api.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)
-
-
-def test_alias_preserves_historical_submission_validation(api):
-    from tests.test_eval_tasks import body as eval_body
-
-    response = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=eval_body(goal="g" * 200_001))
-    assert response.status_code == 201
-    assert api.execute("SELECT status, branch FROM homelab_tasks").fetchone() == (
-        "queued",
-        "eval/case-1",
-    )
-
-
-def test_alias_isolates_applications_with_eval_scope(api, monkeypatch):
-    from tests.test_eval_tasks import body as eval_body
-
-    keys = run_keys.load_keys()
-    keys = [
-        key.model_copy(update={"scopes": ["runs:write", "runs:read", "runs:eval"]}) for key in keys
-    ]
-    monkeypatch.setattr(run_keys, "load_keys", lambda: keys)
-    first = CLIENT.post("/v1/tasks/eval", headers=HEADERS, json=eval_body())
-    assert first.status_code == 201
-    task_id = first.json()["task"]
-    assert CLIENT.get(f"/v1/tasks/eval/{task_id}", headers=OTHER).status_code == 404
-    second = CLIENT.post("/v1/tasks/eval", headers=OTHER, json=eval_body())
-    assert second.status_code == 201 and second.json()["task"] != task_id
-
-
 def test_valid_assets_reach_only_the_claimed_ticket_and_are_not_logged(api, caplog):
     text = "private-asset-content-472d"
     asset = {
@@ -466,3 +350,17 @@ def test_valid_assets_reach_only_the_claimed_ticket_and_are_not_logged(api, capl
     assert text in task["goal"] and MARKER in task["goal"]
     assert api.execute("SELECT goal FROM homelab_tasks").fetchone() == ("",)
     assert text not in caplog.text and MARKER not in caplog.text
+
+
+def test_real_retry_accepts_a_pre_overlay_request_fingerprint(api):
+    from homelab.api.run_contract import RunRequest
+
+    run_id = post().json()["run_id"]
+    historical = RunRequest.model_validate(body()).model_dump()
+    del historical["work"]["overlay"]  # This field did not exist before the upgrade.
+    digest = hashlib.sha256(
+        json.dumps(historical, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    api.execute("UPDATE homelab_runs SET request_hash = %s WHERE id = %s", (digest, run_id))
+    assert post().status_code == 200
+    assert api.execute("SELECT count(*) FROM homelab_tasks").fetchone() == (1,)

@@ -66,9 +66,9 @@ class FakeAPI:
             status = "question" if question else "failed" if outside or deny else "done"
             reason = "outside_allowed_files" if outside else "push_refused" if deny else None
             commits = []
-            if status == "done" and body["mode"] == "write" and not eval:
+            if status == "done" and body["mode"] == "write":
                 self.refs[body["repository"], body["branch"]] = "b" * 40
-                if body["role"] != "ticket":
+                if body["role"] != "ticket" or eval:
                     commits = ["b" * 40]
                 self.files[body["repository"]] = body["work"]["allowed_files"][0]
             result = {
@@ -79,14 +79,12 @@ class FakeAPI:
                 "attempts": [{}],
                 "final_message": SECRET,
             }
-            if eval:
-                result["diff_base64"] = base64.b64encode(SECRET.encode()).decode()
             if self.fail == "status":
                 result["status"] = "escalated"
             if self.fail == "reason" or (self.fail == "eval_reason" and eval):
                 result["status_reason"] = "wrong"
-            if self.fail == "diff" and eval:
-                result["diff_base64"] = None
+            if self.fail == "eval_commits" and eval:
+                result["commits"] = []
             self.runs[run_id] = result
             return 201, result
         run_id = path.split("/")[3]
@@ -140,7 +138,10 @@ def prepare(rehearsal, check):
 def test_check_passes(rehearsal, check):
     prepare(rehearsal, check)
     getattr(rehearsal, check)()
-    assert all(post["branch"].startswith("rehearsal/") for post in rehearsal.node.posts)
+    assert all(
+        post["branch"].startswith("eval/" if "eval" in post else "rehearsal/")
+        for post in rehearsal.node.posts
+    )
     assert all(post["level"] == "light" for post in rehearsal.node.posts)
 
 
@@ -162,7 +163,7 @@ def test_check_fails_on_wrong_status(rehearsal, check):
         ("question", "duplicate"),
         ("outside", "reason"),
         ("deny", "reason"),
-        ("ticket_eval", "diff"),
+        ("ticket_eval", "eval_commits"),
         ("ticket_eval", "eval_reason"),
     ],
 )
