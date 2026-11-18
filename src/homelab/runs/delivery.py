@@ -159,6 +159,8 @@ def repository_is_private(repository, token):
 
 
 def push_checked(directory, document, tip):
+    if tip == document["base_commit"]:
+        return []
     token = GitHubApp().token(document["repository"])
     default, _ = remote_refs(document["repository"], token)
     if document["branch"] in {"main", default}:
@@ -181,3 +183,4 @@ def push_checked(directory, document, tip):
     if result.returncode:
         # A non-fast-forward rejection means rewritten history; never force or reclone/retry.
         raise Refused("push_refused")
+    return [tip]
