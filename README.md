@@ -1,11 +1,13 @@
 # Home Lab
 
-A self-hosted applied-AI platform, and the base for an AI development system that builds it.
+A self-hosted applied-AI platform providing shared model access, retrieval and secure execution
+for independent applications, with an AI-assisted development system that builds and maintains
+those applications and the platform itself.
 
 > [!NOTE]
-> **Status: in development, running daily.** The platform runs 24/7 on a small server, and
-> applications such as [med-ask](https://github.com/TelesforoAleix/med-ask) build on it. The
-> sections below say what runs today; "Where it is going" says what is planned.
+> **Operational, under active development.** The platform, Factory and several applications run
+> every day on a self-hosted server; the eval and the items under [*Where it is going*](#where-it-is-going)
+> are still being built.
 
 ## Why it exists
 
@@ -30,6 +32,8 @@ for a model.
   <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/system-dark.svg">
   <img alt="System context: from my phone and laptop, over a private network, I reach Workshop, Factory's web console, and the platform's Telegram bot. Client applications reach the Home Lab platform on an always-on Linux server. Factory, a private development system on the same server, sends work to the platform's run API, and the platform routes model requests to hosted providers through one gateway key or to local models on an Apple Silicon Mac." src="docs/diagrams/system-light.svg" width="100%">
 </picture>
+
+**Home Lab is the execution platform; Factory is the development orchestrator.**
 
 - **Factory owns the process:** planning, cutting work into slices, prompts, and the record of
   what ran.
@@ -64,10 +68,9 @@ tests and operational feedback.
   platform runs it, and holds the keys and the spend limits.
 - **Containment.** Agents run in sandbox containers. A fixed launcher starts every container, and
   the `runs` service has no Docker socket. The launcher and the deployer are the only root helpers.
-- **Four classes of change.** (1) automatic; (2) automatic with stronger checks, such as a
-  database dump before a migration; (3) proceed and notify; (4) I decide: guard files, secret
-  values, deleting data that cannot be replaced, money limits, a new public endpoint, and making
-  a repository public. Guard files need my code-owner review on GitHub.
+- **Risk-based autonomy.** Changes fall into four risk levels, from fully automatic to mandatory
+  human approval. Secrets, destructive operations, money limits and new public exposure need my
+  approval. See [`.github/change-classes`](.github/change-classes).
 - **Executors are data.** [`config/executors.yaml`](config/executors.yaml) lists the executors for
   each level in order: Codex first, Claude when usage limits require it. Small tickets can run on
   the open-source Pi agent with a low-cost hosted model.
@@ -80,8 +83,8 @@ tests and operational feedback.
 | Mac profiles | Two usage profiles, Working and Inference, with a menu-bar app. A queue runs long GPU jobs one at a time. |
 | Knowledge | Ingestion with sources (LlamaIndex), Postgres with pgvector, and answers that cite their sources. |
 | Durable jobs | Procrastinate on Postgres. A job is stored before it is acknowledged. |
-| Agent runs | The run API (`POST /v1/runs`) takes tickets, whole slices, cuts, reviews and eval runs. Each application has its own keys and scopes. Agent configurations are data folders with a hash, and every run records what ran. |
-| Images and video | Image and video generation purposes for the image studio, with a monthly cost limit and alerts. |
+| Agent runs | The run API (`POST /v1/runs`) takes tickets, whole slices, cuts, reviews and eval runs. The run API uses application-scoped keys. Agent configurations are data folders with a hash, and every run records what ran. |
+| Images and video | Image and video generation purposes for the image studio, with one monthly budget on the gateway key and alerts at 80% and 100%. |
 | Security | Encrypted volumes (LUKS), SSH keys only, a private admin network, non-root service containers. A fixed launcher and a deployer are the only root helpers. A private-content check runs before any push to a public repository. CI scans for secrets. |
 | Operations | Daily database dumps with a restore check, weekly encrypted copies, and failure alerts to my phone. |
 | Clients | [med-ask](https://github.com/TelesforoAleix/med-ask) (search over medical textbooks, with sources), the image studio, and the Telegram bot. |
