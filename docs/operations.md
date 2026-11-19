@@ -1,5 +1,12 @@
 # Operations
 
+This runbook covers the node as a whole: unlocking and locking the volumes, deploying the
+platform, checking its health, rolling it back, database dumps, rebuilding the node from
+sources, the bulk disk, and the weekly originals copy and its restore. Read it before any step
+on the node; the steps that belong to one part (bot, Mac, runs service, deployer) live
+in that part's document, listed in [Steps for each part](#steps-for-each-part). Steps that cannot
+be undone or touch a secret need the owner's go first, as `AGENTS.md` says.
+
 ## Run it
 
 For a fresh node, follow [Rebuilding the node](#rebuilding-the-node). On the running node,
@@ -20,416 +27,38 @@ builder enables periodic GC with a 50 GB target; this is not a filesystem quota 
 builds can temporarily exceed it. See [Docker GC](https://docs.docker.com/build/cache/garbage-collection/)
 and [the separate image store](https://docs.docker.com/engine/storage/containerd/).
 
-Host files live under `node/`: `node/<path>` installs at `/<path>`, owned by `root:root`.
-[AGENTS.md](../AGENTS.md#host-file-modes) records directory and file modes. For updates, use the
-node's clone of merged `main`: back up installed files, show each diff, copy changed files with
-`sudo install`, and run `visudo -c`, `sshd -t` and `systemd-analyze --generators=yes verify`
-where applicable. Reload systemd after unit changes. Credential drop-ins name TPM-sealed
-credentials; credential contents are never committed. A PR changing `node/` updates the
-rebuild section in the same PR. The base files preserve their installed bytes, including
-historical v1 comments; those references do not require v1 scripts or a node GitHub key.
+## Deploy the platform
 
 The agent uses `ssh homelab-agent`, which has root through sudo. Proceed within the owner's
-approved task; the exceptions requiring approval are in `AGENTS.md`. Deploy by running
+approved task; the exceptions requiring approval are in `AGENTS.md`. Before a restart, check
+that no med-ask ingest or continuous Mac model calls are running, as described in
+[Mac bulk embedding serving](mac.md#mac-bulk-embedding-serving). Deploy by running
 `git pull --ff-only` by hand in `/srv/homelab/homelab-v2`, then
-`sudo systemctl restart homelab.service` to build images.
-Host-file installation is explicit; restarting the stack does not install those files.
-Postgres has the fixed address `172.18.0.2` on the default network; host services may rely on it,
-and all the stack's networks have fixed subnets. The shared `homelab-models` network uses
-`10.253.88.0/24`, outside Docker's default address pools.
-A parallel start once let `homelab-models` take the default network's range, preventing the stack from starting.
+`sudo systemctl restart homelab.service`, which rebuilds the images from that checkout and
+starts the stack; the unit never pulls. Host-file installation is explicit and separate: see
+[Installing host files](host-files.md). The gateway's configuration and hooks are mounted from
+the checkout, so a restart applies them.
 
-The Telegram bot is a host service using python-telegram-bot, running as `homelab-bot`.
-It uses `/opt/homelab-telegram-bot/.venv/bin/python` with hash-pinned requirements, keeps
-its existing systemd sandbox and long polling, and needs no Docker. Its order listener
-binds only the runtime Tailscale IPv4 on TCP 8110 (see [the contract](#bot-order-endpoint)).
-Its code lives at
-`node/opt/homelab-telegram-bot/`, installed at `/opt/homelab-telegram-bot/`. `/ask <question>`
-calls the loopback answer endpoint and replies with the answer and numbered source titles;
-refusals have no sources. Long replies split at paragraph boundaries within Telegram’s UTF-16 limit; oversized
-paragraphs fall back to sentence, line or word boundaries, then characters. When the volume
-is locked or the API is unavailable, `/ask` reports that the knowledge service is down.
-`/status`, `/disk`, `/uptime`, `/restart`, `/backup`, `/help` and `/start` keep working independently.
-`/spend` and `/model` are no longer commands. Startup registers the router's command list and
-description with Telegram; registration failure is logged and polling continues.
+Postgres has a fixed address on the default network and host services may rely on it; every
+network in `compose.yaml` has a fixed subnet. The shared `homelab-models` network sits outside
+Docker's default address pools so that another project starting in parallel cannot take the
+default network's range and stop the stack from starting.
 
-Optional planning reads use `/pending` (needs attention, running, scheduled, ready; planned
-only as a count), `/recap [hours]` (default 24, positive hours, grouped by
-slice), and `/slice <id>` (all fields including the full attention body, displayed as labeled
-paragraphs rather than escaped JSON). They share `/status`'s
-main allowlist and use no model. Accepted slices are omitted from pending; unresolved attention
-and review/escalated states take precedence over running, slots and ready. Scheduled entries
-sort by slot. Configuration is read at startup from private
-`/etc/homelab-telegram-bot/planning.json`; see the provisioning steps under
-[Rebuilding the node](#rebuilding-the-node). An absent file logs
-`planning not configured; feature disabled` once and leaves existing commands working.
+## Check health
 
-Allowlisted free text is classified as a planning question, an order or something to keep. The bot calls the `frontline` purpose at
-`http://127.0.0.1:4000/v1`, sending the private `context_files`, computed pending summary and slice fields except `log`; attention bodies are capped at 2,000 characters.
-The optional `context_files` list defaults to empty; the orchestrator supplies the owner's
-summary-file paths in the private config, never in this repository. A question may request
-one additional named clone file through a JSON second pass. Reads accept regular UTF-8 text
-only, at most 128 KiB per file; absolute paths, parent traversal, Git internals, escaping
-symlinks and binary files are refused. Base context is capped at 256 KiB. The model may
-propose exactly one order for Yes/No confirmation; it has no command-dispatch capability,
-execution or writes. Each completion is capped at 4,000 tokens,
-with at most two 60-second HTTP calls per question and no retries.
+`curl -fsS http://127.0.0.1:8000/health` must return `"status":"ok"` with the version, the
+purposes and the models base URL. `sudo docker compose -f /srv/homelab/homelab-v2/compose.yaml ps`
+shows each service and its healthcheck. The [management reads](#management-reads) report routes
+and provider state without calling a model. The services log to journald, by container name.
 
-Episodes are memory-only, scoped to chat and allowlisted user. Follow-up pronouns/openings
-or shared topic words retain the episode; other questions start fresh. A command closes it,
-as does 30 minutes of silence. Replying to any part of a retained bot answer explicitly
-reopens its episode. Only that episode's messages accompany a question. Memory retains up
-to 128 episodes and 1,024 answer-message mappings; a restart clears them. Long episodes
-close after 16 exchanges or 48,000 characters; explicit reopening keeps only that bounded
-recent history. Locked/unavailable answers say that the node
-must be unlocked and the gateway up, and logs never include questions, answers or file text.
-The model base URL and arbitrary client key use `HOMELAB_MODELS_BASE_URL` and
-`HOMELAB_MODELS_API_KEY` if set (defaults are loopback and a nonsecret client label).
-No unit sandbox or credential changes are needed.
+## Roll back the platform
 
-Zero data retention is **off** for `frontline`: a synthetic request with
-`providerOptions: {"gateway": {"zeroDataRetention": true}}` returned HTTP 403 because the
-current Vercel team is on Hobby; it requires Pro or Enterprise. No account or billing change
-was made. `frontline` otherwise shares `chat`'s model and low effort.
+Check out the preceding commit in `/srv/homelab/homelab-v2` and restart `homelab.service`.
+Stored records stay as they are: startup schema steps are idempotent and nothing deletes data.
+Return to `main` with `git switch main` and `git pull --ff-only` once the fix is merged.
+A part with its own rollback (bot, launcher, deployer, runs service) follows its document.
 
-The bot pulls its read-only mirror about once a minute and on demand for these commands.
-The mirror and outbox marker live under `/srv/homelab/frontline/`. While the data target is
-inactive the new commands report a locked volume, notices wait, and no planning directory is
-created. `homelab-bot-data-ready.service` restarts the bot automatically after unlock to refresh
-its mount namespace. On target stop, the hook stops the bot to release the private writable
-bind that would otherwise pin the encrypted filesystem. Its
-`homelab-bot-data-released.service` helper waits for host unmount, then starts the bot again
-against the locked root filesystem. Expect a brief interruption during lock. A retried
-unlock takes over the restart. Neither the unlock script nor existing data units change.
-The bot still starts at boot; its order endpoint returns 503 while locked. If lock fails
-with the volume still mounted, the release helper keeps waiting: retry the owner lock/unlock operation. To restore
-status while intentionally leaving the target inactive and the volume mounted, start
-`homelab-telegram-bot.service` manually; stop it again before retrying unmount.
-
-On the first successful read, the marker starts at the outbox's current end, with no historical
-notices. Subsequent events are sent to every main-allowlist recipient; nothing is sent when
-there is nothing new. Notice text is cut to 600 characters and points to `/slice <id>`;
-`/recap` returns event text and `/slice` returns the full attention body. After each confirmed
-recipient send the bot atomically saves and flushes its line/recipient marker. Uncertain
-sends retry: a crash or network ambiguity before marker persistence can produce a rare
-duplicate. Never delete the marker to retry a notice: a missing marker intentionally skips
-to the current end. A bad marker or truncated outbox fails closed with a metadata-only warning.
-Sync failures do not advance it; commands report failure rather than returning stale state.
-The journal contains fixed sync outcomes, line/recipient counts and failure metadata, never
-Git output, repository settings or event text.
-
-### Bot inbox
-
-Send an idea, a link, or a message to keep for an orchestrator; prefix with `save` to force
-keeping. The bot may ask at most two short questions, only about missing intent (explore,
-build, read later, discuss), project/backlog relationship, or time constraints. It suggests
-relationships for confirmation and never designs or solves kept ideas. `just save it` during
-clarification saves with what is known without another model call. `new` starts a fresh episode.
-A stored episode and its Telegram reply mappings are removed. Restarting loses unfinished
-drafts; committed items survive. Attachments are always kept immediately, with their caption.
-Before unlock, keeping and `/inbox` reply that the inbox needs the node unlocked. Commands
-continue to work. `/inbox` lists the latest ten records (id, kind, short title, status);
-`/inbox <32-character hex id>` shows every stored field without opening an attachment.
-
-The encrypted-volume layout shared with the Mac orchestrators is:
-
-```text
-/srv/homelab/frontline/
-  clone/                         # read-only planning mirror; never an inbox destination
-  orders.json                    # unchanged order contract
-  inbox/
-    <32-character lowercase hex id>/
-      item.json
-      file/<sanitised-name>       # only for kind=file; opaque original bytes
-```
-
-`item.json` is one UTF-8 JSON object: `id`, `created` (UTC ISO timestamp), `kind`
-(`idea`, `link`, `file`, `message`), `text` (initial owner text/caption verbatim), `intent`,
-`relates_to`, `due` (free text or null), `target` (message repository from state `repo` or
-`development`, otherwise null), and `status` (`new`, or `read` after an orchestrator receipt).
-`read_at` is added as a UTC ISO timestamp on the first receipt. Missing intent, relationship
-and due are null. Text items also keep `clarifications`, a list of subsequent verbatim owner replies.
-Links add `url`, `title` and `summary` (null on fetch/summary failure). Files add `name`
-(sanitised), `type` (Telegram MIME type or an opaque default), `size` (actual bytes) and `file`
-(the relative `file/<name>` path). Only read these fields as data; no consumer runs content.
-The Mac orchestrators read through the root-owned `homelab-inbox` helper over existing SSH;
-there is no inbox network endpoint or automatic collector. `/inbox` shows the updated status.
-
-#### Inbox helper over SSH
-
-From the Mac, use the existing agent account and passwordless root sudo:
-
-```bash
-ssh homelab-agent sudo -n homelab-inbox list development
-ssh homelab-agent sudo -n homelab-inbox list med-ask
-ssh homelab-agent sudo -n homelab-inbox file <id> > attachment
-ssh homelab-agent sudo -n homelab-inbox done <id> [<id> ...]
-```
-
-`list` prints one JSON array of new items, oldest first (id breaks timestamp ties).
-`development` receives every idea, link and file, plus messages addressed to development.
-Other targets receive only messages addressed to that repository. Targets match
-`[a-z0-9][a-z0-9._-]{0,63}`; ids are exactly 32 lowercase hexadecimal characters.
-`file` streams only the attachment bytes unchanged to stdout; no attachment is an error.
-Treat all returned content as data. The orchestrator calls `done` only after reading an item.
-It atomically replaces the record with status `read` and `read_at`, preserving owner, group
-and mode and flushing the file and directory. Repeated receipts leave read records unchanged.
-Concurrent receipts serialize per item; a multi-id command commits each item independently,
-so an error on a later id does not undo earlier receipts. Retry is safe.
-
-Exit codes are `0` for success, `2` for usage, unknown ids or rejected/failed item operations,
-and `3` for an absent or unreadable inbox (locked volume), with exactly `locked` on stderr.
-Errors never include item content. The fixed-path, standard-library helper runs with
-`/usr/bin/python3 -I`, opens every directory component without following symlinks, and rejects
-symlinked items, records or attachments and non-regular or multiply linked files. Listing and
-receipts never open attachment files. An empty inbox must exist to return `[]`; an absent
-folder returns locked, without creating it. No sudoers grant, unit or listener is added.
-
-Install from the node's committed, merged main checkout as described in
-[Rebuilding the node](#rebuilding-the-node). Before copying, show the installed-file diff
-(use `/dev/null` for a first installation). If replacing an existing helper, save it in a
-dated root-only rollback directory first. Compile without writing bytecode, then install:
-
-```bash
-sudo diff -u /usr/local/sbin/homelab-inbox node/usr/local/sbin/homelab-inbox
-/usr/bin/python3 -I -c 'from pathlib import Path; p = Path("node/usr/local/sbin/homelab-inbox"); compile(p.read_bytes(), str(p), "exec")'
-sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-inbox /usr/local/sbin/homelab-inbox
-```
-
-Check both `list` targets from the Mac (an empty inbox returns `[]`) and verify `file` and
-`done` for an unknown id exit `2`. Do not mark real items during installation checks. The
-owner's new-item check belongs to the reading orchestrator. Roll back by restoring the saved
-helper as `root:root` `0755`, or removing only the helper on a first installation; keep all
-inbox data and receipts. No service restart or daemon reload is needed.
-
-The bot owns directories (`0700`) and records/files (`0600`); service umask is `0077`.
-Publication stages an entire record in `.item-*`, flushes files and directories, then renames
-to its id and flushes the parent before acknowledgement. Readers ignore dot directories, which
-can remain after power loss. There is no automatic retention/deletion. Keep this directory
-when updating or rolling back; it is outside the current `*-data/originals/` weekly-copy scope.
-
-Photos, documents, voice notes, audio and video are downloaded by python-telegram-bot and
-stored unchanged. No file is parsed, transcribed, previewed or sent to a model. Admission
-checks the declared sizes and actual bytes against **20 MiB** (Telegram's 20 MB file limit).
-It refuses new files at **2 GiB** total, also refusing a file that would cross the cap.
-The final size/quota check runs under the store lock. Text/link items remain available at the
-file cap. The owner coordinates any future cleanup; do not delete files to retry a send.
-
-Links allow only HTTP(S), verified TLS, public DNS results and checked numeric connections.
-Every address returned by DNS must pass, including on each of at most three redirects.
-Loopback, private, link-local, CGNAT/tailnet, multicast, reserved and unspecified IPv4/IPv6,
-plus IPv6 site-local/transition destinations, are refused. About five seconds and **1 MiB**
-bound the fetch; only uncompressed HTML/plain text is accepted. Raw page text goes exclusively
-to an isolated summary call without orders; only its bounded metadata goes to clarification.
-A refused/failed fetch or summary stores the URL with null title/summary and reports that no
-summary was available. Journal lines contain only ids, kinds, sizes and outcomes, never owner
-text, URLs, titles, summaries or file names.
-
-For an update, back up installed bot Python files and the unit in a dated root-only directory,
-show installed diffs, install all committed modules together at `root:root 0644`, and restart
-only the bot. Check active state, restart count and unchanged `systemd-analyze security`
-exposure (1.3). No dependency, unit sandbox, listener or credential changes are needed.
-Rollback restores the pre-install Python files from that directory and restarts the bot;
-remove only the three newly installed modules (`inbox.py`, `keeping.py`, `links.py`) if absent
-from that backup. Preserve the encrypted inbox and orders; the prior bot simply ignores the
-inbox. The orchestrator coordinates the remaining owner checks: an idea with clarification,
-`just save it`, a public link, a photo, a message for a repository orchestrator, and `/inbox`
-listing/detail. These phone checks are not replaced by fixture tests.
-
-### Bot order endpoint
-
-The owner must allow the Mac collector to reach **the node's TCP 8110** in the Tailscale
-policy. The node accepts `tailscale0`, so tailnet peers allowed by that policy can reach it.
-Platform containers on `homelab_default` (`172.18.0.0/16`) can also reach the endpoint at
-the same Tailscale address: one ufw input rule accepts TCP 8110 from that source subnet.
-Container traffic arrives through the Docker bridge rather than `tailscale0` and otherwise
-hits the input drop policy. This source-subnet rule trusts containers on that network;
-Tailscale policy gates tailnet traffic, not this local bridge path. There is no listener key.
-
-The bot discovers its own IPv4 with `/usr/bin/tailscale ip -4` and binds only that address,
-never loopback, LAN, wildcard or IPv6. Discovery/bind failures retry every five seconds.
-Telegram polling and host commands continue while the interface is absent. There is no Mac
-collector in this repository yet and the bot never executes an order.
-
-In conversation, the model can propose one of these orders. The bot refreshes the mirror
-and validates before sending the exact action with **Yes** and **No** buttons. Long
-confirmations show every part before their final buttons, without truncating arguments or
-reviews. No cancels; Yes queues; either closes the episode. Only main-allowlisted users can
-tap. No cancels from stored state without a network pull; Yes refreshes before queuing.
-A late tap says `already <status>` and makes no change.
-
-| Action | `slice` target | `argument` | Required current state |
-|---|---|---|---|
-| `start` | slice id | null | `ready` |
-| `slot` | slice id | ISO date-time or phrase for the Mac to parse | `ready` |
-| `pause`, `resume` | slice id | null | anything except `accepted` |
-| `answer` | slice id | owner's verbatim words from their current message | question/escalation attention with null `answer` |
-| `approve` | slice id | null | merge attention, `approved: false`, and an orchestrator `review` |
-| `orchestrator` | repository name from state `repo`, or `development` | task text | known repository, or the main orchestrator |
-
-Approve always requires review, including slices without ⛔. Its confirmation shows the PR
-number and the review's verdict verbatim. Optional private `github_owner` in `planning.json`
-adds `https://github.com/<owner>/<repo>/pull/<number>`; without it the PR number still appears.
-Arguments are never interpreted or executed by the bot. The Mac must enforce its own
-preconditions before execution, including date parsing and merge safeguards.
-
-The HTTP contract has **exactly two routes**. No authentication header or key is required;
-Tailscale policy is the sole network gate. All other method/path combinations return 404,
-including trailing slashes and query strings. Both valid routes return 503 before the data
-volume is unlocked, when planning is unconfigured, or when their store is unavailable.
-
-`GET /orders` returns 200 with `Content-Type: application/json`:
-
-```json
-{"orders":[{"id":"0123456789abcdef0123456789abcdef","created":"2026-10-20T10:00:00+00:00","action":"start","slice":"example/task","argument":null,"expect":{"state":"ready","paused":false,"attention":null}}]}
-```
-
-`id` is an opaque 32-character lowercase hex order identifier; `created` is a UTC ISO timestamp.
-`slice` is the slice id (`<repo>/<name>`), or the repository name for `orchestrator`.
-The six fields shown are the complete order payload. Only queued orders appear, oldest
-`created` first, with id breaking ties. A GET neither reserves nor removes anything: repeated
-GETs return the same orders until acknowledged or overtaken (new orders can arrive).
-The empty result is `{"orders": []}`. The collector must retain order ids to avoid executing
-the same order twice after an uncertain acknowledgement.
-
-`expect` is copied when confirmation is prepared and is exactly
-`{"state": "<state>", "paused": false, "attention": null}` or
-`{"state": "<state>", "paused": false, "attention": {"kind": "<kind>", "since": "<timestamp>"}}`.
-For `orchestrator`, `expect` is null. After every successful pull, a proposed or queued
-slice order becomes `overtaken` if these fields differ, the slice disappeared, or the action's
-precondition no longer holds. The latter catches an answer/approval recorded by the
-orchestrator even when attention kind/since stayed the same. Overtaken orders leave the
-queue and their confirmation is edited with what changed, removing buttons. The collector
-must compare `expect` with its own current scheduler state before carrying out an order;
-it must not treat receipt of an order as permission to bypass current preconditions.
-
-`POST /orders/<id>/ack` requires a JSON body and a single `Content-Length` (chunked bodies
-are refused). It accepts exactly these fields:
-
-```json
-{"outcome":"dropped","detail":"Cancelled by the owner on the Mac"}
-```
-
-`outcome` is `done`, `dropped` or `failed`; `detail` is a string (empty is permitted).
-204 means the receipt is durably recorded, with no response body. The order leaves the
-queue and its Telegram confirmation is edited to `Done`, `Dropped: <detail>` or
-`Failed: <detail>`, with no buttons. Telegram delivery can lag: pending edits retry every
-second and survive restarts. Repeating an ack of a known closed order returns 204 and does
-nothing, even if outcome/detail differ. An ack cannot queue a proposal or change a cancelled
-or overtaken order. Unknown ids return 404. Invalid JSON, missing/extra fields, wrong types,
-invalid outcomes or body framing return 400. A body over **4096 bytes** returns 413.
-HTTP connections close after each request, with a three-second socket timeout.
-
-Orders persist in `/srv/homelab/frontline/orders.json`, outside the read-only clone, mode
-0600. Writes atomically replace and fsync the file and its directory before success.
-Transitions are `proposed → queued | cancelled | overtaken` and
-`queued → done | dropped | failed | overtaken`. Closed records are currently retained
-without automatic pruning, keeping late taps and repeated receipts meaningful. Do not
-delete the store to retry delivery. Arguments and verdicts are private volume/Telegram
-content: neither HTTP access logs nor exception text are logged; order audit lines contain
-only order ids, actions, slice ids and statuses.
-
-After installation, verify `systemctl is-active homelab-telegram-bot.service`, `NRestarts`,
-`ss -ltn` (8110 only on the node's Tailscale IPv4), and `systemd-analyze security
-homelab-telegram-bot.service`. The unit changes only a networking comment; its sandbox
-score is unchanged at 1.3. From the Mac:
-
-```bash
-NODE_TS_IP="<node Tailscale IPv4>"
-curl -s --max-time 5 "http://$NODE_TS_IP:8110/orders"
-curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 "http://$NODE_TS_IP:8110/unknown"
-```
-
-Expect `{"orders": []}` when no orders are queued and 404. A Mac timeout calls for checking
-the Tailscale grant. On the unlocked node, check from an existing platform container
-on `homelab_default` (the worker has Python; no image download is needed):
-
-```bash
-NODE_TS_IP="$(tailscale ip -4)"
-docker exec homelab-worker-1 python -c '
-import sys
-import urllib.request
-opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-with opener.open(f"http://{sys.argv[1]}:8110/orders", timeout=5) as response:
-    print(response.status)
-' "$NODE_TS_IP"
-```
-
-Expect HTTP 200 with the volume unlocked. For a container timeout, check its network and
-source subnet and confirm `sudo ufw status` shows TCP 8110 allowed from `172.18.0.0/16`.
-Keep the listener bound only to the Tailscale IPv4. The owner's remaining phone check:
-request an order, inspect its exact confirmation, tap Yes, see it in GET, then discard it:
-
-```bash
-ORDER_ID="<id from GET /orders>"
-curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 \
-  -H 'Content-Type: application/json' \
-  --data '{"outcome":"dropped","detail":"Owner validation; do not execute"}' \
-  "http://$NODE_TS_IP:8110/orders/$ORDER_ID/ack"
-```
-
-Expect 204, the order absent from the next GET, and `Dropped: Owner validation; do not execute`
-on the phone. These checks do not run an order. Also check No, a late tap and an overtaken
-proposal from the phone. The orchestrator coordinates these owner checks after deployment.
-
-Rollback: restore the dated pre-install bot Python files and unit from the root-only rollback
-directory described under [Rebuilding the node](#rebuilding-the-node), then `systemctl
-daemon-reload` and restart only `homelab-telegram-bot.service`. The prior bot has no order
-listener; verify 8110 is absent and `/status` works. Retain `orders.json`, clone, key and
-private configuration for recovery. No stack, volume, polkit or credential rollback is needed.
-
-Private bot configuration stays on the node under `/etc/homelab-telegram-bot/`: `allowlist`
-and `privileged-allowlist` contain numeric Telegram user IDs, one per line; `restart-allowlist`
-contains unit names, one per line (a missing `.service` suffix is added). All three ignore blank
-lines and `#` comments, including trailing comments, and use owner/group `root:homelab-bot` with
-mode `0640`. The main allowlist must be nonempty; privileged users must be a subset of it.
-A missing or empty privileged or restart allowlist grants no capability. Paths can be overridden
-by `HOMELAB_BOT_ALLOWLIST`, `HOMELAB_BOT_PRIVILEGED_ALLOWLIST` and
-`HOMELAB_BOT_RESTART_ALLOWLIST`. Their contents never enter git, tests or logs. The token stays
-in TPM-sealed `token.cred`; the bot reads only systemd's `$CREDENTIALS_DIRECTORY/bot-token`.
-
-`POST /v1/knowledge/query` and `POST /v1/knowledge/answer` accept `{"question": "…", "top_k": 5}`
-(nonblank question; integer `top_k` at least 1, default 5). Query returns scored chunks with
-provenance. Answer retrieves the same chunks and makes one call to the configured `chat` route.
-It returns `answer`, `refused` and `sources`: each cited chunk's `number`, `title`, `path` and
-`score`, in first-citation order. Insufficient evidence produces a plain refusal with no sources;
-malformed model replies or missing/invalid citations also fail closed. The refusal text is
-“That isn't covered in what Aleix has written here — you can ask him directly.” Answers always
-refer to Aleix by name in the third person. Metrics record lengths, counts, refusal and timing,
-without question, chunk or answer content.
-
-Knowledge operations share `HOMELAB_ACTIVE_COLLECTION` (`about_aleix` by default, or `brain`).
-Each collection has separate chunk and document tables; switching does not rebuild Brain.
-The corpus is mounted read-only at `/data/corpus` from `HOMELAB_CORPUS_PATH`, defaulting to
-`/srv/homelab/homelab-v2-data/originals/corpus`. `HOMELAB_CORPUS_FILE` defaults to `/data/corpus/about-aleix/corpus.json`.
-Public JSON entries become documents whose titles are their questions and whose provenance
-paths are stable entry ids. Other visibility values are skipped. Invalid individual entries
-are skipped with position-only warnings; invalid JSON, a non-list root or duplicate public ids
-abort ingestion before writing.
-
-`homelab eval` reads the same corpus and asks every public entry's own question against
-`about_aleix`. It prints only document count, hit@5, mean reciprocal rank (MRR), retrieval miss
-ids, refusal count and refusal ids. Answers use the same path as the answer endpoint; no eval
-file is written. When `HOMELAB_EVAL_FILE` (default
-`/data/corpus/about-aleix/eval.json`) exists in the read-only corpus mount, it also scores
-`bank_paraphrases`, `refusal_checks` and `visitor`, with visitor results per group. Answer items
-measure hit@5 and MRR against any listed entry, and answer correctness requires a non-refusal
-with a listed source path. Refusal items measure correct refusals. Failures carry ids and
-`retrieval_miss`, `refused`, `wrong_citation` or `answered` reasons; multiple reasons can apply.
-The baseline, each set and each visitor group also report `first_person_count`: non-refused
-answers containing `I`, `me`, `my` or `mine` as whole words, ignoring case. Each answer counts
-once, including quoted phrases; no text or match details are reported.
-The baseline fields stay at the JSON root, independent scores are under `sets`, and numeric
-`eval_file_found` is 0 when the file was not found (baseline only), 1 otherwise. Empty subsets
-have zero rates. No question or answer text is printed. Run it inside the app container on the
-node after ingestion.
-
-Models are served by LiteLLM using `config/litellm.yaml`, the single route table. The API,
-worker, ingestion CLI and eval discover purposes from its `/v1/models` endpoint and use those
-names through the existing LlamaIndex clients. They hold only `HOMELAB_MODELS_BASE_URL`
-(default `http://litellm:4000/v1`) and `HOMELAB_MODELS_API_KEY` (default `homelab`, accepted
-and ignored today). The gateway secret is mounted only into LiteLLM, which reads it at startup;
-its existing `root:10001` ownership and `0440` mode stay unchanged.
+## Develop locally
 
 On the Mac, development needs no services:
 
@@ -438,7 +67,8 @@ uv sync
 uv run pytest
 ```
 
-On a Docker host, provision `.env` and both gateway secrets as described in step 10, then run:
+On a Docker host, provision `.env` and both gateway secrets as described in step 10 of
+[Rebuilding the node](#rebuilding-the-node), then run:
 
 ```bash
 docker compose up -d --build
@@ -446,1774 +76,21 @@ docker compose exec api homelab routes
 docker compose exec api homelab eval
 ```
 
-`/health` returns `status`, `version`, `routes` and `models_base_url`; the former
-`gateway_key_present` field retires because the API no longer holds the gateway key. LiteLLM publishes only
-`127.0.0.1:4000` for host clients. Its official image is pinned by digest in Compose and updated
-deliberately. Telemetry, remote model-price updates, hosted callbacks and the admin UI are off;
-tokenizers are bundled. Its external model calls go only to Vercel AI Gateway; embeddings go
-to `llama-embed` or `llama-embed-large` on the private network. The journal records one line
-per endpoint call with purpose, real model, HTTP status, elapsed seconds and whether an upstream call was attempted.
-Content, embeddings and keys are excluded, including on errors and streaming calls.
+## Steps for each part
 
-### Use the model endpoint
-
-Attach a client container from another Compose project to the external Docker network
-`homelab-models`, created by this stack. Only LiteLLM joins it; Postgres, API and both
-embedding servers remain on the stack's private network. Give the client its base URL `http://litellm:4000/v1`
-and an arbitrary API key through its environment (host clients use
-`http://127.0.0.1:4000/v1`), then use OpenAI-shaped `GET /v1/models`,
-`GET /v1/model/info`, `POST /v1/chat/completions`, `POST /v1/embeddings`,
-`POST /v1/images/edits` and `POST /v1/images/generations`. The text and embedding names are `frontline`, `chat`
-(standard), `chat:high`, `chat:xhigh`, `embed`, `embed-large`, `embed-large-bulk`, `grade`,
-`translate`, `vision` and `vision:xhigh`.
-`grade` makes yes/no relevance judgements per candidate passage, using the same model and low effort as `chat`.
-`translate` translates passages on request, using the same model and low effort as `chat`.
-`vision` reads page images with Qwen3-VL-8B on the owner’s Mac while it serves;
-`vision:xhigh` uses the gateway for pages that need the hosted rung. There is no `vision:high`.
-Send images as `data:` URLs. When the Mac is stopped, `vision` returns a generic OpenAI-shaped
-4xx or 5xx with a 3-second connection timeout; clients keep their pages queued. Requests allow
-300 seconds for transcription, with no retries, fallback or incident alert. The client chooses a tier; no escalation
-or fallback happens automatically. Chat responses report the purpose; embedding responses
-report the real embedding model, which clients must record at ingest. An embedding model
-change requires a new index. Unknown names, provider model ids and unavailable tiers receive
-a 4xx without an upstream call. The accepted client key does not restrict model access:
-attach only trusted clients to this network. Provider/routing overrides and remote image URLs
-are refused; configuration and management endpoints are not exposed. New purposes and optional
-request fields can be added to `/v1`; breaking changes require `/v2`.
-
-Three paid image purposes also appear: `image-nano-banana-2.1`,
-`image-gpt-2.5-flare` and `image-gpt-2.5-sunburst`.
-Discover their capabilities with `GET /v1/model/info`: its `data` array contains only
-`model_name` and `model_info` for every purpose. Deployment parameters, upstream addresses
-and key references are never returned. Each image profile includes its endpoint, response
-form, reference count, display name, terms, settings and USD price estimates.
-All offered profiles contain measured response forms and times. Reference maxima are
-documented limits; the proof
-checks two references per model rather than claiming a full-count load test.
-
-Direct gateway proofs on the node, 2026-10-14, initially used two synthetic 256px PNG
-references and one call per model. Nano Banana 2 then received two owner-authorized
-diagnostic calls. These measure the gateway, not the deployed proxy.
-
-| Purpose | Endpoint | HTTP | Response | Call seconds | Images | Reported USD |
-|---|---|---|---|---:|---:|---:|
-| Nano Banana 2 (excluded) | edits | 400 | invalid_request_error | 0.969 / 0.233 / 0.223 | 0 | not reported |
-| `image-gpt-2.5-flare` | edits | 200 | b64_json | 10.074 | 1 | not reported |
-| `image-gpt-2.5-sunburst` | edits | 200 | b64_json | 8.718 | 1 | not reported |
-| `image-nano-banana-2.1` | chat | 200 | message_images | 14.147 | 2 | 0.0377865 |
-| `image-flux-3` | edits | 200 | b64_json | 27.750 | 1 | not reported |
-
-Nano Banana 2 was tried three times in total, always with two references: the original
-`size=512x512` request, one exact repeat retaining a sanitized error, then one request
-omitting `size`. Both diagnostic calls returned this sanitized error:
-
-```json
-{"message":"Model 'google/gemini-3.1-flash-image' is a language model, not an image model. Use the language generation API instead.","type":"invalid_request_error"}
-```
-
-The [model page](https://vercel.com/ai-gateway/models/gemini-3.1-flash-image) documents language
-APIs, while the general edits guide lists it as supported. The live gateway's classification
-refusal remained unchanged without a size, so Nano Banana 2 is not reachable through
-`/images/edits` and has no entry here. It was not moved to chat or replaced; the owner
-decides any later route. This is not a shared size-mapping failure. The remaining profile
-mappings stay unchanged; no additional paid calls were made for those models.
-
-GPT calls used `quality=low`, `size=1024x1024`; Nano Banana 2.1 used 1K; FLUX used
-`size=768x768`. FLUX 3 was subsequently removed after proxy validation; see below. `seconds_per_image` divides call time by returned image
-count (Nano Banana 2.1 returned two). These single samples are estimates of future latency.
-The reported cost subtotal is $0.0377865; other calls did not report a cost in the inspected
-response fields. Listed output estimates for the two GPT calls and FLUX add $0.03226,
-excluding reference/prompt tokens. The exact total spend requires the Vercel dashboard.
-
-The subsequent pinned LiteLLM 1.103.3 response-parser check found that FLUX 3's gateway
-response has `usage.input_tokens_details: null`, which `ImageResponse` rejects. A local
-stub captured the same model, prompt, `n=1`, `size=768x768`, `response_format=b64_json`
-and two identical PNG `image[]` parts as the direct proof. Only filenames, user-agent and
-multipart framing differed. Matching the LiteLLM request shape still returned an image
-that failed response parsing; the client-facing upstream error remains sanitized.
-FLUX 3 is not offered until LiteLLM accepts that response.
-
-The authorized FLUX.2 pro alternative was checked with the same LiteLLM request shape,
-`size=1024x1024` and two synthetic references. It also returned an image, but its response
-omitted `usage.input_tokens_details`, which the pinned parser rejects. It has no entry.
-No adapter, response rewriting or substitution is used.
-
-| Correction proof | HTTP | Response | Seconds | Pinned parser | Reported USD |
-|---|---|---|---:|---|---:|
-| FLUX 3, matching multipart shape | 200 | b64_json | 20.158 | rejects null input token details | not reported |
-| FLUX.2 pro, matching multipart shape | 200 | b64_json | 7.327 | rejects missing input token details | not reported |
-
-A model with a combined size field publishes only `sizes`, a list of
-`{value, aspect_ratio, resolution, price}`. Models with separate fields publish
-`aspect_ratios` and either `resolutions` or `qualities`, each naming a distinct request
-field. A profile never carries both forms. The GPT entries already use `size` and
-`quality`; Nano Banana 2.1 already uses separate nested aspect-ratio and image-size fields.
-Their profiles are unchanged.
-
-For the two `images/edits` profiles, send an OpenAI multipart request to
-`POST /v1/images/edits` with the purpose as `model`, a `prompt`, `response_format=b64_json`,
-and repeated `image[]` file parts. Without references, send a JSON request to
-`POST /v1/images/generations`. Nano Banana 2.1 instead uses `/v1/chat/completions`:
-send `modalities: ["text", "image"]` and a user message containing text and reference
-`image_url` parts with data URIs; images return in `choices[0].message.images`.
-All four allow 300 seconds per request with no retries or fallbacks. No image processing
-or prompt changes happen on the node. Prepare references at up to 2048 pixels per side in
-the client. No smaller gateway request-body limit was found in the published image docs;
-this is a client-side size recommendation, not a proved maximum byte count.
-
-Settings publish `field` and `values`. A `size` mapping associates aspect ratios with
-explicit dimensions; resolution choices are square dimensions, and clients compute the
-dimensions for other shapes. Dotted field paths denote nested JSON, for example
-`providerOptions.google.imageConfig.imageSize`. Only those published nested paths are
-accepted; `providerOptions.gateway` and routing overrides remain refused. `advanced`
-publishes pass-through request fields and their defaults; no image seed is offered.
-Wrong fields receive 400 before an upstream call. Supported OpenAI fields still depend
-on the selected model; the gateway validates parameter values.
-GPT image models always return base64; `response_format=url` is refused. Their entries use
-LiteLLM's native `additional_drop_params: [response_format]` to avoid its generation-parameter
-validation rejecting this legacy selector on edits. Both routes use the implicit base64
-default. No image format conversion is performed.
-
-Only image entries use the dedicated image key. Its $20 monthly budget is set in Vercel,
-resets on the 1st at 00:00 UTC, and is a soft cap: the request crossing the budget completes.
-Later calls return HTTP 402 with `error.type: quota_for_entity_exceeded` and the fixed
-message `Monthly image budget exhausted; resets on the 1st at 00:00 UTC`.
-Do not retry until the reset or an owner budget change. Chat uses its existing key.
-
-Image responses add only `x-homelab-cost-usd`, a decimal USD amount, when billing is known.
-Read it even on errors or an HTTP 200 with no usable image; a charged failure still counts.
-Vercel's billed header takes priority when present, followed by
-`providerMetadata.gateway.gatewayCost` (or `cost`) from its body, followed by LiteLLM's positive
-computed cost. Provider metadata and all other provider headers are removed. Missing cost is
-unknown, not zero. The direct low-quality 1024×1024 Flare inspection returned HTTP 200, one
-image, no billed-cost header and USD 0.00597 in both Vercel metadata fields. The gateway
-observer runs before schema parsing, so a parser failure does not erase a charge. Image SSE
-responses are buffered until completion to set the header and strip metadata.
-
-With the same client bearer key, call `GET /v1/images/cost` at the model endpoint (also offered
-by the loopback API on port 8000). It accepts no query parameters and returns:
-
-```json
-{"month":"2026-10","total_usd":"0.00597","charged_calls":1}
-```
-
-`month` is the current UTC calendar month. A new key or month returns `"0"` and zero calls.
-No key selector is accepted; only possession of the bearer key selects a total. These remain
-trusted-client keys without registration or central authentication. Image calls now require
-a nonempty bearer key so every reported charge has an owner. Costs use exact Postgres numeric
-addition and key hashes; the API applies `image_costs.sql` at startup. Unknown-cost calls,
-earlier usage and calls outside the proxy are absent from these totals. Compare matching
-periods with Vercel; the local counter does not replace its dashboard or enforce its budget.
-If recording a confirmed charge fails, the response is a fixed 503 with the charge header;
-do not automatically repeat that paid call. The journal records only the numeric cost and a
-fixed accounting-failure marker.
-
-The hook checks that the accounting table is reachable before sending an image upstream;
-startup migrations or a database outage therefore refuse new paid work with 503.
-
-`homelab-image-cost-notice.timer` runs every three minutes while the volume is unlocked.
-Its host service reads the same table through `docker compose exec -T api`, sends plain text
-through the existing encrypted credential and notifier, and records successful 80% and 100%
-deliveries in monthly sentinel rows. `HOMELAB_IMAGE_MONTHLY_BUDGET_USD` in Compose defaults to
-20 and controls only these alerts; changing it does not change Vercel's budget. Failed sends
-remain pending for the next tick. Concurrent senders are serialized. A crash after Telegram
-accepts a message but before its database acknowledgement can repeat it; Telegram supplies
-no idempotency key for that boundary. No production thresholds are fabricated for tests.
-Check with `systemctl status homelab-image-cost-notice.timer` and
-`journalctl -u homelab-image-cost-notice.service`. The rebuild steps install and enable it.
-
-Profile sources, checked 2026-10-14: the [gateway catalogue](https://ai-gateway.vercel.sh/v1/models),
-[gateway image API](https://vercel.com/docs/ai-gateway/modalities/image-generation/openai),
-[Nano Banana 2.1](https://ai.google.dev/gemini-api/docs/models/gemini-nano-banana-2.1),
-[Gemini images](https://ai.google.dev/gemini-api/docs/image-generation),
-[GPT image settings and cost calculator](https://developers.openai.com/api/docs/guides/image-generation),
-and [FLUX 3 gateway announcement](https://vercel.com/changelog/flux-3-image-now-available-on-ai-gateway).
-GPT estimates use the official calculator's output tokens at 1024x1024 and the gateway's
-$30/M output token rate, excluding prompt and reference input tokens. Both variants have
-the same rate, but actual consumption can differ. Gemini estimates use the gateway's
-resolution table, excluding additional input/text costs; FLUX uses its gateway size table.
-Terms: [Google](https://ai.google.dev/gemini-api/terms),
-[OpenAI](https://openai.com/policies/terms-of-use/),
-[Black Forest Labs](https://bfl.ai/legal/terms-of-service).
-
-`embed` uses Nemotron 1B; `embed-large` uses Qwen3-Embedding-4B Q8_0 on the node's CPU,
-always on. `embed-large-bulk` serves the same vector space from the Mac for bulk ingest only;
-students’ questions keep using the node’s `embed-large`. It has no tier or fallback and fails
-with a 3-second connection limit when the Mac is stopped. All three embedding purposes accept
-optional `input_type: "query"` or `"passage"`
-on `/v1/embeddings`, for a string or list of strings. LiteLLM applies the model's configured
-question/document wording and removes the field before forwarding. Other values and token
-arrays with `input_type` receive 400. Without it, input is forwarded unchanged, preserving
-existing indexes. Switching an existing index to roles requires re-embedding its passages
-with `passage`, then querying with `query`; this repository's index and `/answer` keep plain
-input. Changing embedding models requires a separate index.
-
-`embed-large` returns 2,560 dimensions. Clients using HNSW should account for
-[pgvector's limits](https://github.com/pgvector/pgvector#hnsw): `vector` supports at most
-2,000 indexed dimensions, while `halfvec` supports 4,000. The proxy passes through the
-model's vectors and does not implement dimension reduction.
-
-A client project's network declaration is:
-
-```yaml
-services:
-  client:
-    # image, environment and command belong to the client project
-    networks: [models]
-networks:
-  models:
-    external: true
-    name: homelab-models
-```
-
-## Install and update the Mac tools
-
-Run these commands outside the sandbox. Mac agents run a private installed copy under
-`~/Library/Application Support/homelab/mac/` (directory `0700`), independent of the working
-checkout. Install Homebrew Python at `/opt/homebrew/bin/python3` first (Python 3.11 or later).
-This fixed interpreter is recorded in `install.json`; no agent uses the checkout's `.venv`.
-The tools use only the standard library. Swift's SDK is needed to build the menu app.
-
-Before installing or updating, check med-ask for active vision or bulk embedding requests,
-as for a node deploy. A router code/preset update cuts `vision` and `embed-large-bulk` for a
-few seconds. Wait for any running Mac job to finish; the installer refuses to unload an active
-job worker. It never switches profiles or stops dictation.
-
-```bash
-cd ~/Code/homelab-v2
-git switch main
-git pull --ff-only
-mac/install-mac-tools
-export MAC_TOOLS="$HOME/Library/Application Support/homelab/mac"
-```
-
-The installer fetches `origin/main` and refuses dirty trees (including untracked files) or
-commits not contained in `origin/main`. It copies only the commands, their runtime dependencies
-and tracked menu sources. It rewrites existing listener, router, profile and profile-job plists
-in place, preserving flags, calendars, job identities and each job's own command. Existing
-loaded agents restart only when their paths or code/dependencies changed; unloaded agents stay
-unloaded. It also builds/reinstalls the menu app when its code or recorded paths change.
-A refresh waits up to 10 seconds for each unloaded service to disappear before loading its
-replacement, then retries bootstrap exit 5 for up to 5 seconds. A failed refresh retains its
-pending agents and can be retried with the same command, including after a manual recovery.
-Private profiles, jobs and state stay under `~/.config/homelab/` and `~/.local/state/`.
-
-For a first installation, after installing the privileged profile helper as described below:
-
-```bash
-"$MAC_TOOLS/homelab-router" start
-"$MAC_TOOLS/homelab-listener" install
-"$MAC_TOOLS/homelab-profile" install
-```
-
-Updating is the same pull-and-install command sequence above. To see the installed commit and
-interpreter, and confirm the live command paths:
-
-```bash
-cat "$MAC_TOOLS/install.json"
-for label in listener router profile profile.job.dictation-recheck menu; do
-  plutil -p "$HOME/Library/LaunchAgents/org.homelab.$label.plist"
-done
-plutil -p "$HOME/Applications/HomeLab.app/Contents/Info.plist"
-```
-
-Listener/router/profile and all later `job add` agents use the installed command and recorded
-Python. The menu agent runs `~/Applications/HomeLab.app/Contents/MacOS/HomeLabMenuBar`; its
-bundle's `HomeLabProfileCommand` points to the installed profile command. Changing branches in
-`~/Code/homelab-v2` cannot change these agents' code. The examples below assume `MAC_TOOLS`
-was exported as above.
-
-## Mac vision serving
-
-Vision and bulk embeddings share one native Homebrew llama.cpp router on the Mac. Use the
-installed tools outside the Codex sandbox (which cannot see Metal):
-
-```bash
-"$MAC_TOOLS/homelab-router" start
-"$MAC_TOOLS/homelab-router" status
-"$MAC_TOOLS/homelab-router" stop
-```
-
-`start` installs a user LaunchAgent (`org.homelab.router`) and waits up to 120 seconds for
-health. It runs at login and launchd restarts it after exit. It discovers the Tailscale IPv4
-using the CLI (checking `/usr/local/bin` and `/opt/homebrew/bin` even under launchd's minimal
-PATH) or an unambiguous `utun` address, binds only that address on TCP 8090, and
-refuses an occupied port. The owner's existing node-only tailnet grant gates access without
-an API key. No new port is needed; 8092 is freed. Allow incoming connections for `llama-server`
-if macOS asks. No wake lock is installed. The action listener (8091) and dictation cleanup
-server (8095) keep their independent services and lifecycles.
-
-For an *on request* service, the native router loads the requested model on the first call.
-With no requests, llama.cpp
-unloads its model weights and KV cache after `IDLE_SECONDS` in `mac/homelab-router` (600 seconds
-by default). `/models` then reports `sleeping` (or `unloaded` before the first request); a
-sleeping child process remains and reloads on demand. Startup loads neither preset. The
-initial preset template is `mac/router-models.ini.in`; migration copies its exact flags and
-local paths into the private model registry. Current presets are rendered from the active policy. A private cache under router state keeps unrelated cached
-models out of native discovery. llama.cpp owns model management; the usage profile command
-can restrict which presets are available (see below).
-
-`status` prints only the available preset names/states and current memory in bytes: router RSS,
-router plus descendants' RSS, and their summed Darwin physical footprint (including Metal).
-It calls `/health` and `/models`, which do not wake models. Compare the current family
-physical footprint after inference with the same field after the idle interval; lifetime peak
-memory cannot establish release. `status` exits 0 only for a healthy managed process and
-checks PID start time. Output excludes addresses, paths and upstream arguments.
-`stop` unloads the LaunchAgent, waits up to 30 seconds for the managed process, and removes
-its plist so it stays stopped across login; `start` reinstalls it. Commands serialize with a
-lock. State and generated presets are private under `~/.local/state/homelab-router/`; the
-private plist is under `~/Library/LaunchAgents/`. Native content logging is disabled and
-stdout/stderr go to `/dev/null`. Launcher failures append one fixed, content-free stage line
-per failed invocation to `startup-failures.log` in router state (creation mode `0600`). For
-example, `tailscale address unavailable` records discovery failure without CLI output,
-exception text, addresses or paths. The record survives failed-start cleanup and `stop`;
-launchd retries can produce additional lines. A failed health wait records a fixed timeout
-line, covering native startup failures without retaining native output. No model download is
-attempted.
-
-Vision keeps the existing files under
-`~/vision-bench-outputs/models/Qwen3-VL-8B-Instruct-GGUF/`:
-`Qwen3-VL-8B-Instruct-Q4_K_M.gguf` and `mmproj-F16.gguf`. Its `vision` preset retains Metal
-`-ngl 99`, context 16,384, one slot, flash attention and cache RAM 0. Temperature, completion
-limit, prompt and page DPI belong to clients. Image inputs must be `data:` URLs.
-
-The retired `mac/homelab-vision` and `mac/homelab-embed` commands only point here. Before
-installing the router for the first time, stop both old processes with the previous launchers
-(their `stop` commands check PID start time), then leave their old state unused.
-The old vision state folder has been removed; retain `~/.local/state/homelab-embed/` because
-it also contains historical download/compare files outside this slice. `start` refuses
-any live legacy process. Model files stay in place. The vision pointer preserves address
-discovery for the unchanged action listener.
-
-Set **both** `HOMELAB_MAC_VISION_URL` and `HOMELAB_MAC_EMBED_URL` in the node clone's private,
-root-owned `.env` to the **same** Mac Tailscale HTTP URL on port **8090**, ending in `/v1`.
-Never put the address or tailnet name in git, logs or PRs. Empty or unset values retain
-Compose's closed loopback default, so LiteLLM starts independently of the Mac. Both purposes
-keep the 3-second connect limit and 300-second request limit, without retries, fallback or
-stopped-Mac alerts. Cold model loading is included in the request limit.
-The Mac profile agent publishes its offer through the router; the worker reads it every minute.
-Run `homelab providers` to see the offer and its freshness.
-
-## Mac bulk embedding serving
-
-`embed-large-bulk` uses the same router described in [Mac vision serving](#mac-vision-serving).
-The native preset name remains `Qwen3-Embedding-4B`, matching the gateway's upstream model.
-Both node URLs point at port 8090; nothing listens on 8092 for bulk embeddings anymore.
-
-Download the official GGUF once to `~/homelab-models/Qwen3-Embedding-4B-GGUF/` from
-`https://huggingface.co/Qwen/Qwen3-Embedding-4B-GGUF/resolve/f4602530db1d980e16da9d7d3a70294cf5c190be/Qwen3-Embedding-4B-Q8_0.gguf`.
-Verify SHA256 `b60ae5ce2dd6a0b77f82cadf21def1f310a3e10cde380ad0081b07a9d416949d`
-before starting. Its preset preserves last-token pooling, L2 normalisation, context 8192,
-batch/microbatch 2048, four threads and Metal `-ngl 99`. The purpose reports
-`Qwen3-Embedding-4B` like `embed-large`, with identical optional `input_type` wording
-(plain passages). Bulk ingest and node queries stay in the same vector space.
-
-Before any stack restart, inspect med-ask processes and recent audit metadata:
-
-```bash
-ssh homelab-agent 'sudo docker ps --format "{{.Names}}"'
-ssh homelab-agent 'sudo ps -eo pid,comm,cgroup | rg "med-ask|ingest"'
-ssh homelab-agent 'sudo journalctl --since "10 minutes ago" -o cat | rg "model_call purpose=(vision|embed|embed-large|embed-large-bulk) " | tail -n 30'
-```
-
-Inspect the med-ask container's process names with `sudo docker top <container> -eo pid,comm`
-and its ingest status without printing arguments or content. Recent continuous model calls
-or a running ingest mean wait for completion; do not restart `homelab.service`.
-Before merge, prove a cold synthetic-image vision call directly from the node, compare
-20 generic sentence embeddings against the node's `embed-large` (lowest cosine at least
-0.999), then record status and physical footprint before/after the full idle interval.
-The direct probe uses the container's private vision URL for both models, before changing
-node configuration:
-
-```bash
-ssh homelab-agent 'sudo docker exec -i homelab-litellm-1 python -' < tests/mac_router_probe.py
-```
-
-It requires both models initially unloaded or sleeping, sends only synthetic inputs, verifies
-the real embedding model and dimensions, and prints timings/cosine without URLs or vectors.
-Run `mac/homelab-router status` on the Mac immediately after the probe and again after at
-least the idle interval with no inference calls; neither status call wakes a model.
-
-After the approved merge and deployment, test vision and bulk through `homelab-models`
-without starting a model by hand; stop the router and time both failures (about 3 seconds).
-Restart the router outside the sandbox, then check `embed-large`, `embed`, `chat` and image
-routes. Leave the router running.
-
-## Mac usage profiles
-
-`mac/homelab-profile` is the command interface for usage profiles. Run it outside the
-sandbox. `status` emits one JSON object: `profile` (`working`, `inference`, or `custom`),
-`services`, `settings`, `apps`, `running_jobs`, `settings_skipped`, `return_pending`,
-`paused` and `pause_reason`. A normal pause reports `profile: inference`, `paused: true` and
-`pause_reason: on_battery`; manual differences can still make the observed profile custom.
-It observes launchd, running apps, power settings and native router presets rather than
-trusting the last selected profile. Starting/stopping a service or editing a setting makes
-it `custom` unless it exactly matches a configured profile. Working excludes the owner’s
-system settings from matching. The JSON `settings` power mode/sleep describe AC settings,
-even while on battery; GPU limit is global. Model loading/sleep is activity,
-not a profile change. An unavailable router reports its model services disallowed.
-
-```bash
-"$MAC_TOOLS/homelab-profile" install
-"$MAC_TOOLS/homelab-profile" status
-"$MAC_TOOLS/homelab-profile" switch working
-"$MAC_TOOLS/homelab-profile" check-work
-"$MAC_TOOLS/homelab-profile" switch inference
-"$MAC_TOOLS/homelab-profile" start vision
-"$MAC_TOOLS/homelab-profile" stop vision
-"$MAC_TOOLS/homelab-profile" job list
-"$MAC_TOOLS/homelab-profile" job add example --calendar '{"Hour":4,"Minute":0}' -- "$PWD/mac/profile-example-job"
-"$MAC_TOOLS/homelab-profile" job run example
-"$MAC_TOOLS/homelab-profile" job remove example
-```
-
-To change a registered job's command, remove it and add it again with the same calendar. Removal
-refuses an unknown or currently running job and waits for its LaunchAgent to unload.
-
-Installation creates a private `~/.config/homelab/profiles.json` with editable defaults and
-`org.homelab.profile`, a user LaunchAgent that checks every 30 seconds. It does not switch
-profiles. Install/start the router first. The repository's `mac/profiles.example.json` has an
-empty placeholder app list; `install` defaults Inference's list to Chrome and VS Code bundle
-identifiers. Keep the owner's edited app list and paths only in the private file, never git.
-Profiles contain `services`, `close_apps` (bundle identifiers), `settings` and `jobs` (boolean).
-`return_seconds` defaults to 900; `idle_seconds` for jobs defaults to 300.
-
-Working allows bulk embeddings, cleanup and VoiceInk and closes no apps. Its `settings`
-are empty: it applies no sleep or power-mode default and does not match the owner’s system
-settings. The owner keeps separate choices for AC and Battery. Legacy Working power-mode,
-sleep and GPU fields remain readable: they are checked against the numeric bounds, then
-ignored in memory; explicit migration removes those obsolete Working settings. Vision and unregistered future image presets
-are excluded. Inference permits both router purposes, stops dictation, politely quits the
-configured apps, selects High Power and disables sleep **only for AC** (`pmset -c`), and
-sets the global GPU wired limit to 45056 MB. Battery power mode/sleep and both sources’
-display settings are untouched. Inference requires AC power: `pmset -g batt` is checked before any switching
-side effect, with the clear refusal `Inference requires AC power; connect the charger before
-switching`. The helper rechecks AC before applying Inference settings. Its power mode must
-be 2 (High Power). Only an explicit owner `switch inference`, or the owner's
-[night window](#menu-bar-app-usage-and-night-window), enters it. Before any side effect,
-that command lists recognised `codex exec`, model servers and GPU jobs descending from
-VS Code and refuses. Python and other possible GPU runtimes are conservatively included even
-when their script names do not mention inference. `--confirm-kill` is the owner's explicit override. Never use that override
-with the production app list from a chat terminal. Jobs inherit a marker that refuses entry
-into Inference, even with the confirmation flag; worker ancestry also catches wrappers that
-strip environment variables. Registered job executables are owner-trusted
-code, not a sandbox for untrusted programs.
-
-When every router model has remained unloaded/sleeping and no job has run for 15 minutes,
-the LaunchAgent returns to Working, except while paused. A short unplug has no profile
-effect. The existing 30-second check records the first battery observation; after 10 continuous
-minutes on battery it pauses Inference, empties the router allow-list and unloads every model.
-Apps and dictation stay closed. Starting a model service by hand is also refused while paused,
-and no scheduled job starts. Sleep prevention and the GPU limit stay unchanged. Power-mode
-changes on battery do not make the owner-entered Inference session custom.
-
-Paused Inference waits for power or the owner; it never returns to Working merely because the
-idle timeout elapses. Replugging resets the battery timer and automatically resumes the same
-Inference session, applying High Power before restoring its allow-list. Resumption starts a
-fresh 15-minute idle window without replacing the original app/service or settings record.
-If replugging is observed before ten minutes, the grace timer resets; the ordinary idle rule
-still applies during this grace period. The owner can `switch working` at any time, including
-while paused on battery, to restore everything. If that return fails partway through, the
-existing check retries Working restoration instead of resuming Inference on AC. A private,
-atomic recovery record at `~/.local/state/homelab-profile/session.json` records apps and
-services stopped by the switch, `previous_powermode`, `previous_sleep` (both AC), and
-`previous_gpu_limit_mb` (global) before any change. AC values come from `pmset -g custom`,
-not the active-source `pmset -g` view. The return reopens only those apps/services and restores
-all three recorded values exactly. An ordinary Working switch with no pending return writes
-no power settings; it only resets a nonzero orphan GPU limit to zero. The root helper reads the record while it is pending; it is cleared only after
-settings and app/service restoration succeed. Apps/services already stopped remain stopped
-(so the resulting profile may be `custom`). A failed/cancelled quit retains the recovery record; explicitly `switch working`
-to recover. The command relaunches apps; window and tab restoration follows each app’s own
-settings. In Chrome, choose “Continue where you left off” if desired. macOS’s “Close windows
-when quitting an application” controls session restoration for apps using the system behaviour.
-VS Code restores windows by default. The owner chooses these settings; the command changes
-none of them and never force-quits an app. The listener on 8091, the cleanup plist and VoiceInk settings are untouched.
-
-The active policy is private router `allowed.json`; rendering omits *off* services and unallowed
-models. Native `/models?reload=1` reconciles presets and unloads removed or changed children.
-An unchanged model keeps its process. A switch explicitly loads every allowed model of an *on*
-service with native `/models/load` and verifies it is loaded; its preset disables idle sleep.
-*On request* models retain 600-second native idle sleep. `load-on-startup` preserves *on* across
-router restarts. Idle policy must be in presets, since router CLI flags override preset values.
-Router capacity covers the complete registry (at least four), preventing LRU eviction of *on*
-models. Restart the router after adding registry entries; registration is a separate operation.
-This requires llama.cpp native aliases, reload and load APIs (tested against build 11429,
-commit `d81235049`). No process supervisor or request rewriting is added. A mismatch fails the switch.
-The gateway checks the native model list before Mac inference, using the existing private URL
-and connection limit. A dedicated private `public/` directory under router state holds only
-`homelab-profile.json`, served by llama.cpp’s native `--path` option on the existing router
-address and port. It publishes exactly one boolean, `paused_on_battery`, never private profile
-contents or paths. See the [native static-path option](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
-The updated router must be restarted once to enable that path; do so outside the sandbox when
-no ingest needs its models. This adds no listener or request proxy. A missing preset returns OpenAI-shaped HTTP 503 with, for example,
-`vision is not available in this profile`. Its existing audit line adds
-`profile_blocked=true`, with purpose and `upstream=false`, so waiting requests can be counted
-without content. During battery pause the 503 instead says, for example,
-`vision is paused because the Mac is on battery`, with `profile_paused=true`. Only the native
-metadata boolean selects this fixed message. Missing/invalid metadata falls back to the normal
-availability refusal; upstream bodies and diagnostics are never passed through. Other upstream errors retain sanitising. Clients retain their own queues;
-requests never change profiles. A manual stop of a purpose has the same refusal wording.
-
-Each registered job has its own launchd `StartCalendarInterval`. It runs only in an exact
-profile permitting jobs, on AC power, after keyboard/mouse idle time. A missed run leaves one
-pending bit; the next eligible idle check asks launchd to run it. Missed occurrences coalesce;
-there is no work queue. Jobs execute under launchd, outside VS Code, with output discarded and
-only PID identity, pending state and exit code recorded privately. The included example exits
-successfully without doing work. `job run` also uses launchd and the same gates. Reinstalling
-the main agent preserves job agents and state.
-
-**One-time privileged installation, after merge, by the owner:** inspect the script and
-sudoers template first. Verify `/usr/local` is root-owned and not writable by the owner.
-The first command creates `/usr/local/sbin` if absent; verify it is root-owned and not writable
-by the owner before installing the helper. Do not install this grant in a user-writable directory. From the merged
-clone, typing the password:
-
-```bash
-sudo install -d -o root -g wheel -m 0755 /usr/local/sbin
-sudo install -o root -g wheel -m 0755 mac/homelab-profile-apply /usr/local/sbin/homelab-profile-apply
-PROFILE_SUDOERS=$(mktemp)
-sed "s/@OWNER@/$(id -un)/g" mac/homelab-profile.sudoers.in > "$PROFILE_SUDOERS"
-sudo visudo -cf "$PROFILE_SUDOERS"
-sudo install -o root -g wheel -m 0440 "$PROFILE_SUDOERS" /private/etc/sudoers.d/homelab-profile
-rm "$PROFILE_SUDOERS"
-sudo visudo -c
-```
-
-The grant permits exactly `/usr/local/sbin/homelab-profile-apply working` and the same command
-with `inference`, as root without a password. No other arguments, shell, arbitrary sysctl or
-pmset command is granted. The root-owned script uses `/usr/bin/python3 -I` and fixed absolute
-executables, no imports from the checkout and no shell. It reads only the invoking sudo user’s
-private profile file and (for a pending Working return) `session.json`, rejecting final symlinks,
-foreign ownership, nonregular/oversize files and nonnumeric settings. Inference always sets
-High Power; a return accepts only recorded integer power modes 0–2, AC sleep 0–180 minutes
-and GPU wired limits 0–45056 MB. Inference requires a complete pending recovery record
-before writes. Ordinary Working does not apply configuration defaults; without a pending
-return it only clears a nonzero orphan GPU limit. All pmset writes use `-c`; Battery settings
-are never written. Zero GPU limit restores the system default; it also resets at reboot.
-A partial system-setting failure retains the recovery record; returning to Working retries.
-Older pending records containing only a power mode are refused, rather than inventing sleep
-or GPU recovery values. Finish an existing return before updating the command/helper.
-The sudoers file needs no change when reinstalling the corrected helper:
-
-```bash
-sudo install -o root -g wheel -m 0755 mac/homelab-profile-apply /usr/local/sbin/homelab-profile-apply
-```
-
-After reinstalling from the merged checkout, the orchestrator runs this **outside the sandbox**
-as the owner, on AC, with Working services and no pending return or running jobs:
-
-```bash
-uv run python tests/mac_profile_privileged_acceptance.py
-```
-
-This uses the helper directly, never a production Inference switch or app quit. It checks
-that the installed helper matches the checkout before any writes, pauses the profile agent,
-saves the original private session and per-source settings, and creates a complete bounded
-recovery record. `sudo -k -n` verifies both names without cached credentials or a prompt;
-missing, unknown and extra arguments must fail. Readback uses `pmset -g custom` and sysctl:
-Inference must select AC mode 2, AC sleep 0 and GPU 45056, leaving every Battery setting and
-other AC setting unchanged. Working must restore the captured AC mode, AC sleep and GPU
-limit exactly, with the full per-source readback identical to the original. The proof restores
-private session state and reloads the agent in cleanup. A restoration failure retains the
-recovery record and `~/.local/state/homelab-profile/privileged-acceptance-backup.json`, leaves
-the profile agent paused, and must be relayed to the orchestrator. Never use a production
-Inference switch from a chat terminal while VS Code must survive.
-
-**Unprivileged acceptance test before merge:** save the private profile file first. Use only
-TextEdit (`com.apple.TextEdit`) in the test Inference app list and copy the observed settings
-into the test Inference profile, keeping Working settings empty and retaining Inference’s
-fixed High Power requirement. Keep the Mac on the charger throughout the cycle. The test skips
-settings; if the owner’s observed mode is not High Power, the inference phase correctly
-reports `custom` while services and restoration are still verified. Set `return_seconds` to 15. Open
-TextEdit with a disposable saved document, start VoiceInk and cleanup, then switch Working
-with `--skip-settings`. From the orchestrator terminal, `check-work` and an unconfirmed
-Inference switch must list the running chat and refuse without changing anything. After that
-proof, only with the test app list verified, use `switch inference --skip-settings --confirm-kill`;
-VS Code and Chrome are excluded. Check the stopped apps/services, wait for the automatic
-return and confirm TextEdit, VoiceInk and cleanup relaunch. Acceptance checks app relaunch,
-not document/window restoration; that follows the owner’s app and macOS settings.
-Restore the private configuration afterwards; leave services in Working and report actual
-settings (which may make the production profile `custom` until privileged installation).
-`--skip-settings` persists across the automatic return and is reported explicitly in status.
-To rerun only the cycle from production configuration, use
-`uv run python tests/mac_profile_acceptance.py cycle`; it prepares the safe TextEdit-only test
-configuration and restores the original configuration afterwards, without repeating the guard proof.
-It verifies the captured prior mode and unchanged observed settings, quits TextEdit if the
-test launched it, and removes its fixture. Before the first cycle using pause metadata,
-restart the router outside the sandbox:
-
-```bash
-"$MAC_TOOLS/homelab-router" stop
-"$MAC_TOOLS/homelab-router" start
-uv run python tests/mac_profile_acceptance.py cycle
-```
-
-The cycle checks the native metadata path before changing test configuration. Unit tests cover
-battery entry refusal, the full grace period, timer reset, pause/AC resume, suspended idle return
-and manual Working restoration. Pinned gateway tests cover both purposes’ paused messages,
-audit flags and invalid metadata. Actual privileged restoration is verified after owner installation.
-
-### Menu bar app, usage and night window
-
-The SwiftUI `MenuBarExtra` app is a thin client of `mac/homelab-profile`: every state, plan,
-guard and switch comes from the command's JSON, and the app holds no profile rules. Its menu
-shows *Working*, *Inference* (or *Inference, paused* with the reason), or *Custom*, and each
-service's state with a Start/Stop button (one service changes the state to *Custom*, as the
-command does). *Working* is one click. *Inference…* first runs `plan-inference` and shows the
-configured apps it would quit, the dictation it would stop and the VS Code guard's running work,
-then asks once. A battery refusal is shown as such, without side effects. The app then runs an
-unconfirmed `switch inference`; if the guard refuses, the app repeats the guard's warning and its
-work list and offers **Switch anyway** (`--confirm-kill`) or **Cancel**. Never use *Switch
-anyway* while a chat or job under VS Code must survive.
-
-**Profiles…** opens a separate editor in the same system style. Select Working or Inference;
-each service has a state picker (off/on request/on for router services, off/on for dictation).
-Routed services show available registered models with measured MiB, allowed-model checkboxes,
-and a default picker containing only allowed models. Removing the default selects the first
-remaining allowed model; an empty allowed list is a validation error, including for off services.
-The editable memory budget sits beside required memory, explicit unknowns and any warning.
-**Over budget still saves.** Budget previews and validation come from `profiles-preview`;
-**Save profiles** sends the whole document on stdin to `profiles-set`, preserving power settings,
-closed apps, jobs and timings. Command errors appear in the editor and the draft stays available
-for correction. Reload discards unsaved edits. Saving the current profile applies its services
-without re-entering Inference or recapturing recovery settings; the other profile waits until
-its next switch. Native reload can briefly interrupt requests with the existing 503 response.
-No file paths, downloads or model registration controls appear in the editor.
-
-After installing an update, the orchestrator can run `tests/mac_profiles_screen_acceptance.py`
-with the installed Python, from exact Working with `Qwen3-Embedding-0.6B` already registered.
-It exercises the editor’s stdin save path, verifies status plus native model ids/default aliases,
-and restores the original profiles in `finally`, printing only pass/fail information.
-
-**Build, install and start** (after installing the tools, outside any sandbox; it switches nothing):
-
-```bash
-"$MAC_TOOLS/install-menu-bar.sh"
-```
-
-It builds the installed `MenuBar` sources in release mode, replaces `~/Applications/HomeLab.app`, signs it ad hoc
-(`codesign --sign -`) and loads the `org.homelab.menu` user LaunchAgent, which starts the app now
-and at every login. A LaunchAgent works with an ad hoc signature; no Developer ID is needed. The
-bundle's `Info.plist` records the installed `homelab-profile` and fixed interpreter, so the
-app runs the same command as the `org.homelab.profile` agent. The tools installer refreshes
-the app when needed; the command above explicitly reinstalls it. The menu bar icon shows
-the state: laptop (*Working*), bolt
-(*Inference*), pause (*paused*), sliders (*Custom*).
-
-The commands it uses, all JSON on stdout:
-
-```bash
-"$MAC_TOOLS/homelab-profile" plan-inference      # apps/dictation to stop, guard work, AC refusal
-"$MAC_TOOLS/homelab-profile" waiting             # refusals per purpose, last 24 hours
-"$MAC_TOOLS/homelab-profile" usage               # Codex and Claude 5-hour/7-day usage
-"$MAC_TOOLS/homelab-profile" schedule show
-"$MAC_TOOLS/homelab-profile" schedule set --start 23:00 --end 07:00 --days mon,tue,wed,thu,fri
-"$MAC_TOOLS/homelab-profile" schedule off
-```
-
-**Waiting work.** `waiting` runs two read-only commands over `ssh homelab-agent` (batch mode,
-10-second connect limit): `journalctl CONTAINER_NAME=homelab-litellm-1 --since '24 hours ago'`
-filtered to `profile_blocked=true` audit lines, and the public `GET /v1/model/info` from inside the LiteLLM
-container (it publishes no host port). It counts `model_call` lines per purpose. An estimate is
-count × the purpose's `seconds_per_image`; purposes publishing none (today `vision` and the
-embeddings) show the count with “estimate unavailable”. Nothing is written on the node or
-locally, and there is no queue. An empty journal query (exit 1) means no refusals. The container
-selector excludes proof containers and sudo audit entries. If a node read fails, the command
-and menu name the failing read without displaying its output.
-
-**Usage, on menu opening and *Refresh*.** Opening the menu requests fresh account-wide
-Claude and Codex limits once; reopening within 60 seconds reuses the reading. *Refresh* makes
-another request, and a request already running is not duplicated. The two small CLI requests
-run in parallel with 60-second limits in empty temporary directories. Each consumes a small
-part of its five-hour window and starts a window if none is open. Claude's rate-limit event
-supplies its figures; Codex's fresh session log supplies its figures. If either request fails,
-the menu shows its error and falls back independently to the local reading, if available.
-
-Plain `usage` makes no requests: Codex reads the newest complete five-hour and seven-day
-`rate_limits` entry in `~/.codex/sessions/**/*.jsonl`, and Claude reads the status line's
-`~/.claude/usage-now.json`. Missing readings are unknown. `usage --fresh` makes the requests
-above. Each reading includes its own timestamp and age; request output and replies are not
-included in the report.
-
-**Night window.** Off by default. Set it in the menu (start, end, days, *Save*; the switch turns
-it on or off) or with `schedule`; it is stored in private `~/.config/homelab/night-window.json`.
-The existing `org.homelab.profile` agent (installed by `mac/homelab-profile install`) evaluates
-each selected night once, within five minutes after its start time. It enters Inference only when
-the observed state is exactly *Working*, the Mac is on AC and the VS Code guard finds no running
-work; the switch itself repeats the AC, job and guard checks. Otherwise, including a Mac that was
-asleep at the start time, that night is skipped and the menu shows the reason. Saving the window
-while inside it never enters it that night. The usual 15-minute idle return and battery pause
-still apply. At the end time the agent returns to Working only if the window entered the session
-and no manual switch, Start/Stop or `schedule off` has happened since; those end its ownership.
-Days name the night by its start day. Jobs and gateway requests still never enter Inference; a
-job cannot set the window, and the window's entry is refused in job context.
-
-**Turning it all off:**
-
-```bash
-"$MAC_TOOLS/homelab-profile" schedule off
-launchctl bootout "gui/$(id -u)/org.homelab.menu"
-rm "$HOME/Library/LaunchAgents/org.homelab.menu.plist"
-rm -rf "$HOME/Applications/HomeLab.app"
-```
-
-The profile agent and its idle return and jobs keep working without the app. The app wrote
-nothing for usage, so there is nothing else to remove.
-
-## Per-profile service and model policy
-
-Use the installed command for all profile file reads and writes. `profiles-show` emits the
-resolved configuration. `profiles-set` accepts a complete version-2 JSON object on stdin,
-validates the whole document before any side effect and writes atomically. Edits to the
-currently observed profile’s services apply immediately through the switch’s native preset
-renderer, reload and on-model loading; edits to the other profile apply at its next switch.
-Custom state is left alone. An apply failure leaves the profiles file unchanged and attempts
-to restore the previous services; if that restoration fails, the command asks for a switch
-to the previous profile. Paused Inference keeps its router models paused until AC resumes it.
-Settings, app lists and job fields edited through the CLI still take effect at the next switch. Both Working and
-Inference must be present; their settings/app/job fields retain the existing rules.
-
-```bash
-"$MAC_TOOLS/homelab-profile" migrate
-"$MAC_TOOLS/homelab-profile" profiles-show
-"$MAC_TOOLS/homelab-profile" status
-# Export privately, edit, then validate/save through the same command:
-PROFILE_EDIT=$(mktemp)
-chmod 600 "$PROFILE_EDIT"
-"$MAC_TOOLS/homelab-profile" profiles-show > "$PROFILE_EDIT"
-# Edit "$PROFILE_EDIT" with the owner's editor.
-"$MAC_TOOLS/homelab-profile" profiles-set < "$PROFILE_EDIT"
-rm "$PROFILE_EDIT"
-```
-
-`profiles.json` has `"version": 2`. Each profile's `services` changes from a list into a map
-with exactly `vision`, `embed-large-bulk`, `cleanup`, and `voiceink`. A routed service looks
-like this (ids are placeholders):
-
-```json
-{"state": "on request", "allowed": ["model-a", "model-b"], "default": "model-a"}
-```
-
-The states are `off`, `on request`, and `on`. Cleanup and VoiceInk accept only
-`{"state": "off"}` or `{"state": "on"}`. Even an *off* routed service retains its nonempty
-allowed list and default for later use. Lists must contain distinct registered ids for that
-service, and the default must be in the list. Unknown services, states, models, versions,
-missing fields and line-break injection are rejected.
-
-A private sibling `~/.config/homelab/models.json` is the available-model registry:
-
-```json
-{
-  "version": 1,
-  "services": {
-    "vision": {
-      "model-a": {
-        "model": "/private/example/model.gguf",
-        "flags": {"mmproj": "/private/example/projector.gguf", "ngl": "99", "c": "16384"},
-        "memory_mb": null
-      }
-    },
-    "embed-large-bulk": {
-      "model-b": {
-        "model": "/private/example/embedding.gguf",
-        "flags": {"embeddings": "true", "pooling": "last", "embd-normalize": "2"},
-        "memory_mb": null
-      }
-    }
-  }
-}
-```
-
-Registry ids are unique ASCII letters/digits with dots, underscores or hyphens (1–96 chars).
-Paths are absolute and single-line; only the supported model/preset flags are accepted, never
-listener, logging or download flags. Memory is null or a positive measured integer in MiB; see
-[registration and measurement](#registering-and-measuring-mac-models) below.
-
-Migration is explicit and idempotent. It saves original bytes once as
-`profiles.json.v1.bak` (`0600`), resolves old defaults, converts each allowed routed service
-to *on request* and each disallowed one to *off*, and converts dictation services to *on/off*.
-The registry starts with ids `vision` and `Qwen3-Embedding-4B`, their exact current paths and
-flags from the template, and unknown memory. Each is its service's only allowed model and
-default, including when off. App lists, job permissions and intervals survive. Legacy Working
-power fields are validated then removed. No model is loaded by migration and no profile is
-switched. The legacy running allow-list remains observable until the next switch; Working and
-Inference preserve their current permissions and model behaviour.
-
-A purpose request selects its default; `<purpose>-<id>` selects that allowed model. For example,
-`vision-vision` and `embed-large-bulk-Qwen3-Embedding-4B` select the migrated models. Native
-aliases share the same child with the purpose name. The legacy `Qwen3-Embedding-4B` upstream
-name remains an alias for the embedding default. The gateway has two bounded native LiteLLM
-patterns, `vision-*` and `embed-large-bulk-*`; a new registered model needs no gateway code or
-configuration entry. Other names retain their existing refusal. Embedding responses retain
-the real registered model id, and the default Qwen vector space and role prefixes stay intact.
-
-`status` adds `profiles` (each profile's states, allowed models and defaults) and per-service
-`configured_state`, `allowed_models`, `default`, and observed `models`. The existing `state`
-remains the native default-model load state for the menu client. Sleeping is normal for *on
-request*; an *on* service whose model is no longer loaded makes the observation custom.
-Native aliases and idle settings are checked too. The existing `allowed`/`running` fields
-remain compatible with the menu app. Manual `start` permits an on-request routed service;
-`stop` makes it off in runtime policy without editing either saved profile.
-
-After merging and installing from main, deploy the gateway only after the med-ask ingest
-check, then run this outside the sandbox, on AC, starting from exact Working:
-
-```bash
-"$MAC_TOOLS/homelab-profile" migrate
-"$MAC_TOOLS/homelab-profile" status
-uv run python tests/mac_profile_models_acceptance.py cycle
-"$MAC_TOOLS/homelab-profile" status
-```
-
-The acceptance script saves a private recovery file, reads/writes profiles through the installed
-command, temporarily permits vision in Working, and checks both existing purposes **from the
-node through LiteLLM** with a synthetic red image and embedding cosine ≥0.999 against the node.
-It adds a second small-context embedding preset using the already-installed weights, makes
-both models *on*, and verifies both are loaded immediately after the switch, before inference.
-It then checks purpose/default and both explicit model names from the node and requires an
-unallowed model to return the fixed 503. Finally it restores the real profiles, registry and
-Working policy, even on a failed probe. It never changes apps or system-setting expectations.
-If interrupted, run `uv run python tests/mac_profile_models_acceptance.py restore`; the private
-backup is retained until restoration succeeds. Do not start an ingest during the cycle.
-
-### Registering and measuring Mac models
-
-The router's startup port probe sets `SO_REUSEADDR`, matching the native listener, so
-TIME_WAIT from its own closed health-check connections does not delay a stop/start.
-An active listener still refuses startup; `SO_REUSEPORT` is not enabled.
-
-The installed command downloads and test-loads a new model before making it available:
-
-```bash
-"$MAC_TOOLS/homelab-profile" model add embed-large-bulk MODEL_ID \
-  --like EXISTING_ID --url https://huggingface.co/OWNER/REPO/resolve/main/MODEL.gguf
-# Vision also requires --projector-url https://huggingface.co/OWNER/REPO/resolve/main/PROJECTOR.gguf
-"$MAC_TOOLS/homelab-profile" model measure vision vision
-"$MAC_TOOLS/homelab-profile" model measure embed-large-bulk Qwen3-Embedding-4B
-"$MAC_TOOLS/homelab-profile" status
-```
-
-`--like` names an existing entry in the same service. Its exact preset flags are copied;
-vision's projector path is replaced with the new download. Files go into a new `MODEL_ID/`
-directory beside that entry's configured model file. The private registry supplies this path;
-there is no checkout path, download directory or model URL embedded in the application.
-Existing directories are never overwritten. Both files' published sizes are checked together
-before downloading: less than 20 GiB remaining refuses the operation. Each file must have a
-published SHA-256 in Hugging Face's linked ETag (or a SHA-256 ETag for a direct response).
-Missing hashes stop registration; a mismatched hash/size removes the partial download.
-
-The test load runs a separate llama-server on an ephemeral loopback port with those flags,
-a temporary isolated cache and disabled content logging. It does not unload, reload or edit
-any live router model. Once native health reports ready after warmup, the largest of three
-current process-family Darwin physical-footprint samples, 200 ms apart, is added to the
-configured GGUF and projector file sizes, then rounded up once to MiB and stored in
-`memory_mb`. Each distinct file is charged once, including when paths are hard links.
-Physical footprint includes charged Metal allocations but omits clean mapped weights; the
-file charge accounts for those weights instead of treating them as free. This is conservative:
-backends that copy weights into charged allocations can count some weights twice. It is a
-budget allowance based on a real test load, not an exact resident-page or GPU-wired counter,
-and does not guarantee memory needed by every later request. Test loading can need additional
-memory alongside live models. Run measurements when the Mac is idle; a failed load registers
-nothing. Its child is terminated on success, failure or interruption. `model measure` uses the
-same load to update an existing entry, leaving its old measurement intact on failure.
-
-The registry is still version 1 with the same entry fields; `memory_mb` now means accounted MiB
-(the historical field name is retained). Registration writes it atomically under the profile
-state lock, after re-reading and validating current entries. Network and test-load work happens
-outside that lock. A failed operation removes only the new directory it created. A new entry
-is available in `status.model_registry`, with its memory, **allowed in no profile**. No live
-preset changes. The owner can later select it in profile policy. Restart the router after
-registry additions before using them, so native capacity covers the full registry.
-
-There is no remove command. To retire a model, first export profiles with `profiles-show`,
-remove its id from every allowed list (select a different default), save with `profiles-set`,
-and switch to the current desired profile through the normal command. Do not remove the last
-available/allowed model for a service. Back up `~/.config/homelab/models.json` privately, edit
-out the unused entry with the owner's editor, then run `profiles-show` to validate it and
-`status` to confirm it is absent. Retain its downloaded files until the owner chooses to
-remove them. Never remove an entry while a registration/measurement is in progress.
-
-### Profile memory budgets
-
-Version-2 profiles accept an optional positive integer `memory_budget_mb` in MiB. Omitted
-values resolve to 16384 for Working and 40960 for Inference. `migrate` explicitly adds these
-defaults to existing version-2 files, preserving the original bytes once in
-`profiles.json.budget.bak` with mode `0600`; repeat migration is a no-op. Version-1 migration
-retains its existing backup and also includes the budgets. No version bump is needed for
-this optional addition. For example (all ids and paths above are placeholders):
-
-```json
-{"memory_budget_mb": 16384, "services": {"vision": {"state": "on request", "allowed": ["model-a"], "default": "model-a"}}}
-```
-
-This fragment belongs inside a complete profile, retaining the other service/app/settings/job
-fields. Use `profiles-show` and `profiles-set` for edits. The checked amount is the sum of all
-allowed models of *on* services plus the largest allowed model across *on request* services;
-*off* services contribute nothing. `status.memory_budgets` reports each profile's limit,
-`required_mb`, `known_mb`, `unknown_models`, `over_budget` and `warning`. `required_mb` is null
-when any included model has unknown memory. `known_mb` is then only a lower bound; it can
-still prove a budget exceeded. No unknown model is guessed. Over-budget saves warn on stderr
-but succeed, and status carries the same warning for the menu client. Budgets never block
-switching or inference.
-
-The gateway translates the Mac router's native `model name=… failed to load` error to HTTP
-503: “The Mac could not load this model now (often for lack of memory); try later”. This is
-an honest generic load failure, not a diagnosis of memory pressure. At llama.cpp commit
-`d81235049`, child load failures share exit code 1; router HTTP errors do not distinguish
-allocation failure from other causes. The translation adds no memory precheck, retry, proxy
-or fallback. Existing transport behaviour is preserved: router retries are disabled, but the
-pinned upstream SDK can repeat 5xx attempts before the failure hook runs. Unavailable-profile and battery-pause refusals retain their existing wording;
-unrelated upstream failures retain the sanitised generic error. Deploy this gateway change
-only after the orchestrator's med-ask ingest check.
-
-The post-merge memory-error acceptance test uses a disposable native router with the same
-presets, injecting `ENOMEM` only into native children's file mappings of at least 256 MiB.
-It exercises the real native load failure without exhausting RAM or changing a GPU limit.
-The normal login router is briefly unavailable; require exact Working, no running jobs,
-unloaded/sleeping models and the med-ask clearance. It verifies both an injection marker and
-the node's HTTP 503 answer, then restores the normal router in `finally`. Nothing is installed
-in launchd for the test. If interrupted, rollback first:
-
-```bash
-uv run python tests/mac_model_memory_acceptance.py restore
-# Only after clearance, run the test (it restores itself even on failure):
-uv run python tests/mac_model_memory_acceptance.py cycle
-"$MAC_TOOLS/homelab-profile" status
-```
-
-The shim and marker stay in private `~/.local/state/homelab-model-memory-acceptance/`;
-`recovery.json` is removed only after the normal router starts again. This simulates an
-allocation failure; it does not measure behaviour under actual system-wide pressure.
-
-
-## Mac action listener
-
-The owner's launchd user agent accepts only `POST /backup` with an empty body on TCP 8091,
-bound to the Mac's runtime Tailscale IPv4. Extend the tailnet grant so only the node can reach
-this port before installing it. There is no listener key; the tailnet rule is the gate.
-The agent runs as the logged-in owner, using the same SSH key and `homelab-agent` configuration
-as the manual copy. Install the Mac tools first; the listener and its copy dependency run
-from the installed directory with the recorded interpreter:
-
-```bash
-"$MAC_TOOLS/homelab-listener" install
-"$MAC_TOOLS/homelab-listener" status
-"$MAC_TOOLS/homelab-listener" stop
-"$MAC_TOOLS/homelab-listener" start
-"$MAC_TOOLS/homelab-listener" uninstall
-```
-
-Install writes `~/Library/LaunchAgents/org.homelab.listener.plist` with mode `0600`. launchd
-starts it at login and restarts it after exit; `stop` unloads it until `start` or the next login.
-Uninstall removes the plist and unloads the agent, retaining private logs in
-`~/.local/state/homelab-listener/listener.log` (directory `0700`, creation umask `0077`).
-`status` reports the launchd process state; confirm its actual binding with
-`lsof -nP -iTCP:8091 -sTCP:LISTEN`. Only the Tailscale address must appear. Tailscale being down
-prevents binding; launchd retries. The agent does not keep the Mac awake.
-Click Allow if macOS asks about removable-volume access or incoming connections. If an Allow
-click cannot resolve volume access, stop and investigate before changing the security setup.
-
-Requests carry no arguments, paths or commands; other actions or request bodies receive 404.
-One copy runs at a time; concurrent requests receive 409 (`busy`). The listener checks for
-`/Volumes/SD Card`, runs the existing copy command with a 180-second timeout, and returns JSON
-status `no-card`, `done` (file name and bytes only), or `failed` (fixed short reason).
-A timeout kills the copy and its SSH child; partial files remain and are never overwritten.
-Default HTTP access logging is disabled; the private log contains result and byte metadata.
-No copy content passes through this channel.
-
-After merging, install the changed bot files and reminder from the node clone after showing
-`sudo diff`, using the modes in AGENTS.md. Configure the private listener URL as described in
-[Rebuilding the node](#rebuilding-the-node), then restart only
-`homelab-telegram-bot.service`. Validate `/backup` with the card ejected, inserted, and the
-agent stopped; restart the agent afterwards. Verify the card file and
-`sudo homelab-copy status` timestamp/bytes on the node. From the node, an empty POST to an
-unknown listener path must return 404. The privileged router gate also applies to `/backup`.
-
-## Mac vision measurements
-
-`mac/vision_bench.py` benchmarks native Metal llama.cpp on macOS. It starts each supplied
-GGUF with its projector on `127.0.0.1`, measures launch-to-health readiness and Darwin's
-lifetime peak physical footprint plus the GGUF and projector file sizes, then stops it,
-including on interruption. This sum estimates memory including mapped weights; it may
-double-count resident mappings and is not a direct resident-set measurement. No service is
-installed and no node or model route is changed. Install `brew install llama.cpp`, then run:
-
-```bash
-uv run --group benchmark python mac/vision_bench.py --help
-uv run --group benchmark python mac/vision_bench.py \
-  --model '<NAME>' '<WEIGHTS-GGUF>' '<MMPROJ-GGUF>' \
-  --sample '<PDF-OUTSIDE-GIT>' '<ONE-BASED-PAGE>' en prose score \
-  --results-dir "$HOME/vision-bench-outputs/numbers" \
-  --outputs-dir "$HOME/vision-bench-outputs"
-```
-
-Repeat `--model` and `--sample` for identical samples across sequential candidates.
-Languages are `en`/`es`; kinds are `prose`/`table`/`figure`/`scan`; modes are `score`/`judge`.
-Defaults: 150 DPI, 16384 context tokens, 4096 completion tokens, temperature/seed zero,
-no prompt cache. Page timings cover HTTP image prefill and generation; rendering is separate.
-The default prompt and figure descriptions remain available. Use `--prompt exact` for the
-verbatim transcription prompt and `--no-figures` to omit figure descriptions. Reconciliation
-uses `--reconcile '<OUTPUT-A-DIRECTORY>' '<OUTPUT-B-DIRECTORY>' --dpi 300`: each indexed
-`NNN.text.txt` pair and one image go into one chat request with the fixed reconciliation prompt.
-Missing/empty inputs record a page failure. Supply identical ordered samples for both inputs.
-Use `--run-name v2-r1` (one model per invocation) to name both the output subdirectory and
-numeric JSON file; existing result files or output directories are refused.
-
-Normalisation applies Unicode NFKC, removes soft hyphens, joins words hyphenated at line ends,
-casefolds and collapses whitespace. Word bags use whitespace tokens, retaining punctuation
-and repeated-word counts. Primary recall, precision and F1 aggregate matched token counts over
-all valid reference/output tokens, independent of reading order. CER/WER remain secondary
-Levenshtein scores after the same normalisation. References are `invalid_reference` when
-fewer than 80% of whitespace tokens are alphabetic after stripping Unicode punctuation
-(an empty reference is invalid). Invalid references are reported and excluded from accuracy
-aggregates; transcription still runs for visual review. Judgement pages have no accuracy score.
-Failure codes: 0 success, 1 request/render/input error, 3 truncated/non-stop completion,
-4 server startup failure. Startup failures record every sample. Latency includes failures;
-token means include successful calls only. Results report total invocation duration, cold load,
-file-size bytes, peak footprint bytes and their sum as `peak_memory_bytes`.
-
-Results contain numeric measurements only (language codes: en=0/es=1; kind codes:
-prose=0/table=1/figure=2/scan=3), with sample indices instead of paths or page numbers.
-Optional outputs retain images, reference text, transcriptions and figure descriptions for
-local review. All inputs and output directories must be outside every Git repository;
-nothing the benchmark reads or writes is committed. Keep private sample arguments locally.
-PDF rendering and scoring dependencies live only in the `benchmark` group, outside app images.
-Cold load means a fresh process, without evicting the operating system's file cache.
-
-## Code context server
-
-Mac coding clients start an MCP stdio session through the existing agent account:
-
-```bash
-ssh -T homelab-agent sudo -n /usr/local/sbin/homelab-context studio
-```
-
-Replace `studio` with a configured name. The node's private root-owned list is
-`/etc/homelab-context/repositories`, mode `0600`, one name per line; blank lines and `#`
-comments are allowed. Names use lowercase letters, digits, underscore or hyphen and start
-with a letter or digit. Each names a root-owned application clone at `/srv/homelab/<name>`.
-The list is not part of Git. Add or remove names in that private file, then run
-`sudo systemctl start homelab-context-refresh.service`. Removing a name stops serving it;
-the previously created derived copy is retained. A missing list, unavailable copy, unknown
-name or locked volume fails on stderr. The timer runs every five minutes and after unlock;
-when a client is connected a refresh can change the copy while the client is reading it.
-
-Copies and Serena's reusable symbol cache live under `/srv/homelab/.context/<name>/`,
-with the parent private to root. The container has one bind mount for the selected copy and
-its cache; root ownership keeps source and configuration read-only for its unprivileged user.
-It has no network, capabilities or access to other host paths. The container filesystem is
-read-only, with a temporary executable tmpfs for language-server binaries and logs. The six
-MCP tools find symbols, file overviews, references, declarations, implementations and patterns;
-there are no editing, shell, onboarding or memory tools. Source content is not logged by
-default. The image build requires Internet access, but sessions and local refreshes do not.
-
-After a merged update, install the files from the node checkout, showing diffs first as in
-[Rebuilding the node](#rebuilding-the-node), then build and start only these new units:
-
-```bash
-sudo docker build -t homelab-context:cx1 /opt/homelab-context
-sudo systemctl daemon-reload
-sudo systemd-analyze verify /etc/systemd/system/homelab-context-refresh.service /etc/systemd/system/homelab-context-refresh.timer
-sudo systemctl enable --now homelab-context-refresh.timer
-sudo systemctl enable homelab-context-refresh.service
-sudo systemctl start homelab-context-refresh.service
-sudo systemctl status homelab-context-refresh.timer
-```
-
-Build again after updating the image files. Refresh and serving need both the data volume and
-Docker; unknown names and locked volumes do not start a container. A new client starts its own
-container; quitting the MCP session stops it.
-
-## Coding tasks in a container
-
-The installed host scripts in this section are the stopped rollback path. Active ticket runs
-use the [runs service](#runs-service), which selects its worker from the executor table and
-has no per-ticket review. The host scripts below retain their optional review unchanged.
-
-`homelab-task-run` gives one ticket to the Pi agent and judges the result, one run at a time. By
-hand nothing is committed or pushed. See [Coding tasks](../ARCHITECTURE.md#coding-tasks) for the
-boundary; [the task runner](#the-task-runner) drives the same script for queued tasks.
-
-```bash
-sudo homelab-task-run --working-copy <path> --ticket <file> \
-  --check '.venv/bin/python -m pytest -q' --pin tests --pin pyproject.toml \
-  [--purpose task-worker] [--time-limit 30] [--max-requests 100]
-```
-
-The working copy is a clean uv project on Python 3.13 with a `uv.lock`, a real `.git` directory
-(not a worktree), an unprivileged owner, and no secrets: the model reads what the agent reads.
-The containers run as that owner, so changes stay in that account's ownership. HEAD is the base
-commit. `--pin` is repeatable. A pinned path must exist in the base commit and returns to it before
-the check, a directory exactly, so added files go too. Pin everything that decides the verdict,
-including `conftest.py` and the test configuration in `pyproject.toml`, or the agent can change it.
-`--time-limit` is minutes per container, 30 by default. `--max-requests` is the run's model request
-budget. Dependencies cannot change after prepare: the agent has no package index, and `.venv` is
-read-only. `uv run` needs no sync there. Prepare needs the stack's `package-proxy`. It retries `uv sync --locked`
-up to 3 times, 5 seconds apart, with a 120-second download timeout; after the third failure the run
-ends `prepare_failed`.
-
-`--allow <path>`, repeatable, with `--author-name` and `--author-email`, adds the commit step after
-a passing check. The agent must leave the message in `.task-commit-message`.
-
-`--review-purpose <purpose>` puts a review between a passing check and the commit step; it is
-refused without `--allow`, since a review only guards a commit, and without it no review runs. A
-second agent, with the model of that purpose and only `read`, `grep` and `ls` tools, reads the
-ticket, the allowed and pinned paths, the check command and the diff, and the repository with the
-working copy mounted read-only. It ends its reply with `VERDICT: PASS` or `VERDICT: FIX`, and a Fix
-carries short notes above that line. On a Pass the run goes on to the commit step. On a Fix the
-notes go to the worker in the same run and working copy: one more agent run, check and review.
-A second Fix ends the run `review_rejected`. Any reply that is not a clean verdict, a timeout,
-a spent budget or a non-zero exit ends it `review_failed`, and a diff over 256 KiB ends it
-`review_diff_too_large`; in all of these nothing is committed. The reviewer has its own token, for
-the review purpose only and 20 requests; the fix round's agent gets the request budget minus the
-steps already used, and with none left the run ends `agent_budget_spent`. **A review is not a
-security boundary.** The model reads untrusted text and can be wrong or talked round; only the
-commit step's rules on allowed paths and pins enforce anything.
-
-Each run leaves `/srv/homelab/task-runs/<run id>/`, root-only. A run's working copy keeps the
-agent's changes, with the pins restored, so use a fresh copy for the next run.
-
-| File | Holds |
+| When you | Follow |
 |---|---|
-| `run.json` | Base commit, purpose, pins, Pi turns as `steps`, `tokens` (`fresh`, `output`, `cached`, `cache_write`, as Pi reports them, including available compaction usage; both sum the worker's runs), `compactions` (starts), `retries` (automatic retry starts and summarization retry attempts), `end_event` (the last Pi end event and its retry or abort flag), `last_stop` (the last assistant stop reason), seconds, `check_exit_code`, `check_log` (the last check's log), `ended` (`model_error` for an assistant error); with a review also `reviews` (per review: `result` `pass`, `fix` or `failed`, `steps`, `tokens`, `seconds`) and `review_notes` (the last Fix's) |
-| `diff.patch` | Everything changed from the base commit except `.venv`, before pins were restored |
-| `check.log` | Output of the check |
-| `events.jsonl`, `agent.log` | Pi's JSON event log and its stderr |
-| `prepare.log` | Dependency installation |
-| `commit.log` | Why the commit step refused, if it did, naming the path |
-| `review.jsonl`, `review.log` | The reviewer's events and stderr |
-| `*-2.*` | A fix round's own `events`, `agent`, `diff`, `check` and `review` files; the first round's names stay |
-
-`ended` is `check_passed`, `check_failed`, `check_setup_failed`, `check_timeout`, `agent_failed`,
-`agent_budget_spent`, `agent_timeout`, `prepare_failed` or `prepare_timeout`, or `<step>_output_limit`
-after 256 MiB of output. With `--allow` a passing check goes on to `committed`, `commit_failed`,
-`commit_timeout` or `commit_refused_<reason>`, where the reason is `outside_allowed`, `pinned`,
-`guarded`, `submodule`, `no_message` or `no_change`. With `--review-purpose` a passing check can
-instead end `review_rejected`, `review_failed` or `review_diff_too_large`, as above, and a fix
-round ends as its steps do (`agent_*`, `check_*`). `interrupted` means the script was stopped.
-The command prints the same record and exits `0` only for `check_passed` and `committed`, `1` for
-any other finished run and `2` for a refused input, such as
-another active run or a locked volume. An agent that failed or timed out still gets a diff; its
-check result is kept but `ended` names the agent.
-
-A run needs the data volume, Docker, the stack and the image. Update the image deliberately:
-change the Dockerfile, install it as in [Rebuilding the node](#rebuilding-the-node) and run
-`sudo docker build -t homelab-task:3 /opt/homelab-task`. The build needs Internet access and fails
-if the pinned base has Node below 22.19. Tokens live in `/srv/homelab/task-tokens`, `root:10001`
-`0750`, and are hashes; `sudo rm` of a file there revokes a token at once. LiteLLM appends what
-each request cost to `/srv/homelab/task-costs/<token hash>` (`root:10001`, `0770`, cleared at the
-start of every run); the run reads and removes each file and reports `cost_usd` in its record, null
-when any part is unknown. Nothing but the numbers is in those files.
-
-### The legacy host task runner (rollback)
-
-`homelab-task-runner.service` is stopped and disabled since the switch to `runs` on 2026-11-17.
-It remains installed for rollback until its later removal. Do not start it while `runs` is
-active. If restored for rollback, it consumes the queue; see [Task runner](../ARCHITECTURE.md#task-runner).
-It follows the data volume and the stack. A stopped runner's task returns to the queue at its
-next start and runs again from a new clone.
-Its journal holds task ids, attempt endings and reasons, never task content. When a task ends
-`escalated` or `failed` it sends one phone notice, "Task: <id> <slice> <status> <reason>", through
-`homelab-queue-notice --task`; if that fails, the journal says `notice failed` and the queue goes on.
-Attempt and review traces carry `cost_usd`, the amount LiteLLM billed, empty when it could not be
-measured in full.
-
-Every run it makes asks for a review, by the first usable `litellm` route of the `ticket-reviewer`
-role in `homelab_roles`; a task with none ends `escalated`, `no_usable_review_route`, before any
-attempt. A `review_rejected` attempt gets one more try on the same route from a fresh clone, with
-the reviewer's notes in the ticket; `review_failed` and `review_diff_too_large` go to the next route.
-Each review is a `review` trace of role `ticket-reviewer`.
-The seeded reviewer route uses `task-worker`. The `task-reviewer` purpose uses the same model
-with reasoning disabled; selecting it for the reviewer is an operator update to `homelab_roles`.
-
-The worker also accepts `{"kind":"cli","tool":"codex","model":"<model>","effort":"high"}`.
-The model and effort come from the role table; supported effort values are `none`, `minimal`,
-`low`, `medium`, `high` and `xhigh`. Unsupported tools or malformed routes are skipped. A CLI
-route is always refused for the reviewer. The seeded worker route stays on LiteLLM: selecting
-CLI execution is an operator update of `homelab_roles`, not a deployment default.
-
-A CLI route replaces only the worker turn, through the installed `homelab-fence run --tool codex`.
-Prepare, the done check, LiteLLM ticket review, the commit, push and retry rules stay the same.
-The CLI gets the same ticket text, including earlier check or review feedback; a review Fix
-runs another CLI turn with the notes against the current task tree. Each CLI turn has a fixed
-20-minute timeout, independent of `--time-limit`. A timeout ends the attempt as `cli_timeout`,
-a nonzero exit or a failed CLI invocation as `cli_failed`; both advance to the next route
-without a retry on that route. A failed check still retries once from a fresh clone.
-
-The CLI sees a plain copy at `/srv/factory/work/ticket-<task id>-<attempt>`, with no `.git`
-anywhere in it and no prepared `.venv`. Its run folder is the same name under
-`/srv/factory/runs`. Both folders are `21000:21000`, mode `0700`; the platform fence
-owns the sealed container, tool login and allow-list proxy. The runner passes only those two
-host folders, the configured model and effort, and the ticket. It passes no gateway token,
-key or inherited credentials. It discards CLI stdout and stderr.
-
-After a successful turn, only regular files within `allowed_files` return to the task copy.
-Pins never return, even when also allowed. Neither source nor destination links are followed;
-Git metadata and `.venv` never return. Other file changes (including deletions) are ignored,
-with only their count in the journal and `run.json`'s `cli_ignored_changes`. Returning bytes
-creates new regular files owned by the task user; executable bits are preserved. The plain
-copy and CLI run folder are removed after each turn, including failure or timeout.
-**Include `.task-commit-message` in a CLI ticket's `allowed_files`** if it is to commit: this
-metadata follows the same import rule, and the existing commit step still requires it and
-excludes it from the commit. A missing message ends `commit_refused_no_message`.
-CLI worker steps and tokens stay zero and `cost_usd` is absent: subscription usage was not
-measured. Review usage and cost remain separate and measured through LiteLLM.
-
-```bash
-sudo systemctl status homelab-task-runner.service
-sudo journalctl -u homelab-task-runner.service -n 50
-sudo docker exec homelab-postgres-1 psql -U homelab -d homelab -c \
-  "SELECT id, slice, position, status, reason FROM homelab_tasks ORDER BY id DESC LIMIT 20"
-```
-
-Each repository it pushes to needs a deploy key with write access at
-`/root/.ssh/task-push-<repository name>`, `root:root` `0600`, and each task a branch that exists
-and is not the default. Without the key a task runs through its commit and ends `escalated`,
-`push_key_missing`. The commit author is set in the unit; change it with a drop-in.
-
-A slice stops at its first `escalated` or `failed` task. To go on, fix the cause, then requeue that
-task and any other task of the slice that lost its job, one id at a time:
-
-```bash
-sudo docker exec homelab-postgres-1 psql -U homelab -d homelab -c \
-  "UPDATE homelab_tasks SET status = 'queued', reason = NULL, finished_at = NULL WHERE id = <id>"
-sudo docker exec homelab-worker-1 procrastinate --app homelab.jobs.app.app defer \
-  run_coding_task '{"task_id": <id>}'
-```
-
-Clear the status of every stopped task in the slice before deferring, or the claim discards the job.
-Dependents need neither: they are released as their dependencies finish.
-
-`package-proxy` is built by Compose with the rest of the stack. Its journal lists the hosts prepare
-asked for, and what it refused. To allow another host, add a line to
-`node/opt/homelab-package-proxy/package-hosts`.
-
-### Runs service
-
-`runs` is the container version of the task runner, in the platform image, running as
-`21020:21020`. Its command is `python -m homelab.runs`. It is defined under the Compose
-`runs` profile, with `restart: "no"`; the node's private environment sets `COMPOSE_PROFILES=runs`,
-so ordinary `homelab.service` starts include it. Since the switch on 2026-11-17, it is the
-execution service. The old `homelab-task-runner.service` is stopped and disabled, retained only
-as the rollback until its removal. The host's two task scripts and runner unit remain installed.
-
-**Ticket path.** `config/executors.yaml` selects real ticket workers; eval marks select an exact entry.
-Its `ticket` row matches the `slice` row at every level: light Codex gpt-6-luna low then Claude
-sonnet; standard Codex gpt-6.1-terra medium then Claude sonnet; strong Codex gpt-6.1-sol high then
-Claude opus. Tickets are always available on the serial `tasks` queue, independently of
-`HOMELAB_RUN_ROLES`. Both harness workers use `slices.command` and the launcher `cli-run`
-profile, passing the intact ticket in the existing stdin envelope's `work.ticket` field so
-contract-sized goals and assets fit; no Codex-specific command wrapper remains. The first
-usable entry runs; fallback is only for a usage limit, using the slice thresholds and the shared hourly Claude probe cache.
-With none usable the run waits `usage_limit`, records `resume_at`, and Procrastinate schedules
-the task's retry at the earliest reset. Unknown readings wait an hour.
-
-A ticket keeps its fresh clone, prepare, pins, allowed-file import, check, commit and push.
-A failed check gets one retry from a fresh clone with its output as feedback, then escalates;
-other execution failures escalate without trying the next entry. The existing one rerun after
-a rejected push remains. There is no review step, review purpose, reviewer route or review
-feedback in this service. The client reviews the slice before merge. `homelab_roles` is never
-read by `runs`; it and the installed host runner remain for rollback. No schema migration is
-needed. Pi ticket entries run their named configuration. Eval tickets use the supplied executor
-and the same pipeline, delivering only to `eval/` branches after the normal private-content check.
-
-Private ticket files live under `/srv/homelab/runs/<run id>/`, owned by uid 21020, mode 0700:
-
-| File | Holds |
-|---|---|
-| `run.json` | Run id, base/working copy, purpose, pins, check command and exit code, `check_log`, commit, ending and times. Pi retains its configuration manifest/hash/source commit, `steps`, `tokens`, `compactions`, `retries`, `end_event`, `last_stop` and measured `cost_usd`. Harness runs add `executor`, hash that selection in `configuration_hash`, report available harness requests/tokens/cost and `cli_ignored_changes`; unknown cost is absent. No `review_purpose`, `reviews` or `review_notes`. |
-| `prepare.log` | Dependency installation |
-| `diff.patch`, `check.log` | Diff before pin restoration, and check output |
-| `events.jsonl`, `agent.log` | Pi events/stderr, only for Pi workers |
-| `commit.log` | Commit refusal details, when present |
-
-Each retry has a fresh run folder. There are no review files or review fix-round files.
-Harness stdout/stderr and transfer files are removed after each turn. The plain CLI copy is
-removed after the turn, and the task copy after the task finishes or waits. Only allowed,
-unpinned regular files and `.task-commit-message` return; links, deletions, `.git` and `.venv`
-do not. The commit-message file is metadata and need not be listed in `allowed_files`.
-Run and attempt executor/hash fields reflect the worker that ran, including fallback.
-After merge, **Restart the platform on the merged commit**. The client verifies one eval slice
-and one sealed check on a public repository; this implementation does not run those node steps.
-
-**Whole-slice, cut and review path.** The node's private environment sets
-`HOMELAB_RUN_ROLES=slice,cut,review`, passed independently to the API and `runs`. Review
-requires `mode: read`; slice and cut support either mode. A write cut can commit the ticket
-flow’s failing tests. Explicit `limits` remain unsupported.
-
-These roles use Procrastinate's separate `runs` queue, two CLI worker slots and repository
-locks, across all three roles. Tickets retain their independent one-at-a-time loop. Ordered
-dependencies and cancellation remain application-owned. Real executor choice comes from the
-role/level list in `config/executors.yaml`; eval marks supply an exact executor with no fallback.
-
-| Role | Light | Standard | Strong |
-|---|---|---|---|
-| `review` | Claude sonnet, then Codex gpt-6.1-sol high | Claude sonnet, then Codex gpt-6.1-sol high | Claude opus, then Codex gpt-6.1-sol high |
-
-Claude uses its default effort. Codex's launcher `usage` reading
-permits five-hour usage below 99%. Claude permits below 90% from a reading less than an hour
-old, or after the reset; its short probe is lazy, only when needed, after 30 minutes of age,
-and at most hourly. Weekly windows accompany both readings. Probe attempt times survive a
-restart, including failures. No usable choice means `waiting: usage_limit` with the earliest
-reset as `resume_at` and a scheduled automatic retry. Missing windows fail closed and retry
-in an hour. A turn ending at a usage limit waits for its executor's reset in the same session.
-
-The launcher creates each `run-<uuid>` work/run pair under the existing Factory roots, owned
-by uid 21000; `runs` mounts neither tree. There is no retained mirror. A fixed clone, without
-hardlinks, uses the existing branch, or the current remote default tip for a new branch.
-Its one-repository App token is an environment-only Git authorization header, scoped to
-GitHub HTTPS with redirects disabled. Neither URL, argv nor copy configuration stores it;
-the clone has no harness logins. Offline data containers set the branch, fixed committer and
-final-message schema. The harness gets its configured executor and the work policy/assets.
-`cli-run` alone has the logins. `read_only: true` makes the complete `/work` bind read-only;
-the run folder `/run/factory` stays writable for final-message output. Absent or false retains
-today's writable copy. Read turns never bundle or push.
-
-Whole-run prompts use `cli-run`'s optional `stdin: true`, with a third readable regular-file
-descriptor containing JSON `{goal, assets, work?}`. The launcher snapshots and validates it:
-at most 200,000 goal characters, 32 assets totalling at most 200,000 UTF-8 JSON bytes, and
-4 MiB for the complete envelope. NULs, malformed JSON and excess limits are refused before
-container creation. It renders the goal, work policy and assets into an anonymous memory
-file used only as Docker stdin. Codex reads `-`; Claude reads its piped prompt. No prompt
-enters request argv, launcher records or logs. Existing callers without the flag retain
-their two-descriptor, no-stdin behavior. The socket request limit remains 64 KiB.
-
-Write turns export through `bundle` with `stream: true`, which returns Git bundle bytes on
-stdout instead of writing `branch.bundle`. Existing bundle callers keep their file output.
-`runs` verifies outside the copy: exactly `HEAD` and the branch at the same tip, successful
-`git bundle verify`, and descent from `base_commit`. Every changed path in the base-to-tip
-diff must be within `allowed_files` (null means unrestricted, empty means none) and outside
-`pinned_paths`, including deletions and rename sources. Refusal ends
-`failed: outside_allowed_files` before push. Delivery rechecks the authenticated remote
-default, scans every outgoing public commit with the deny list/canary, and pushes with a
-fresh App token and no force. Deny hits, an unreadable deny list and rewritten branches
-end `failed: push_refused`, without matched content, filenames or lines in the reason.
-
-Final kinds map to resumable states: `handover` to `done`, `question` to `question`,
-`escalation` to `escalated`, and `waiting` to `waiting: client_step`. A message resumes the
-same executor/session and retained copy and adds one attempt. `message_id` is unique per
-run, so retries
-add no extra turn. A completed run cannot resume onto a branch occupied by its successor.
-Usage waits resume automatically; client messages do not bypass that reset. Delivered tips
-are recorded in `commits`; final text is stored only in the application-owned run record.
-Transient CLI captures are removed with each private turn folder. Retained copies belong
-to the harness account, never to `runs`. The whole-run loop asks the launcher’s
-`cli-remove` to remove both work and run folders immediately on failure or cancellation
-(and retries on each queue poll), and sweeps other end states hourly, once three days have
-elapsed since the last turn ended. Queued/running copies are excluded; the store lock
-excludes a racing claim/message, and a launcher refusal means try later. Incomplete
-preparations are tracked for cleanup too. Removing a copy sets `resumable: false` and
-clears copy readiness, while keeping the harness session in its login. A later message to
-an uncancelled conversation queues `prepare` again from the branch, then resumes that
-session with its original executor. Cancellation still prevents messages. Usage-reset
-scheduling and message deduplication remain in force even after copy removal.
-
-At startup, launcher recovery removes this caller's task, CLI, bundle and usage containers
-before database recovery. Each interrupted attempt ends `failed: interrupted`; the run queues
-once. A second interruption fails it permanently and cancels queued descendants. The lifetime
-runner locks and watchdog remain in force while workers stop. No new uid, network, host bind,
-Docker socket access or login access for `runs` is added.
-
-For tickets, the queue/store, one retry with check output, check, commit, costs and
-attempt records use the task machinery. CLI workers keep the
-existing launcher `cli-run` profile and their 20-minute turn limit. Networkless `data` task
-containers export/import regular files through pipes; only allowed, unpinned regular files
-return. Deletions, links, Git metadata and `.venv` do not return. The launcher creates the
-CLI's `ticket-<id>-<attempt>` work/run folders as uid 21000 and removes them after a turn.
-Neither those folders nor task copies ever belong to `runs`.
-Whole-run CLI turns retain the profile's absent deadline, with prompt cancellation on
-shutdown; clone, probe and ticket/check deadlines remain separate.
-
-`runs` asks the launcher to create each fresh task folder as the existing `homelab-task`
-account (neither root nor uid 21020). The `task-work` parent must remain root-owned 0755.
-The only work mount in `runs` is read-only. The launcher rejects overlapping shapes and
-folder lifecycle operations on one work id, including CLI transfers, so another container
-cannot swap a bind source during validation. Clone happens in a fixed `task` clone shape:
-only `/work` is bound, no logins, on the existing `homelab-fence` network through
-`http://cli-proxy:8888`. The launcher validates repository and branch and invokes system Git
-without a shell, using `--template= --no-tags --single-branch --branch`, an explicit GitHub
-HTTPS URL and `/work`; hooks and credential helpers are off. The other five shapes retain
-their networks, mounts, limits and commands. The launcher also offers authorized
-`task-create`/`task-remove`, `cli-create`/`cli-remove`, `task-image`, `task-recover` and `ping`
-operations. Task removal is fd-based and does not follow links; Factory provisioning/data
-access is restricted to `ticket-<id>-<attempt>` or `run-<uuid>` names and requires both
-`task` and `cli-run` permission.
-
-For pushes, a short-lived RS256 App JWT is signed with OpenSSL. Each push requests a fresh
-installation token restricted to that one repository with contents-write/metadata-read
-permissions. Git receives the authorization header only through its environment. Its URL
-and refspec are explicit, credential helpers/hooks are off, and a temporary Git directory
-exposes only the protected clone's objects/refs, never its config. The remote default branch
-and `main` are refused. The existing deny-list/canary scan runs before each push; it still
-fails closed for unknown visibility or an unreadable list. Marked writes push only to `eval/`
-branches; unmarked writes cannot push there. Both paths enforce this before delivery.
-See [GitHub's JWT contract](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
-and [installation-token parameters](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app).
-No Python JWT dependency is added.
-
-Private logs and run records live under `/srv/homelab/runs`, owned by uid 21020, mode 0700;
-eval tickets use the same attempt folders as real tickets. The active runner no longer exports
-eval diffs, and the API no longer reads them. Old mounts stay installed and unused.
-The `runs` journal contains ids and fixed reasons only. Failure notices use the same bounded
-`Task: <id> <slice> <status> <reason>` text, sent directly to the existing allowlisted chats.
-Notice failures do not change task status; no host/root helper is called.
-
-`runs` holds Postgres session advisory lock `(157442, 1)` for its lifetime; legacy claim and
-recovery commands take the same lock for their process. Before taking the lock, again after
-acquiring it, and before each queue turn, `runs` reads the host service's `cgroup.events` from
-a read-only bind of `/sys/fs/cgroup/system.slice`. A populated
-`homelab-task-runner.service` refuses startup with `legacy_runner_active`; unreadable/missing
-host state fails closed. The parent bind observes service recreation, unlike a file bind.
-If the old service starts later its claims cannot acquire the database lock. A session
-watchdog stops live containers on database connection loss; startup cleans up the caller's
-recorded launcher containers before recovering queue claims. Neither runner may bypass this
-check by unsetting or replacing the cgroup mount.
-
-The service mounts these paths, with `create_host_path: false` throughout:
-
-| Host path | Container path | Access / preparation |
-|---|---|---|
-| `/run/homelab-launcher.sock` | same | Socket; supplementary group from `HOMELAB_LAUNCH_GID` |
-| `/sys/fs/cgroup/system.slice` | `/run/host-services` | Read-only service state; no systemd API |
-| `/run/lock` | `/run/host-locks` | Read-only parent of the unchanged manual-run flock |
-| `/etc/homelab/runs` | `/run/secrets` | Read-only per-service credential copies |
-| `/srv/homelab/task-work` | same | Read-only, root-controlled parent, task-owned children |
-| `/srv/homelab/runs` | same | New private state, uid 21020, 0700 |
-| `${HOMELAB_TASK_TOKENS_PATH:-/srv/homelab/task-tokens}` | `/srv/homelab/task-tokens` | Token files; switch preparation below |
-| `${HOMELAB_TASK_COSTS_PATH:-/srv/homelab/task-costs}` | `/srv/homelab/task-costs` | Cost files; switch preparation below |
-| `${HOMELAB_TASK_RUNS_PATH:-/srv/homelab/task-runs}/eval-diffs` | `/srv/homelab/runs/eval-diffs` | Legacy mount, unused by active runner/API; retained for rollback |
-
-The orchestrator creates `/etc/homelab/runs` as uid/gid 21020, mode 0700. Every file below
-is owned by uid/gid 21020, mode 0400; never commit their values or bake them into an image.
-
-| File in that directory | Source / purpose |
-|---|---|
-| `runs-app.pem` | Copy of `/etc/homelab/runs-app.pem`; App signing key |
-| `runs-app.json` | Copy of `/etc/homelab/runs-app.json`, exactly `app_id` and `installation_id` integer fields |
-| `deny-list` | Read-only copy of `/etc/homelab/deny-list`, including its current entries; code adds the canary |
-| `bot-token` | Per-service copy of the existing notifier's Telegram token, supplied by the orchestrator |
-| `bot-allowlist` | Copy of `/etc/homelab-telegram-bot/allowlist`, the same notice recipients |
-
-A refreshed deny list requires refreshing its service copy before any run. Obtain the bot
-token from the owner's provisioned credential source; do not put it in a command argument,
-environment file or journal. The App's original root-only key remains 0600. App ids are
-provisioned on the node, never in repository configuration. Set `HOMELAB_LAUNCH_GID` in the
-node's existing `.env` to `getent group homelab-launch`'s gid; the closed default 65534 gives
-no launcher access. Supplementary group 10001 supplies API/gateway shared-file access.
-The database login comes from the same `HOMELAB_DB_PASSWORD` interpolation as the API.
-
-**After merge and owner review, installation only:**
-
-1. In `/srv/homelab/homelab-v2`, run `git pull --ff-only` by hand. Wait for launcher
-   clients to be idle. Save the installed launcher, profile metadata and launcher unit for
-   rollback. Show each diff against the committed `node/` file before
-   installing. Stop `homelab-launcher.service` before copying the launcher and metadata.
-   Parse the Python/JSON and run `systemd-analyze verify` on the launcher unit
-   and socket. Install root:root, 0755 for the script and 0644 for metadata/unit.
-2. The launcher sandbox needs `/srv/homelab/task-work` in `ReadWritePaths` so it can create
-   task-owned folders. Keep every other sandbox setting. Run `systemctl daemon-reload`,
-   stop `homelab-launcher.service`, then restart `homelab-launcher.socket`. Restart Factory's
-   runner and sessions containers with their existing deployment commands so their file
-   binds see the new socket inode.
-3. Create the private state directory and per-service files listed above. Record the launcher
-   group gid in the private `.env`. Do not change token, cost or eval-export permissions
-   while the old runner is active; they are switch prerequisites.
-4. With the checkout updated, run `sudo systemctl restart homelab.service`. Verify that
-   `runs` has no running container.
-   Validate Compose with the profile off and on. Build the optional service explicitly:
-   `sudo docker compose --profile runs build runs`.
-5. Run `sudo python3 tests/launcher_task_probe.py` (the original boundary checks, ownership/clone
-   checks and both writable/read-only CLI probes), and `sudo homelab-check-fence --launcher`.
-   Require `PASS: cli-run without read_only runs with a writable /work mount`,
-   `PASS: read-only cli-run runs with a read-only /work mount; run folder stays writable`, and
-   `PASS: cli-run accepts a bounded prompt descriptor without a model call`.
-   The CLI probe runs `codex exec --help` and checks mounts from the installed launcher’s
-   arguments; it makes no model call. Also run the `--private` probe described below.
-   The ownership probe
-   creates and removes only its random scratch folder, clones the public platform `main`
-   through the fixed shape and makes no model call or push.
-6. With `systemctl is-active homelab-task-runner.service` reporting `active`, run
-   `sudo docker compose --profile runs run --rm --no-deps runs`. Require exit 2 and
-   `runner refused reason=legacy_runner_active`, with no recovery or claim. Verify again
-   that no `runs` container is running. Leave the old runner enabled and active.
-
-**Switch prerequisites:** token and cost directories need owner 21020, group 10001,
-mode 0750 and 0770 respectively. Final diff exports need owner 21020, group 10001,
-mode 0750 (files 0640). The lock is root:10001, mode 0640. `runs` holds an exclusive
-flock through its read-only bind; a missing or unreadable lock fails closed. The tmpfiles
-rule below recreates it at boot without truncating or replacing an existing lock inode.
-These prerequisites were checked as part of the completed switch. The steps remain useful when
-reconstructing the node or preparing a future rollback; the live profile and role settings are on.
-
-### Runs rehearsal on the node
-
-After merging, the orchestrator runs this procedure as root in the merged checkout. It
-makes paid light-level turns, creates only random `rehearsal/` branches in the public
-platform repository and private Factory repository, and deletes those branches with the
-platform App’s repository-scoped token. Keep other submissions idle for the rehearsal.
-The key file contains the raw client key and must already be root-only with `runs:write`,
-`runs:read`, `runs:eval` and the repository policy described above. The script reads that
-file; neither commands nor output contain the key, goals, finals or session IDs.
-
-Meet the existing switch prerequisites above first, including the shared-directory modes
-and the live flock inode. No secret refresh or host-file installation is part of this
-rehearsal. In a root Bash shell run these commands. The roles are command-line overrides
-only; neither `HOMELAB_RUN_ROLES` nor `COMPOSE_PROFILES` is written to `.env`.
-
-```bash
-sudo -i
-cd /srv/homelab/homelab-v2
-set +x
-set -e
-# Pull by hand, then build the merged application images through the installed unit.
-git pull --ff-only
-systemctl restart homelab.service
-export HOMELAB_REHEARSAL_API_URL=http://127.0.0.1:8000
-read -rp 'Root-only client key file path: ' HOMELAB_REHEARSAL_KEY_FILE
-export HOMELAB_REHEARSAL_KEY_FILE
-export HOMELAB_REHEARSAL_POSTGRES_CONTAINER="$(docker compose ps --format '{{.Name}}' postgres)"
-export HOMELAB_REHEARSAL_DATABASE=homelab
-export HOMELAB_REHEARSAL_DATABASE_USER=homelab
-
-restore_runner() {
-    rehearsal_status=$?
-    trap - EXIT
-    # Stop and verify runs before allowing the host runner to start.
-    COMPOSE_PROFILES= docker compose --profile runs stop runs
-    test -z "$(COMPOSE_PROFILES= docker compose --profile runs ps --status running -q runs)"
-    HOMELAB_RUN_ROLES= COMPOSE_PROFILES= docker compose up -d --wait --wait-timeout 120 --no-deps --force-recreate api
-    systemctl start homelab-task-runner.service
-    test -z "$(COMPOSE_PROFILES= docker compose --profile runs ps --status running -q runs)"
-    systemctl is-active --quiet homelab-task-runner.service
-    unset HOMELAB_REHEARSAL_KEY_FILE HOMELAB_REHEARSAL_RUNS_CONTAINER
-    exit "$rehearsal_status"
-}
-trap restore_runner EXIT
-systemctl stop homelab-task-runner.service
-if systemctl is-active --quiet homelab-task-runner.service; then exit 1; fi
-HOMELAB_RUN_ROLES=slice,cut,review COMPOSE_PROFILES= docker compose --profile runs up -d --build --wait --wait-timeout 120 --no-deps --force-recreate api runs
-export HOMELAB_REHEARSAL_RUNS_CONTAINER="$(docker compose --profile runs ps --format '{{.Name}}' runs)"
-python3 tests/runs_rehearsal.py
-# The EXIT trap restores the API without roles, stops runs and starts the old runner,
-# on both success and failure. Keep this exit when using an interactive root shell.
-exit
-```
-
-Require eight `PASS:` lines and no `FAIL:`. Checks cover a single pushed slice commit,
-unchanged read-review tip, question/message idempotency with exactly two attempts and the
-same saved session, a private write cut with a failing test, allowed-path refusal, public
-canary refusal, ordinary ticket delivery and eval branch delivery, then
-cleanup. Session equality is verified with a read-only `psql` transaction through
-`HOMELAB_REHEARSAL_POSTGRES_CONTAINER`, selecting only that run’s `session_id`; the value
-never enters printed output. Cleanup separately reads only the numeric task IDs for this
-invocation’s ticket runs to check their `/srv/homelab/task-work` folders and containers. Database/user and the `runs` container are settings
-from the environment variables above. App credentials remain in `runs`; its token helper’s
-stdout is captured privately. No token is supplied in argv.
-
-The script stops at its first failed check and still tries all cleanup. Cleanup cancels
-its own runs so the loop removes their work/run pairs immediately; if necessary it stops
-only containers mounted on those exact random work IDs, waits for the service to settle,
-and checks that no associated folder or container remains. It attempts every created
-branch deletion even when another cleanup step fails. Ticket work copies are removed by
-the existing task path; eval records retain the existing task retention.
-Any cleanup failure prints `FAIL:` and returns nonzero. Investigate it before a permanent
-switch; the restore commands still leave roles disabled and the old runner active. The
-script never changes enablement policy. If restoration itself fails, keep the old runner
-stopped until `runs` is confirmed stopped; repeat the restoration commands manually.
-
-### Switch to runs
-
-The switch was completed on 2026-11-17: the rehearsal passed all eight checks, `runs` and the
-roles are enabled, the old runner is stopped and disabled, and Factory sends all slice work
-through the run API. The old runner remains installed as rollback; these rollback steps stay
-valid until it is removed.
-
-After merge and owner review, the orchestrator executes these steps as root, in order. Stop
-on any failed check and resolve it before continuing. Keep submissions idle through the
-switch. The old unit stays installed and disabled for the next two weeks.
-
-1. Check that no Factory turn or fence run is running, then record Factory's current release
-   and check that its image is available for rollback:
-
-   ```bash
-   test -z "$(docker ps -q --filter name=^/factory-session-turn-)"
-   test -z "$(docker ps -q --filter name=^/homelab-fence-run-)"
-   python3 -c 'import json; print(json.load(open("/var/lib/homelab-deployer/factory.json"))["current"])' > /root/factory-before-runs-switch
-   grep -Eqx '[0-9a-f]{40}' /root/factory-before-runs-switch
-   docker image inspect "homelab-deployer-factory:$(cat /root/factory-before-runs-switch)" > /dev/null
-   ```
-
-2. Run [the rehearsal](#runs-rehearsal-on-the-node) unchanged. Require all eight checks,
-   including cleanup, to print PASS; its trap restores the old runner.
-3. In a root Bash shell, stop and disable the old runner. Require an absent or unpopulated
-   cgroup and no running task containers:
-
-   ```bash
-   cd /srv/homelab/homelab-v2
-   systemctl stop homelab-task-runner.service
-   systemctl disable homelab-task-runner.service
-   ! systemctl is-active --quiet homelab-task-runner.service
-   ! systemctl is-enabled --quiet homelab-task-runner.service
-   cg=/sys/fs/cgroup/system.slice/homelab-task-runner.service/cgroup.events
-   test ! -e "$cg" || grep -qx 'populated 0' "$cg"
-   test -z "$(docker ps -q --filter name=homelab-task-)"
-   ```
-
-4. Review the installed-file diff, then install and apply the boot rule. A diff exit of 1
-   means differences; inspect them before continuing. Check the existing lock's inode and
-   permissions remain correct:
-
-   ```bash
-   if test -e /etc/tmpfiles.d/homelab-task-run.conf; then
-       diff -u /etc/tmpfiles.d/homelab-task-run.conf node/etc/tmpfiles.d/homelab-task-run.conf || test "$?" -eq 1
-   else
-       diff -u /dev/null node/etc/tmpfiles.d/homelab-task-run.conf || test "$?" -eq 1
-   fi
-   lock_inode=$(stat -c '%i' /run/lock/homelab-task-run.lock)
-   install -d -m 0755 -o root -g root /etc/tmpfiles.d
-   install -m 0644 -o root -g root node/etc/tmpfiles.d/homelab-task-run.conf /etc/tmpfiles.d/homelab-task-run.conf
-   systemd-tmpfiles --create /etc/tmpfiles.d/homelab-task-run.conf
-   test "$(stat -c '%i' /run/lock/homelab-task-run.lock)" = "$lock_inode"
-   test "$(stat -c '%u:%g %a' /run/lock/homelab-task-run.lock)" = '0:10001 640'
-   unset lock_inode
-   ```
-
-5. Back up the private environment file and append the two settings. Require neither setting
-   already exists, so rollback removes only these lines. Restart the platform and check the
-   service and the API's actual role parser (the API has no HTTP role-list endpoint):
-
-   ```bash
-   cd /srv/homelab/homelab-v2
-   ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?(COMPOSE_PROFILES|HOMELAB_RUN_ROLES)=' .env
-   test ! -e .env.before-runs-switch
-   cp -p .env .env.before-runs-switch
-   printf '\nCOMPOSE_PROFILES=runs\nHOMELAB_RUN_ROLES=slice,cut,review\n' >> .env
-   systemctl restart homelab.service
-   docker compose up -d --wait --wait-timeout 120 runs
-   test "$(docker inspect --format '{{.State.Status}} {{.State.Health.Status}}' "$(docker compose ps -q runs)")" = 'running healthy'
-   docker compose exec -T api python -c 'from homelab.tasks.runs import enabled_roles; assert set(enabled_roles()) == {"slice", "cut", "review"}; print("API roles: slice, cut, review")'
-   ```
-
-6. Install Factory's new image through its deployer using Factory's documented command.
-   Check the deployer reports the intended image running and healthy.
-7. Record the gate start before Factory starts either delivery:
-
-   ```bash
-   date -u +%FT%TZ > /root/runs-switch-gate-start
-   ```
-
-   Have Factory deliver one whole-slice slice and one ticket slice through the platform,
-   then inspect the runs created since the gate started:
-
-   ```bash
-   cd /srv/homelab/homelab-v2
-   docker compose exec -T postgres psql -U homelab -d homelab -At -c "SELECT id, request->>'role', status, coalesce(status_reason, ''), cardinality(commits) FROM homelab_runs WHERE created_at >= '$(cat /root/runs-switch-gate-start)' ORDER BY created_at"
-   ```
-
-   Require every row to be `done` with an empty reason. The whole-slice slice must have a
-   `slice` row with one or more commits; the ticket slice must have a `cut` row and `ticket`
-   rows. A ticket run records zero commits even when it pushes, so do not require commits in
-   those rows. Check that Factory merged both slices' PRs. Investigate any failure before
-   accepting the switch.
-8. If rollback is needed, keep submissions idle and let active work finish. In a root Bash
-   shell remove the two exact lines and restart the platform, stop `runs`, then restore the
-   old runner. Then restore Factory with the terminal command below:
-
-   ```bash
-   cd /srv/homelab/homelab-v2
-   sed -i '/^COMPOSE_PROFILES=runs$/d; /^HOMELAB_RUN_ROLES=slice,cut,review$/d' .env
-   ! grep -Eq '^(COMPOSE_PROFILES|HOMELAB_RUN_ROLES)=' .env
-   systemctl restart homelab.service
-   COMPOSE_PROFILES= docker compose --profile runs stop runs
-   test -z "$(COMPOSE_PROFILES= docker compose --profile runs ps --status running -q runs)"
-   systemctl enable --now homelab-task-runner.service
-   systemctl is-enabled --quiet homelab-task-runner.service
-   systemctl is-active --quiet homelab-task-runner.service
-   ```
-
-   In a root terminal (connect with `ssh -t`; the deployer requires a terminal), roll back
-   Factory and check that its current release matches the recorded release. The deployer
-   prints one JSON result and exits nonzero on failure:
-
-   ```bash
-   homelab-deployer rollback factory
-   test "$(python3 -c 'import json; print(json.load(open("/var/lib/homelab-deployer/factory.json"))["current"])')" = "$(cat /root/factory-before-runs-switch)"
-   ```
-
-   The switch prerequisite ownership and modes may stay: the old runner runs as root. Preserve
-   the backup and run records. Do not start both runners together.
-
-The private clone probe needs an existing private repository/branch covered by the platform
-App and a fresh installation token restricted to that repository. Supply the token in a
-root shell with tracing off and silent input, never a command argument, env file or journal:
-
-```bash
-sudo -i
-cd /srv/homelab/homelab-v2
-set +x
-export HOMELAB_PROBE_REPOSITORY='<private owner/repository>'
-export HOMELAB_PROBE_BRANCH='<existing branch>'
-read -rsp 'Repository-scoped installation token: ' HOMELAB_PROBE_TOKEN; echo
-export HOMELAB_PROBE_TOKEN
-python3 tests/launcher_task_probe.py --private
-unset HOMELAB_PROBE_TOKEN HOMELAB_PROBE_REPOSITORY HOMELAB_PROBE_BRANCH
-```
-
-The probe confirms GitHub reports a private repository, clones into a launcher-created
-uid-21000 copy using the environment-only header, scans regular files without following
-links for the token/header, and removes only its random scratch folders and containers.
-Require `PASS: private clone uses an environment-only header and leaves no token in its copy`.
-The launcher client container also receives its request through an environment variable,
-so its argv cannot expose the header. No real slice turn or push is part of these probes.
-
-**Launcher socket restarts must be followed by restarting `runs` whenever it is enabled:**
-`sudo docker compose --profile runs restart runs`. Its healthcheck sends `ping` through the
-bound socket; a retained dead inode becomes `unhealthy` rather than appearing ready. Docker
-health does not restart it automatically. Restart Factory's runner and sessions containers
-for the same reason. A failed socket probe prevents work; it does not grant a fallback path.
-
-Rollback: stop/remove any optional `runs` container before starting the old runner. Leave the
-profile disabled, restore the previously installed launcher/metadata/unit after visible diffs,
-validate the unit, run `systemctl daemon-reload`, stop the launcher service and restart its socket, then
-restart the Factory socket clients. No task data or secrets need deletion. The shared-directory ownership used by the switch may remain when re-enabling the root host runner. Preserve private new run
-records and existing API exports. Never recover the queue with two active runners.
-
-### Eval tasks
-
-Use the [run API](run-api.md), with `runs:write`, `runs:eval` and the key's repository policy.
-The mark is `eval: {set, case, executor}`: one validated Codex, Claude or `pi/<name>` entry.
-There is no table lookup or fallback; usage limits wait for the selected executor. Pi is only
-available on `ticket`. Slice, cut and review use their enabled whole-run paths; tickets use
-the serial task path. Review remains read-only. The client composes the whole-slice or
-cut/ticket attempt and review. Write results are read from the delivered `eval/` branch and
-recorded commits, with the same private-content scan as real work. Unmarked writes cannot
-push to `eval/` branches.
-
-For grading, submit `role: check`, `mode: write`, `base_commit` and an eval mark with executor
-omitted. Set `work.check_command` and `work.overlay: {commit, paths}` to the hidden test files
-in another commit of the same repository. The platform imports the base into a fresh
-task copy, prepares dependencies, then imports hidden objects offline and writes only the selected
-regular overlay files,
-and runs the command on the existing networkless `check` shape. Git and `.venv` are read-only;
-there are no agent logins, commits or pushes. The completed run is `done` regardless of command
-exit code, with `check: {exit_code, tail}` in GET/list records. The tail is the last 16 KiB of
-combined output, decoded with replacement. Setup/launcher failures fail the run. Overlay on
-another role is refused. Branch can be omitted for a check. The copy and temporary grading
-files are removed after completion; result metadata stays in the existing run record.
-
-`POST /v1/tasks/eval` and `GET /v1/tasks/eval/{id}` are removed (404), as are `eval_kept`,
-`diff_base64` and active eval export handling. Old exports/mounts and the disabled host runner
-remain installed for later removal; do not use the old runner for the new contract.
-No migration or host installation is needed. After review and merge, **Restart the platform
-on the merged commit**, then the client completes one eval slice and one check on a public
-repository. See [deployment steps](run-api.md#node-steps-after-merge-and-owner-approval).
-
-Pi eval configurations may still name `eval/<provider>/<model>` through the single `eval/*`
-gateway route. Only marked Pi runs can issue a live exact-purpose task token; client keys,
-chat and bot callers cannot use it. Configuration snapshots retain their hashes, image digest
-and source commit. Unknown model identifiers fail upstream and normal execution limits apply.
-`homelab eval results --set T` remains an attempt aggregate (successful delivery, not hidden-test
-grading); Factory grades using the separate check result. Bare `homelab eval` is the knowledge eval.
+| change or install a file under `node/` | [Installing host files](host-files.md) |
+| update the Telegram bot, its inbox helper, order endpoint or `/backup` | [Operating the bot](telegram-bot.md#operating-the-bot) |
+| install or update the Mac tools, router, profiles or menu bar app | [Mac worker](mac.md#install-and-update-the-mac-tools) |
+| install the CLI fence, the launcher or its `task` profile | [Install the fixed fence launcher](#install-the-fixed-fence-launcher) |
+| provision, switch or roll back the `runs` service | [Runs service](runs.md#runs-service) |
+| use or roll back the stopped host task runner | [Coding tasks in a container](runs.md#coding-tasks-in-a-container) |
+| provision run keys or change a key's repository policy | [Key file and repository policy](run-api.md#key-file-and-repository-policy) |
+| install or roll back the application deployer | [Install host files](deployer.md#install-host-files) |
+| change the code context server's repositories | [Code context server](node.md#code-context-server) |
+| operate video jobs or check media accounting | [Operating video jobs](gateway.md#operating-video-jobs) |
+| check image cost alerts | [Using the gateway](gateway.md#using-the-gateway) |
 
 ## Database dumps and restore checks
 
@@ -2246,66 +123,6 @@ sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-dump node/usr/l
 ```
 
 ## Rebuilding the node
-
-Install the launcher root-check update using [Install the fixed fence launcher](#install-the-fixed-fence-launcher).
-Task and CLI create/remove operations require root-owned work/run roots: group or other
-write is accepted only with the sticky bit (including Factory's existing 1733 roots).
-Non-root-owned roots and writable roots without the sticky bit remain refused. After
-installation, run `sudo python3 tests/launcher_task_probe.py` (14 checks), and add `--private`
-with the guide's private-repository credentials for the fifteenth check.
-
-Install `/etc/tmpfiles.d/homelab-task-run.conf` as root:root 0644 after reviewing its diff;
-run `systemd-tmpfiles --create /etc/tmpfiles.d/homelab-task-run.conf` to create the boot lock.
-Follow [Switch to runs](#switch-to-runs) when restoring the enabled configuration.
-
-Install the `runs` service, launcher folder/clone support and per-service secret copies using
-[Runs service](#runs-service). Include the launcher sandbox write allowance in its installed
-unit, validate it and restart every socket client after the launcher socket. The current node
-starts `runs` with the platform and enables `HOMELAB_RUN_ROLES=slice,cut,review`; the old host
-runner remains installed but stopped and disabled as rollback until its removal.
-Install the launcher/profile updates for private cloning, streamed bundles and optional
-read-only CLI work using that same guide. Run the read-only and private-clone probes and restart
-the socket's clients. The legacy-runner refusal check is part of the earlier installation
-validation; it does not describe the current service state.
-
-Install the task launcher's three host files and run its non-root boundary probe using
-[Task launcher profile](#task-launcher-profile), after merge and the owner's go. This adds
-uid 21020's permissions without moving the current host task runner.
-
-Provision the run API's root-owned digest file with each key's repository policy using
-[Run API and node provisioning](run-api.md#node-steps-after-merge-and-owner-approval). Preserve
-Factory's existing bearer key; the API alone receives the read-only key-file mount.
-
-For eval catalogue routing updates, install both task scripts together and rebuild the gateway
-from the merged checkout. Wait for the task runner to be idle, then run on the node:
-
-```bash
-cd /srv/homelab/homelab-v2
-git pull --ff-only
-sudo diff -u /usr/local/sbin/homelab-task-run node/usr/local/sbin/homelab-task-run
-sudo diff -u /usr/local/sbin/homelab-task-runner node/usr/local/sbin/homelab-task-runner
-# Review both diffs (diff exits 1 when files differ) before copying.
-sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-run /usr/local/sbin/homelab-task-run
-sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-task-runner /usr/local/sbin/homelab-task-runner
-sudo systemctl restart homelab.service
-sudo systemctl restart homelab-task-runner.service
-```
-
-The gateway configuration and hooks are mounted from the checkout; no host copy or unit change
-is needed. These script-install steps apply only to the stopped rollback runner. For an active
-Pi eval use `/v1/runs` with `executor: {configuration: "pi/eval-deepseek-v4.1-flash"}` on an
-`eval/` branch; confirm delivery and `cost_usd`, and check its private
-`run.json` purpose and configuration hash. With an existing client key, request
-`eval/deepseek/deepseek-v4.1-flash` and confirm 403. Run a normal `task-worker` task and `chat`
-request as regression checks. Use existing private credentials without printing or changing them.
-To roll back, restore both scripts and gateway config/hooks from the preceding commit, review
-the diffs, reinstall both scripts and restart the same two services; no stored data changes.
-
-The installed task scripts use configurations from merged `origin/main` for queued runs; no
-configuration installation is needed. After changing either script, compare it with the installed
-file before installing it using the commands below. After a configuration change, run a task with
-`base` and check its `run.json` for the configuration hash and source commit.
-
 
 Recovery is a rebuild from sources. No node backup exists or will be made. Host files come
 from `node/`, code from this public GitHub repository, and Brain notes from their own GitHub
@@ -2494,26 +311,12 @@ SSH accounts work through Tailscale.
    ```
 
    Confirm TCP 8110 is allowed from `172.18.0.0/16`, then run the
-   [container and Mac checks](#bot-order-endpoint). This update installs only `user.rules`;
+   [container and Mac checks](telegram-bot.md#bot-order-endpoint). This update installs only `user.rules`;
    the other firewall files and IPv6 rules stay unchanged.
 
-   Run the following only after reviewing all diffs. Directory and file modes are also
-   recorded in `AGENTS.md`. Preserve the vendor's `root:polkitd` ownership and `0750` mode
-   on `/etc/polkit-1/rules.d`; the rule itself is `root:root` `0644`. All other directories
-   below are `root:root` `0755`. The firewall files are `0640`, SSH hardening is `0600`,
-   sudoers is `0440`, operational scripts are `0755`, and the remaining files are `0644`.
-
-| Repository directory | Directory mode | File mode |
-|---|---|---|
-| `node/opt/homelab-context/` | `0755` | `0644` |
-| `node/opt/homelab-task/` | `0755` | `0644` |
-| `node/opt/homelab-package-proxy/` | `0755` | `0644` |
-| `node/opt/homelab-fence/` | `0755` | `0644` |
-| `node/opt/homelab-fence/cli/` | `0755` | `0644` |
-| `node/opt/homelab-fence/proxy/` | `0755` | `0644` |
-| `node/etc/homelab-task/` | `0755` | `0644` |
-| `node/etc/homelab-launcher/` | `0755` | `0644` |
-| `node/etc/tmpfiles.d/` | `0755` | `0644` |
+   Run the following only after reviewing all diffs. The commands use the modes recorded in
+   [Installed modes](#installed-modes). Preserve the vendor's
+   `root:polkitd` ownership and `0750` mode on `/etc/polkit-1/rules.d`.
 
    ```bash
    sudo install -d -m 0755 -o root -g root /etc/ssh /etc/ssh/sshd_config.d /etc/ufw /etc/docker /etc/sysctl.d /etc/profile.d /etc/sudoers.d /usr/local/sbin /opt/homelab-telegram-bot /opt/homelab-context /opt/homelab-task /opt/homelab-package-proxy /etc/homelab-task /etc/systemd/system
@@ -2587,7 +390,7 @@ SSH accounts work through Tailscale.
    ```
 
    The context image and its private repository list are set up after Docker and the data
-   volume are available, following [Code context server](#code-context-server). Create
+   volume are available, following [Code context server](node.md#code-context-server). Create
    `/etc/homelab-context/repositories` as `root:root` mode `0600` with the desired names.
    The task image pins the same uv version as CI through `pyproject.toml`; update both pins
    together. Then build the task image with `sudo docker build -t homelab-task:3 /opt/homelab-task`
@@ -2597,7 +400,7 @@ SSH accounts work through Tailscale.
    first run tightens both (`root:10001`, `0750` and `0770`), so LiteLLM can append costs; restart
    `homelab.service` after merging, since LiteLLM needs the new mount and `task_cost_dir`. The
    task runner creates `/srv/homelab/task-work`; see
-   [Coding tasks in a container](#coding-tasks-in-a-container). Compose builds `package-proxy`
+   [Coding tasks in a container](runs.md#coding-tasks-in-a-container). Compose builds `package-proxy`
    from the application clone; the copy in `/opt` only records what is installed. Push keys are
    not part of a rebuild: each is a new deploy key, issued on the owner's go.
 
@@ -2615,10 +418,10 @@ SSH accounts work through Tailscale.
    `conversation.py`, `orders.py`, `order_listener.py`, `inbox.py`, `keeping.py` and
    `links.py`, together; the requirements remain unchanged.
    The inbox needs no new provisioning: the existing frontline writable directory holds
-   its atomic item directories and opaque files. Follow [Bot inbox](#bot-inbox) for layout,
+   its atomic item directories and opaque files. Follow [Bot inbox](telegram-bot.md#bot-inbox) for layout,
    caps, rollback and the owner's phone checks. Keep inbox data when reverting bot code.
    Install the root-owned inbox helper above from merged main after showing its installed-file
-   diff and compiling it with the host Python; follow [Inbox helper over SSH](#inbox-helper-over-ssh)
+   diff and compiling it with the host Python; follow [Inbox helper over SSH](telegram-bot.md#inbox-helper-over-ssh)
    for Mac command checks and helper-only rollback. No bot restart is needed for helper changes.
    Install `homelab-queue-notice` from merged main after showing its installed-file diff
    (`sudo diff -u /usr/local/sbin/homelab-queue-notice node/usr/local/sbin/homelab-queue-notice`,
@@ -2640,7 +443,7 @@ SSH accounts work through Tailscale.
    the unit changes only its networking comment. Before copying, show the installed-file diffs
    and save a dated root-only rollback copy of all installed bot modules and the unit. Verify
    the unit with `systemd-analyze verify`, reload and restart only the bot. Follow the
-   [order endpoint contract](#bot-order-endpoint) for the owner's Tailscale policy step,
+   [order endpoint contract](telegram-bot.md#bot-order-endpoint) for the owner's Tailscale policy step,
    port/address proof, curl checks and rollback; do not install a Mac runner here. After stack restart,
    verify `curl -fsS http://127.0.0.1:4000/v1/models` includes `frontline` and `ss -ltn`
    shows port 4000 only on `127.0.0.1`. Record the bot's active/restart state and unchanged
@@ -2979,6 +782,30 @@ SSH accounts work through Tailscale.
     curl -fsS http://127.0.0.1:8000/health
     ```
 
+### After the numbered steps
+
+With the stack running, restore the execution path in this order. Each part's document holds
+the commands, diffs, probes and rollback.
+
+1. Install the CLI fence and the fixed launcher with its `task` profile, following
+   [Install the CLI fence](#install-the-cli-fence) and the sections after it. Task and CLI create/remove operations require root-owned
+   work/run roots: group or other write is accepted only with the sticky bit (including
+   Factory's existing 1733 roots); other writable or non-root-owned roots are refused. Run `sudo python3 tests/launcher_task_probe.py` (14 checks),
+   and add `--private` with the private-repository credentials for the fifteenth check.
+2. Install `/etc/tmpfiles.d/homelab-task-run.conf` (step 6 already does) and run
+   `systemd-tmpfiles --create /etc/tmpfiles.d/homelab-task-run.conf` to create the boot lock.
+3. Provision the `runs` service, the launcher sandbox write allowance and the per-service
+   secret copies using [Runs service](runs.md#runs-service), then restore the enabled
+   configuration with [Switch to runs](runs.md#switch-to-runs) steps 4 and 5. Restart every
+   launcher socket client after the launcher socket. The node starts `runs` with the platform
+   and enables `HOMELAB_RUN_ROLES=slice,cut,review`; the old host runner stays installed but
+   stopped and disabled as rollback.
+4. Provision the run API's root-owned digest file with each key's repository policy using
+   [Key file and repository policy](run-api.md#key-file-and-repository-policy). Preserve
+   Factory's existing bearer key; the API alone receives the read-only key-file mount.
+5. Install the application deployer and its manifests using
+   [deployer.md](deployer.md#install-host-files).
+
 ### Install the CLI fence
 
 After merge and the owner's go, install from the committed tree on the node. Keep the old
@@ -3120,7 +947,7 @@ symlinks without touching their targets. Neither operation accepts the login rol
 For `run` only, send two writable descriptors (stdout, stderr) with `SCM_RIGHTS`,
 for example using `socket.send_fds`. Task `agent`, `review` and `data` require a third readable
 stdin descriptor. CLI runs with `stdin: true` require a third readable regular-file descriptor,
-validated as described in [the whole-run path](#runs-service).
+validated as described in [the whole-run path](runs.md#runs-service).
 Every other shape/profile takes exactly two. Send no descriptors for other operations. The helper
 waits and returns `{"ok":true,"exit_code":N}`. All container output, including usage, goes
 directly to those descriptors, never to the response or journal. `usage` has no network and
@@ -3154,10 +981,9 @@ rollback is needed.
 #### Task launcher profile
 
 The `task` profile reproduces `homelab-task-run`'s `container()` arguments, including entry
-commands, for these shapes. Nothing calls it in production yet; both task scripts and all
-existing fence profiles retain their behavior. The execution service's uid is 21020, with
-Factory's `cli-run`, `bundle` and `usage` permissions as well as `task`. Provisioning its
-container/account is separate; a probe can use the numeric uid now.
+commands, for these shapes. The `runs` service calls it for every ticket attempt; the stopped
+host task scripts start their containers directly. The execution service's uid is 21020, with
+Factory's `cli-run`, `bundle` and `usage` permissions as well as `task`.
 
 | Shape | Network | Work mounts | Fixed entry | Required `env` names |
 |---|---|---|---|---|
@@ -3274,6 +1100,49 @@ sudo systemctl restart homelab-launcher.socket
 This withdraws `task` and uid 21020's permissions. The retained host task runner is disabled and available only for rollback until its removal;
 no data volume, secret, login or network change is needed.
 
+### Installed modes
+
+These are installed modes, not Git's executable bit. Files are `root:root`. Directories are
+`root:root` too, except the vendor-managed `polkit-1/rules.d`, which stays `root:polkitd`.
+The `.d` rows cover each unit's drop-in directory.
+
+| Repository directory | Directory mode | File mode |
+|---|---|---|
+| `node/etc/` | `0755` | `0644` |
+| `node/etc/ssh/` | `0755` | — |
+| `node/etc/ssh/sshd_config.d/` | `0755` | `0600` |
+| `node/etc/ufw/` | `0755` | `0640` |
+| `node/etc/docker/` | `0755` | `0644` |
+| `node/etc/containerd/` | `0755` | `0644` |
+| `node/etc/sysctl.d/` | `0755` | `0644` |
+| `node/etc/profile.d/` | `0755` | `0644` |
+| `node/etc/tmpfiles.d/` | `0755` | `0644` |
+| `node/etc/systemd/system/` | `0755` | `0644` |
+| `node/etc/systemd/system/homelab-notify@.service.d/` | `0755` | `0644` |
+| `node/etc/systemd/system/homelab-watchdog.service.d/` | `0755` | `0644` |
+| `node/etc/systemd/system/homelab-telegram-bot.service.d/` | `0755` | `0644` |
+| `node/etc/systemd/system/docker.service.d/` | `0755` | `0644` |
+| `node/etc/systemd/system/docker.socket.d/` | `0755` | `0644` |
+| `node/etc/systemd/system/containerd.service.d/` | `0755` | `0644` |
+| `node/etc/sudoers.d/` | `0755` | `0440` |
+| `node/etc/polkit-1/rules.d/` | `0750` | `0644` |
+| `node/etc/homelab-deployer/` | `0755` | `0644` |
+| `node/etc/homelab-launcher/` | `0755` | `0644` |
+| `node/etc/homelab-task/` | `0755` | `0644` |
+| `node/opt/homelab-telegram-bot/` | `0755` | `0644` |
+| `node/opt/homelab-context/` | `0755` | `0644` |
+| `node/opt/homelab-task/` | `0755` | `0644` |
+| `node/opt/homelab-package-proxy/` | `0755` | `0644` |
+| `node/opt/homelab-fence/` | `0755` | `0644` |
+| `node/opt/homelab-fence/cli/` | `0755` | `0644` |
+| `node/opt/homelab-fence/proxy/` | `0755` | `0644` |
+| `node/opt/homelab-deployer/test-app/` | `0755` | `0644` |
+| `node/usr/local/sbin/` | `0755` | `0755` |
+
+Files created on the node rather than copied from this tree keep the modes their part
+documents give (for example the launcher's locally generated `images` approval list is
+`0600`, and the deployer's token is `0600`).
+
 ### Bulk disk and storage migration
 
 These commands are **not rehearsed**. Run only after this change is merged and the owner
@@ -3283,14 +1152,8 @@ The inspection refuses signatures, partitions, mounts or holders. Stop on any er
 Copying retains both old roots until the owner proves reboot/unlock. Root space is not
 reclaimed by renaming: only the later cleanup frees it. No database or originals move.
 
-Additional installed modes (all `root:root`):
-
-| Repository directory | Directory mode | File mode |
-|---|---|---|
-| `node/etc/containerd/` | `0755` | `0644` |
-| `node/etc/systemd/system/docker.service.d/` | `0755` | `0644` |
-| `node/etc/systemd/system/docker.socket.d/` | `0755` | `0644` |
-| `node/etc/systemd/system/containerd.service.d/` | `0755` | `0644` |
+The runtime configuration and drop-in modes are in
+[Installed modes](#installed-modes).
 
 `node/etc/crypttab` and `node/etc/fstab` are **managed entries**, not whole host files.
 Keep the existing OS entries. Rebuild step 2 registers both volumes before the new unlock
@@ -3570,7 +1433,7 @@ With the Mac listener installed and its private URL configured on the node, plug
 card replies “Connect the SD card and send /backup again.” Success replies
 “Copy done: N KB, <file name>.” Failure replies “Copy failed: <short reason>.” If the Mac is
 asleep, away or off, it replies “The Mac is not reachable; wake it and send /backup again.”
-The Mac must be awake and on Tailscale; see [Mac action listener](#mac-action-listener).
+The Mac must be awake and on Tailscale; see [Mac action listener](mac.md#mac-action-listener).
 
 The manual command remains `mac/homelab-copy '<VOLUME-NAME>'` from this checkout (or pass
 `/Volumes/<NAME>`). Python 3 is required on the Mac. The command
@@ -3638,49 +1501,6 @@ med-ask's originals directory is `root:10001` `2770`; preserve its file modes an
 replace an active application's originals. The owner should compare the first restore with
 the source before relying on the weekly copies. Rebuild code and derived stores separately.
 
-
-## Video jobs and image upscale
-
-The [media client contract](platform.md#image-studio-operations-and-video-jobs) lists paths,
-fields, models and prices. Video uses the existing image key; the Vercel $20 budget, monthly
-reset, and host 80%/100% alerts apply to combined image/video spending. The historical
-`GET /v1/images/cost` path and `homelab-image-cost-notice` unit names are unchanged.
-No provider key is added to the API or worker. The gateway mounts the transport module from
-`src/homelab/api/video_jobs.py` read-only, alongside the config; the API startup applies
-`video_jobs.sql` beside the existing image accounting migration.
-Kling 2.5 Turbo refuses an end frame in standard mode; no listed model takes an end frame.
-Grok generation accepts one to five reference images without a start or end image, as an
-alternative to a start image. The references are sent as `inputReferences`.
-
-Job status and content require the creating client's bearer key. Fetch content promptly through
-the loopback gateway; never expose its URL or use a public upload to bypass inline size limits.
-Inputs are limited to a 48 MiB JSON body. Four background calls may be active, each up to one
-hour. Downloaded outputs are streamed, and completed results are kept only in memory, at most
-16 for up to one hour. A provider may expire its output sooner. Single-request results vanish
-on restart; saved async operations can be polled again while Vercel retains them.
-
-A gateway restart marks interrupted jobs without an upstream reference failed on the next
-video request. Do not retry them automatically: Vercel may already have billed them. A missing
-cost is unknown, not zero. Reconcile such calls with Vercel's dashboard. If final accounting
-fails temporarily, the next video request retries the pending transaction; restarting first
-can lose that in-memory confirmation. Known costs and terminal states commit atomically.
-No status read or content download charges a job again. Audit logs contain only UUID, configured
-purpose, state, duration, numeric cost and failure type and code or class; error messages are not logged. Failed status responses contain a stored short sanitized reason. Default HTTP/library diagnostics remain disabled.
-
-Read-only accounting checks from the node (no client keys or content):
-
-```bash
-sudo docker exec -i homelab-api-1 python - <<'PY'
-from homelab.api.image_costs import connect
-with connect() as c:
-    print(c.execute("SELECT status, count(*), sum(cost_usd) FROM homelab_video_jobs GROUP BY status").fetchall())
-PY
-```
-
-For a fake-charge concurrency proof against an isolated schema, run
-`python tests/video_store_proof.py --source-root <checkout>` in an environment with the API's
-Postgres connection. It creates a uniquely named test schema, proves exactly-once accounting
-and ownership, and removes only that schema; it does not call a provider or touch application rows.
 
 ## Management reads
 

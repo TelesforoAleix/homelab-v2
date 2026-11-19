@@ -7,21 +7,21 @@ Reference for what runs today. For the overview, see the [README](../README.md).
 - Today med-ask reaches only LiteLLM, over the `homelab-models` network.
 - `embed-large` stays on the node for questions; `embed-large-bulk` uses the same vector space
   on the owner’s Mac through a login-managed llama.cpp router for bulk ingest. See the
-  [Mac serving runbook](operations.md#mac-bulk-embedding-serving).
-- Mac login agents run a stamped, private [installed copy from main](operations.md#install-and-update-the-mac-tools),
+  [Mac serving runbook](mac.md#mac-bulk-embedding-serving).
+- Mac login agents run a stamped, private [installed copy from main](mac.md#install-and-update-the-mac-tools),
   independent of the working checkout. Update with `git pull --ff-only` and `mac/install-mac-tools`.
-- The [Mac profile command](operations.md#mac-usage-profiles) selects Working or Inference,
+- The [Mac profile command](mac.md#mac-usage-profiles) selects Working or Inference,
   reports observed state as JSON, and returns to Working after idle inference. Each profile
   sets services to off, on request, or on, with allowed models and a default from a private
   registry. It can download, verify and test-load new models and reports warning-only
-  profile memory budgets that include mapped weights; see [profile model policy](operations.md#per-profile-service-and-model-policy). After 10
+  profile memory budgets that include mapped weights; see [profile model policy](mac.md#per-profile-service-and-model-policy). After 10
   continuous minutes on battery, Inference pauses its model services and resumes on AC.
   Working leaves the owner’s AC and Battery settings alone. Inference requires AC power,
   changes only AC power mode/sleep and the global GPU limit, and restores their recorded
   values on return. Relaunched apps
   restore windows and tabs according to their own settings: Chrome’s “Continue where you left
   off” and macOS’s “Close windows when quitting an application” are owner choices.
-- A SwiftUI [menu bar app](operations.md#menu-bar-app-usage-and-night-window) drives the
+- A SwiftUI [menu bar app](mac.md#menu-bar-app-usage-and-night-window) drives the
   same command: one-click switching, per-service control, a Profiles editor for service states,
   allowed/default models and warning-only memory budgets, requests waiting for Inference,
   Claude/Codex usage, and an owner-set night window into Inference that is off by default.
@@ -41,7 +41,7 @@ Reference for what runs today. For the overview, see the [README](../README.md).
 
 ## Runs and the container launcher
 
-[Coding tickets](operations.md#runs-service) run one at a time on the node through the
+[Coding tickets](runs.md#runs-service) run one at a time on the node through the
 platform's unprivileged `runs` service. `config/executors.yaml` selects the worker at the
 request's level: Codex first at light, Claude first at standard and strong, with the other
 as fallback when usage limits require it. Both use the
@@ -60,7 +60,7 @@ immediately on failure/cancellation and after three days otherwise; later messag
 fresh branch copy and retain the harness session. The old host runner is stopped and disabled,
 kept installed only for rollback; its `homelab_roles` table is unused by `runs`.
 
-Tasks are [submitted](../ARCHITECTURE.md#task-store) to Postgres and queued by Procrastinate.
+Tasks are [submitted](runs.md#task-store) to Postgres and queued by Procrastinate.
 Pi ticket entries, including evals that name Pi, use public configurations under
 `configurations/pi/`, fetched from merged `origin/main` in an independent clone. They record
 configuration hashes, image digest and source commit and pass the same check and commit gates,
@@ -87,7 +87,7 @@ The old `/v1/tasks/eval` routes and diff-export reading are removed.
 
 ## Code context server
 
-A [read-only code context server](operations.md#code-context-server) gives Mac coding agents
+A [read-only code context server](node.md#code-context-server) gives Mac coding agents
 symbol navigation over SSH. It runs Serena without network access against separate,
 periodically refreshed copies of configured repositories on the encrypted volume.
 
@@ -102,14 +102,14 @@ Allowlisted free-text questions use the `frontline` purpose through LiteLLM on
 In-memory episodes keep follow-ups together; replying to an older answer reopens its episode.
 The model can read one extra bounded clone file and propose one order; it cannot execute.
 The bot validates proposals and shows Yes/No buttons. Only an allowlisted tap queues an order
-on the encrypted volume. A [tailnet-only HTTP endpoint on TCP 8110](operations.md#bot-order-endpoint)
+on the encrypted volume. A [tailnet-only HTTP endpoint on TCP 8110](telegram-bot.md#bot-order-endpoint)
 hands queued orders to a future Mac runner; Tailscale policy gates it, with no key.
 The inbox keeps ideas, links, unprocessed attachments and messages for repository orchestrators.
 The model classifies free text and asks at most two short clarifying questions; “just save it”
 keeps what is known. `/inbox [id]` lists or shows kept items. Public links have a guarded
 fetch and isolated summary; files are limited to 20 MiB each and 2 GiB in total.
 The inbox lives beside orders on the encrypted volume. Mac orchestrators use the root-owned
-[`homelab-inbox` helper over SSH](operations.md#inbox-helper-over-ssh) to list new items,
+[`homelab-inbox` helper over SSH](telegram-bot.md#inbox-helper-over-ssh) to list new items,
 stream attachments and mark records read; it adds no network route.
 Answers and new proposals require unlock and the model gateway; host commands remain available while locked.
 Private configuration and a read-only deploy key stay on the node; see the

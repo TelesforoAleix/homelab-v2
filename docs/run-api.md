@@ -65,7 +65,7 @@ that request returns `409 not_resumable` and leaves its state honest.
 ownership checks. Ticket and check runs return `409 not_resumable`. Whole-run roles can
 resume a question, escalation, client wait or completed conversation, retaining the harness
 session and executor; message ids deduplicate turns. Content stays in the private store and
-never enters logs. See the [service runbook](operations.md#runs-service) for copy retention.
+never enters logs. See the [service runbook](runs.md#runs-service) for copy retention.
 
 ## Executors and current capability
 

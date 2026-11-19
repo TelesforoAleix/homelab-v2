@@ -185,13 +185,9 @@ root:root ownership. Start `homelab-deployer.socket` afterward; the next request
 the updated helper. Confirm that Factory still installs. No manifest, credential or unit
 changes are needed for this update.
 
-The notifier and units are also covered by the operations runbook's wildcard installation;
-install them only once. These additional directory modes supplement that runbook:
-
-| Repository directory | Directory mode | File mode |
-|---|---|---|
-| `node/etc/homelab-deployer/` | `0755` | `0644` |
-| `node/opt/homelab-deployer/test-app/` | `0755` | `0644` |
+The notifier and units are also covered by the rebuild's wildcard installation; install them
+only once. The deployer directories' modes are in
+[Installed modes](operations.md#installed-modes).
 
 The owner creates `/etc/homelab-deployer/github-token`, root:root **0600**, containing a
 read-only fine-grained GitHub token scoped to the manifest repository with Contents and
