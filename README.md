@@ -16,9 +16,9 @@ Without a shared base, each project repeats the same keys, routing and job code.
 learn applied AI engineering by building systems that I use every day.
 
 Home Lab provides the infrastructure for model routing, APIs and secure execution. Built on top
-of it, Factory orchestrates AI-assisted software development. It separates planning and
-orchestration from sandboxed agent execution, automated review and deployment. Factory is
-private for now.
+of it, [Factory](https://github.com/TelesforoAleix/factory) orchestrates AI-assisted software
+development. It separates planning and orchestration from sandboxed agent execution, automated
+review and deployment.
 
 ## The system
 
@@ -30,7 +30,7 @@ for a model.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/system-dark.svg">
-  <img alt="System context: from my phone and laptop, over a private network, I reach Workshop, Factory's web console, and the platform's Telegram bot. Client applications reach the Home Lab platform on an always-on Linux server. Factory, a private development system on the same server, sends work to the platform's run API, and the platform routes model requests to hosted providers through one gateway key or to local models on an Apple Silicon Mac." src="docs/diagrams/system-light.svg" width="100%">
+  <img alt="System context: from my phone and laptop, over a private network, I reach Workshop, Factory's web console, and the platform's Telegram bot. Client applications reach the Home Lab platform on an always-on Linux server. Factory, the development system on the same server, sends work to the platform's run API, and the platform routes model requests to hosted providers through one gateway key or to local models on an Apple Silicon Mac." src="docs/diagrams/system-light.svg" width="100%">
 </picture>
 
 **Home Lab is the execution platform; Factory is the development orchestrator.**
@@ -111,7 +111,6 @@ The full reference is in [docs/platform.md](docs/platform.md).
 - Safer operations: platform services as versioned images with automatic installs, and a
   restore that I rehearse.
 - Local decision models behind the typed decisions contract, for classification and narrow choices.
-- Factory as a public repository, after its first eval.
 
 **Later, when a project needs it**
 
