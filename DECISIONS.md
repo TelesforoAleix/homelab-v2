@@ -1107,3 +1107,7 @@ No provider messages, content, answers or keys are stored or logged. Each repeat
 30-second HTTP timeout without retries or redirects. No LiteLLM, run execution, other service
 or host-file change is needed. The owner sets the key, grants the caller scope and restarts
 the platform after approval and merge; live acceptance belongs to the owner.
+
+**2026-11-19 — Claude executes first for this period.** By the owner’s choice, slice and
+ticket standard/strong and all cut levels try Claude first, with Codex as fallback. The light
+slice and ticket rows and all review rows retain their order. A later PR will restore the order.

@@ -18,8 +18,27 @@ def test_initial_executor_table():
         assert set(role) == {"light", "standard", "strong"}
     assert table["ticket"] == table["slice"]
     assert table["slice"]["light"][0].model == "gpt-6-luna"
-    assert table["slice"]["standard"][0].effort == "medium"
-    assert table["review"]["strong"][0].model == "opus"
+    expected = {
+        "ticket": {
+            "light": [("codex", "gpt-6-luna", "low"), ("claude", "sonnet", None)],
+            "standard": [("claude", "sonnet", None), ("codex", "gpt-6.1-terra", "medium")],
+            "strong": [("claude", "opus", None), ("codex", "gpt-6.1-sol", "high")],
+        },
+        "cut": {
+            level: [("claude", "opus", None), ("codex", "gpt-6.1-sol", "high")]
+            for level in ("light", "standard", "strong")
+        },
+        "review": {
+            "light": [("claude", "sonnet", None), ("codex", "gpt-6.1-sol", "high")],
+            "standard": [("claude", "sonnet", None), ("codex", "gpt-6.1-sol", "high")],
+            "strong": [("claude", "opus", None), ("codex", "gpt-6.1-sol", "high")],
+        },
+    }
+    expected["slice"] = expected["ticket"]
+    for role, levels in expected.items():
+        for level, entries in levels.items():
+            actual = [(entry.harness, entry.model, entry.effort) for entry in table[role][level]]
+            assert actual == entries
     assert len(configuration_hash("pi/base")) == 64
 
 

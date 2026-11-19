@@ -3,31 +3,31 @@ ticket:
     - {harness: codex, model: gpt-6-luna, effort: low}
     - {harness: claude, model: sonnet}
   standard:
-    - {harness: codex, model: gpt-6.1-terra, effort: medium}
     - {harness: claude, model: sonnet}
+    - {harness: codex, model: gpt-6.1-terra, effort: medium}
   strong:
-    - {harness: codex, model: gpt-6.1-sol, effort: high}
     - {harness: claude, model: opus}
+    - {harness: codex, model: gpt-6.1-sol, effort: high}
 slice:
   light:
     - {harness: codex, model: gpt-6-luna, effort: low}
     - {harness: claude, model: sonnet}
   standard:
-    - {harness: codex, model: gpt-6.1-terra, effort: medium}
     - {harness: claude, model: sonnet}
+    - {harness: codex, model: gpt-6.1-terra, effort: medium}
   strong:
-    - {harness: codex, model: gpt-6.1-sol, effort: high}
     - {harness: claude, model: opus}
+    - {harness: codex, model: gpt-6.1-sol, effort: high}
 cut:
   light:
-    - {harness: codex, model: gpt-6.1-sol, effort: high}
     - {harness: claude, model: opus}
+    - {harness: codex, model: gpt-6.1-sol, effort: high}
   standard:
-    - {harness: codex, model: gpt-6.1-sol, effort: high}
     - {harness: claude, model: opus}
+    - {harness: codex, model: gpt-6.1-sol, effort: high}
   strong:
-    - {harness: codex, model: gpt-6.1-sol, effort: high}
     - {harness: claude, model: opus}
+    - {harness: codex, model: gpt-6.1-sol, effort: high}
 review:
   light:
     - {harness: claude, model: sonnet}
