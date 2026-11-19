@@ -1111,3 +1111,17 @@ the platform after approval and merge; live acceptance belongs to the owner.
 **2026-11-19 — Claude executes first for this period.** By the owner’s choice, slice and
 ticket standard/strong and all cut levels try Claude first, with Codex as fallback. The light
 slice and ticket rows and all review rows retain their order. A later PR will restore the order.
+
+**2026-11-19 — The documents are restructured around a router and per-part references.**
+Executors start from a task prompt and these documents, so stale or scattered facts became
+wrong facts in prompts. `AGENTS.md` is now a short router with the CI commands, the hard rules,
+a document map and the update rule; its host-file mode table moved to `docs/host-files.md`.
+`ARCHITECTURE.md` keeps only parts, ownership, flows, placement, other repositories and the
+eight rules; its per-part detail moved, with the matching reference text from the runbook, to
+one document per part (`docs/gateway.md`, `mac.md`, `telegram-bot.md`, `runs.md`, `launcher.md`,
+`node.md`, `knowledge.md`). `docs/operations.md` keeps the node-wide procedures and points to
+each part's steps. `docs/contracts.md` lists what other systems depend on. `docs/claims.json`
+records the core documents' claims with their cited lines for Factory's `cplane docs-verify`;
+the per-part references are detailed documents outside that core set, like the existing API
+guides. A link test in `uv run pytest` keeps the map, links, anchors and citations resolvable.
+Measurement narratives and completed one-time steps were dropped; git keeps them.
