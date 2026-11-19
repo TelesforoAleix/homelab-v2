@@ -1,7 +1,7 @@
 # Two stages: resolve and install dependencies with uv, then copy the ready venv into a slim
 # runtime image that runs as an unprivileged user. Rebuilds reuse uv's cache.
 
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
+FROM ghcr.io/astral-sh/uv:0.13.9-python3.13-bookworm-slim AS builder
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
