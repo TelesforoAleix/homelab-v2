@@ -18,7 +18,7 @@
 <text x="64" y="160" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#656560" text-anchor="start" letter-spacing="1">LINUX SERVER · ALWAYS ON</text>
 <rect x="64" y="178" width="232" height="230" rx="3" fill="#F2F2EF" stroke="#CDCDC7" stroke-width="1" stroke-dasharray="4 3"/>
 <text x="88" y="210" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="18" font-weight="600" fill="#171717" text-anchor="start">Factory</text>
-<text x="272" y="210" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#656560" text-anchor="end" letter-spacing="1">PRIVATE</text>
+<text x="272" y="210" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#656560" text-anchor="end" letter-spacing="1">PUBLIC</text>
 <path d="M88,224 L272,224" fill="none" stroke="#CDCDC7" stroke-width="1"/>
 <text x="88" y="254" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="15" fill="#171717"><tspan font-weight="600">Workshop</tspan><tspan fill="#656560"> · web console</tspan></text>
 <text x="88" y="286" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="15" font-weight="400" fill="#171717" text-anchor="start">Planning and slices</text>
