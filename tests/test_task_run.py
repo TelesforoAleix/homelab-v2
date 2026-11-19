@@ -725,7 +725,7 @@ def test_image_is_pinned_and_holds_no_secret():
     assert re.fullmatch(r"==\d+\.\d+\.\d+", uv_pin)
     assert f"pip install --no-cache-dir uv{uv_pin}" in dockerfile
     builder = (ROOT / "Dockerfile").read_text()
-    assert f"FROM ghcr.io/astral-sh/uv:{uv_pin[2:]}-python3.13-bookworm-slim AS builder" in builder
+    assert f"COPY --from=ghcr.io/astral-sh/uv:{uv_pin[2:]} /uv /uvx /bin/" in builder
     assert "uv python install 3.13" in dockerfile
     for package in ["git", "libpq5", "ripgrep"]:
         assert package in dockerfile
