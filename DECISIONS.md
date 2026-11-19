@@ -1091,3 +1091,19 @@ also sees marked whole runs. Real request fingerprints omit the new null overlay
 pre-upgrade idempotent retries still match. Review remains the client's separate run; hidden tests reach only
 the grading copy. Deployment is a platform restart and client-owned public eval/check smoke tests
 after review and merge.
+
+**2026-11-19 — Home Lab owns typed decisions with Jev behind the contract.**
+`POST /v1/decisions` accepts named text, questions/choices and 1–5 repeats through the existing
+run-key authorizer with `decisions:write`. A private TypeSafe adapter keeps Jev's wire shape
+out of clients and can later be replaced by a local model. Votes aggregate by count, then mean
+probability, then request choice order for exact ties; confidence and probabilities are means
+and agreement is the winning vote share. The API alone receives the provider key from its
+private environment. One new content-free call table records metadata, tokens, configured
+decimal input cost and status, including refusals and known charges before a later repeat
+fails. A transaction advisory lock serializes admission through recording, avoiding concurrent
+calls bypassing the separate UTC monthly cap; the crossing call may finish. Price and cap are
+environment configuration, with Compose defaults of USD 0.042/million input tokens and USD 20.
+No provider messages, content, answers or keys are stored or logged. Each repeat has a
+30-second HTTP timeout without retries or redirects. No LiteLLM, run execution, other service
+or host-file change is needed. The owner sets the key, grants the caller scope and restarts
+the platform after approval and merge; live acceptance belongs to the owner.

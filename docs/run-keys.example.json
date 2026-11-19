@@ -2,7 +2,7 @@
   {
     "application": "factory",
     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-    "scopes": ["runs:write", "runs:read", "runs:eval"],
+    "scopes": ["runs:write", "runs:read", "runs:eval", "decisions:write"],
     "repositories": {"owner/scratch-repo": "main"}
   }
 ]

@@ -532,6 +532,19 @@ and access logging is disabled because errors can contain bodies, prompts or cre
 No hosted observability callbacks are configured. `/health` keeps `status`, `version` and
 `routes`, and replaces `gateway_key_present` with `models_base_url`.
 
+## Typed decisions
+
+The loopback API owns [`POST /v1/decisions`](docs/decisions-api.md), a typed choice contract
+authorized only by a run key with `decisions:write`. Its private adapter calls TypeSafe Jev
+directly with shared named text and questions, a 30-second timeout per repeat and no retries.
+Only `api` receives `HOMELAB_TYPESAFE_API_KEY` from the owner's private environment; no
+provider/model selection leaks into client requests. Repeats aggregate votes, mean probabilities,
+confidence and agreement. Startup creates one content-free decision-call table for metadata,
+token usage, configured decimal cost and status; inputs and answers are never persisted or logged.
+An API-enforced UTC monthly cap, separate from the gateway budget, serializes admission and
+accounting under a Postgres transaction lock. The crossing call completes and subsequent calls
+receive 429 until the UTC month changes. The contract documents configuration and failure limits.
+
 ## Coding tasks
 
 The active `runs` service executes tickets as described in [Run API](#run-api) and the
@@ -992,7 +1005,8 @@ including quotes). Only counts are exposed, without text or match details.
 
 ## Rules
 
-1. Secrets never in git or images — Compose secrets or systemd `LoadCredential=`.
+1. Secrets never in git or images — Compose secrets or systemd `LoadCredential=`;
+   the decisions provider key is supplied only through the API's private environment.
 2. Only `api` and LiteLLM publish container ports, on loopback. The host bot's order
    listener is the explicit exception: runtime Tailscale IPv4, TCP 8110, reachable from
    the tailnet under Tailscale policy and from `homelab_default` (`172.18.0.0/16`) under
@@ -1000,7 +1014,8 @@ including quotes). Only counts are exposed, without text or match details.
 3. Brain is mounted read-only; everything derived lives on the encrypted volume.
 4. Containers run as non-root with `cap_drop: ALL`.
 5. Content is not logged by default; ids, sizes, timings and costs are.
-6. Spend control is the gateway key's budget and dashboard.
+6. Spend control is the gateway key's budget and dashboard; typed decisions have their own
+   API-enforced monthly cap and content-free accounting.
 7. Jobs: persist before ack; idempotent or non-retryable.
 8. Indexing is local (node, or the owner’s Mac for explicit bulk embedding calls); knowledge
    answering sends only the question and retrieved chunks off-node.

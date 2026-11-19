@@ -26,6 +26,10 @@ Reference for what runs today. For the overview, see the [README](../README.md).
   allowed/default models and warning-only memory budgets, requests waiting for Inference,
   Claude/Codex usage, and an owner-set night window into Inference that is off by default.
 - Knowledge endpoints: `POST /v1/knowledge/query` and `/v1/knowledge/answer`; jobs persist in Postgres.
+- [Typed decisions](decisions-api.md): `POST /v1/decisions` uses a run key with
+  `decisions:write`, shared named text and questions, and 1–5 repeats. TypeSafe Jev is the
+  current private adapter. Content-free accounting enforces a separate UTC monthly cap
+  (Compose default USD 20); the contract lists configuration, aggregation and errors.
 - Hosted images use three `image-*` purposes through LiteLLM. Native image upscale and
   background video jobs share their $20 monthly gateway-key budget. `GET /v1/model/info`
   lists models by operation with prices and capabilities.

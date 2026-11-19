@@ -15,7 +15,7 @@ from homelab.tasks.store import RunError
 from homelab.tasks.submit import Strict
 
 KEY_FILE = Path("/etc/homelab/run-keys.json")
-Scope = Literal["runs:write", "runs:read", "runs:eval"]
+Scope = Literal["runs:write", "runs:read", "runs:eval", "decisions:write"]
 Repository = Annotated[
     str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
 ]

@@ -84,6 +84,7 @@ tests and operational feedback.
 | Knowledge | Ingestion with sources (LlamaIndex), Postgres with pgvector, and answers that cite their sources. |
 | Durable jobs | Procrastinate on Postgres. A job is stored before it is acknowledged. |
 | Agent runs | The run API (`POST /v1/runs`) takes tickets, whole slices, cuts, reviews and eval runs. The run API uses application-scoped keys. Agent configurations are data folders with a hash, and every run records what ran. |
+| Typed decisions | [`POST /v1/decisions`](docs/decisions-api.md) makes named choices with probabilities, confidence and agreement across repeats, through a scoped run key and a separate monthly cap. |
 | Images and video | Image and video generation purposes for the image studio, with one monthly budget on the gateway key and alerts at 80% and 100%. |
 | Security | Encrypted volumes (LUKS), SSH keys only, a private admin network, non-root service containers. A fixed launcher and a deployer are the only root helpers. A private-content check runs before any push to a public repository. CI scans for secrets. |
 | Operations | Daily database dumps with a restore check, weekly encrypted copies, and failure alerts to my phone. |
@@ -109,7 +110,7 @@ The full reference is in [docs/platform.md](docs/platform.md).
 - Management from Workshop: providers, keys per application, access and spending limits.
 - Safer operations: platform services as versioned images with automatic installs, and a
   restore that I rehearse.
-- Small decision models behind a purpose, for classification and narrow choices.
+- Local decision models behind the typed decisions contract, for classification and narrow choices.
 - Factory as a public repository, after its first eval.
 
 **Later, when a project needs it**
