@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 1200 470" width="1200" height="470" role="img" aria-labelledby="system-light-title system-light-desc">
 <title id="system-light-title">Home Lab system context</title>
-<desc id="system-light-desc">My phone and laptop reach Workshop, Factory's private web console, and the platform's Telegram bot over a private network. Client applications reach the Home Lab platform on an always-on Linux server. Factory, a private development system on the same server, sends work to the platform's run API. The platform routes model requests to hosted providers through one gateway key, or to local models on an Apple Silicon Mac.</desc>
+<desc id="system-light-desc">My phone and laptop reach Workshop, Factory's private web console, and the platform's Telegram bot over a private network. Client applications reach the Home Lab platform on an always-on Linux server. Factory, the development system on the same server, sends work to the platform's run API. The platform routes model requests to hosted providers through one gateway key, or to local models on an Apple Silicon Mac.</desc>
 <defs>
 <marker id="system-light-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#171717"/></marker>
 <marker id="system-light-arrow-signal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#FF4D00"/></marker>
@@ -18,7 +18,7 @@
 <text x="64" y="160" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#656560" text-anchor="start" letter-spacing="1">LINUX SERVER · ALWAYS ON</text>
 <rect x="64" y="178" width="232" height="230" rx="3" fill="#F2F2EF" stroke="#CDCDC7" stroke-width="1" stroke-dasharray="4 3"/>
 <text x="88" y="210" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="18" font-weight="600" fill="#171717" text-anchor="start">Factory</text>
-<text x="272" y="210" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#656560" text-anchor="end" letter-spacing="1">PRIVATE</text>
+<text x="272" y="210" font-family='"SFMono-Regular", Consolas, monospace' font-size="12" font-weight="400" fill="#656560" text-anchor="end" letter-spacing="1">PUBLIC</text>
 <path d="M88,224 L272,224" fill="none" stroke="#CDCDC7" stroke-width="1"/>
 <text x="88" y="254" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="15" fill="#171717"><tspan font-weight="600">Workshop</tspan><tspan fill="#656560"> · web console</tspan></text>
 <text x="88" y="286" font-family='"Helvetica Neue", Helvetica, Arial, sans-serif' font-size="15" font-weight="400" fill="#171717" text-anchor="start">Planning and slices</text>
