@@ -1,6 +1,6 @@
 {
   "pi_version": "1.4.0",
-  "image": "homelab-task:2",
+  "image": "homelab-task:3",
   "flags": [
     "--mode", "json", "--no-session", "--no-approve", "--no-extensions",
     "--no-skills", "--no-prompt-templates", "--no-themes", "--no-mcp", "--offline"

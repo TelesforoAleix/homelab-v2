@@ -160,7 +160,7 @@ def test_task_approves_its_own_tag_immediately_before_run(task_env, monkeypatch)
     tags = []
     monkeypatch.setattr(launcher, "approved_image", lambda tag: tags.append(tag) or IMAGE)
     args, _ = launcher.run_arguments(task_request(), PROFILES)
-    assert tags == ["homelab-task:2"]
+    assert tags == ["homelab-task:3"]
     assert args[args.index(IMAGE) + 1 :][:2] == ["sh", "-c"]
 
 

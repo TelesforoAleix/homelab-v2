@@ -70,7 +70,7 @@
     "timeout": null
   },
   "task": {
-    "image": "homelab-task:2",
+    "image": "homelab-task:3",
     "limits": {
       "memory": "8g",
       "memory_swap": "8g",

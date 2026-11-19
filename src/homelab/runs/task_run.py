@@ -32,7 +32,7 @@ VOLUME = Path("/srv/homelab")
 RUNS = VOLUME / "runs"
 TOKENS = VOLUME / "task-tokens"
 COSTS = VOLUME / "task-costs"
-IMAGE = "homelab-task:2"
+IMAGE = "homelab-task:3"
 DEFAULT_CONFIGURATION = Path("/app/configurations/pi/base")
 TASK_NETWORK = "homelab-tasks"
 PACKAGE_NETWORK = "homelab-packages"
@@ -808,7 +808,7 @@ def pi_script(config):
 
 
 def image_digest(image):
-    if image != "homelab-task:2":
+    if image != "homelab-task:3":
         raise Refused("configuration image unavailable")
     return launcher.request({"op": "task-image"})["image"]
 

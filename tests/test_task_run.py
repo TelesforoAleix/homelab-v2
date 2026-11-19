@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -28,7 +29,7 @@ loader.exec_module(runner)
 @pytest.fixture(autouse=True)
 def configuration_environment(monkeypatch):
     monkeypatch.setattr(runner, "DEFAULT_CONFIGURATION", ROOT / "configurations/pi/base")
-    monkeypatch.setattr(runner, "IMAGE", "homelab-task:2")
+    monkeypatch.setattr(runner, "IMAGE", "homelab-task:3")
     monkeypatch.setattr(runner, "image_digest", lambda image: "sha256:" + "a" * 64)
 
 
@@ -719,7 +720,12 @@ def test_image_is_pinned_and_holds_no_secret():
     dockerfile = (ROOT / "node/opt/homelab-task/Dockerfile").read_text()
     assert "FROM node:22-bookworm-slim@sha256:" in dockerfile
     assert "npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.4.0" in dockerfile
-    assert "uv==0.9.30" in dockerfile
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    uv_pin = project["tool"]["uv"]["required-version"]
+    assert re.fullmatch(r"==\d+\.\d+\.\d+", uv_pin)
+    assert f"pip install --no-cache-dir uv{uv_pin}" in dockerfile
+    builder = (ROOT / "Dockerfile").read_text()
+    assert f"COPY --from=ghcr.io/astral-sh/uv:{uv_pin[2:]} /uv /uvx /bin/" in builder
     assert "uv python install 3.13" in dockerfile
     for package in ["git", "libpq5", "ripgrep"]:
         assert package in dockerfile
@@ -727,7 +733,7 @@ def test_image_is_pinned_and_holds_no_secret():
 
 
 def test_the_image_tag_follows_the_dockerfile_change():
-    assert runner.IMAGE == "homelab-task:2"
+    assert runner.IMAGE == "homelab-task:3"
 
 
 def test_a_grant_carries_the_request_budget(tmp_path, monkeypatch):
