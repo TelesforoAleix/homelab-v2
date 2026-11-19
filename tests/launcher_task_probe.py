@@ -125,7 +125,7 @@ def exists(name):
 def probe():
     if os.geteuid() != 0:
         raise RuntimeError("run the orchestrator as root; clients run as non-root")
-    image = docker("image", "inspect", "--format", "{{.Id}}", "homelab-task:2")
+    image = docker("image", "inspect", "--format", "{{.Id}}", "homelab-task:3")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
         raise RuntimeError("invalid task image id")
     if image not in Path("/etc/homelab-launcher/images").read_text().splitlines():
@@ -222,7 +222,7 @@ def probe():
 
 def ownership_probe():
     """Create and clone through the socket; every write is in a task-owned container."""
-    image = docker("image", "inspect", "--format", "{{.Id}}", "homelab-task:2")
+    image = docker("image", "inspect", "--format", "{{.Id}}", "homelab-task:3")
     group = grp.getgrnam("homelab-launch").gr_gid
     owner = pwd.getpwnam("homelab-task")
     if owner.pw_uid in (0, 21020):
@@ -333,7 +333,7 @@ def readonly_probe():
     launcher = importlib.util.module_from_spec(spec)
     loader.exec_module(launcher)
     profiles, _ = launcher.load_configuration()
-    image = docker("image", "inspect", "--format", "{{.Id}}", "homelab-task:2")
+    image = docker("image", "inspect", "--format", "{{.Id}}", "homelab-task:3")
     group = grp.getgrnam("homelab-launch").gr_gid
     for read_only in (False, True):
         work_id = "run-" + uuid.uuid4().hex
@@ -428,7 +428,7 @@ def private_clone_probe():
     with urllib.request.urlopen(request, timeout=30) as response:
         if json.load(response).get("private") is not True:
             raise RuntimeError("probe requires a private repository")
-    image = docker("image", "inspect", "--format", "{{.Id}}", "homelab-task:2")
+    image = docker("image", "inspect", "--format", "{{.Id}}", "homelab-task:3")
     group = grp.getgrnam("homelab-launch").gr_gid
     work_id = "run-" + uuid.uuid4().hex
     run_id = work_id + "-clone"

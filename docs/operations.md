@@ -1598,7 +1598,7 @@ check result is kept but `ended` names the agent.
 
 A run needs the data volume, Docker, the stack and the image. Update the image deliberately:
 change the Dockerfile, install it as in [Rebuilding the node](#rebuilding-the-node) and run
-`sudo docker build -t homelab-task:2 /opt/homelab-task`. The build needs Internet access and fails
+`sudo docker build -t homelab-task:3 /opt/homelab-task`. The build needs Internet access and fails
 if the pinned base has Node below 22.19. Tokens live in `/srv/homelab/task-tokens`, `root:10001`
 `0750`, and are hashes; `sudo rm` of a file there revokes a token at once. LiteLLM appends what
 each request cost to `/srv/homelab/task-costs/<token hash>` (`root:10001`, `0770`, cleared at the
@@ -2589,7 +2589,10 @@ SSH accounts work through Tailscale.
    The context image and its private repository list are set up after Docker and the data
    volume are available, following [Code context server](#code-context-server). Create
    `/etc/homelab-context/repositories` as `root:root` mode `0600` with the desired names.
-   Then build the task image with `sudo docker build -t homelab-task:2 /opt/homelab-task`.
+   The task image pins the same uv version as CI through `pyproject.toml`; update both pins
+   together. Then build the task image with `sudo docker build -t homelab-task:3 /opt/homelab-task`
+   and approve its immutable id in `/etc/homelab-launcher/images` as described under
+   [Launcher task profile](#task-launcher-profile).
    Compose creates `/srv/homelab/task-tokens` and `/srv/homelab/task-costs` on first start and the
    first run tightens both (`root:10001`, `0750` and `0770`), so LiteLLM can append costs; restart
    `homelab.service` after merging, since LiteLLM needs the new mount and `task_cost_dir`. The
@@ -3183,7 +3186,7 @@ the Docker subprocess receives only a fixed host `PATH` plus those values, so mi
 cannot inherit host values. Prepare fixes `HTTPS_PROXY=http://package-proxy:8888` and
 `UV_HTTP_TIMEOUT=120`; commit fixes container `PATH=/usr/bin:/bin`.
 
-All shapes use the approved immutable id of `homelab-task:2`, `--pull never`, `--rm`, `--init`,
+All shapes use the approved immutable id of `homelab-task:3`, `--pull never`, `--rm`, `--init`,
 `--cap-drop ALL`, `no-new-privileges`, a read-only root, 8g memory/swap, 2 CPUs, 512 PIDs and
 no Docker logs. `/tmp` and `/home/task` are 4g tmpfs mounts with today's exec/nosuid/nodev,
 ownership and modes. Among these five shapes, only agent/review open stdin. Names are
@@ -3224,8 +3227,8 @@ python3 -m json.tool node/etc/homelab-launcher/callers.json >/dev/null
 sudo systemd-analyze verify /etc/systemd/system/homelab-launcher.socket /etc/systemd/system/homelab-launcher.service
 
 # Review and explicitly approve this already-built task image id, preserving fence approvals.
-sudo docker image inspect --format '{{.Id}}' homelab-task:2
-sudo sh -ec 'task_image_id=$(docker image inspect --format "{{.Id}}" homelab-task:2); grep -qxF "$task_image_id" /etc/homelab-launcher/images || printf "%s\n" "$task_image_id" >> /etc/homelab-launcher/images'
+sudo docker image inspect --format '{{.Id}}' homelab-task:3
+sudo sh -ec 'task_image_id=$(docker image inspect --format "{{.Id}}" homelab-task:3); grep -qxF "$task_image_id" /etc/homelab-launcher/images || printf "%s\n" "$task_image_id" >> /etc/homelab-launcher/images'
 sudo systemctl stop homelab-launcher.service
 sudo install -m 0755 -o root -g root node/usr/local/sbin/homelab-launcher /usr/local/sbin/homelab-launcher
 sudo install -m 0644 -o root -g root node/etc/homelab-launcher/profiles.json node/etc/homelab-launcher/callers.json /etc/homelab-launcher/

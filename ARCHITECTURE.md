@@ -560,7 +560,7 @@ log driver, because the daemon's `json-file` default would keep prompts and code
 
 The root socket launcher also exposes these five layouts as the `task` profile for root and
 uid 21020 (`homelab-runs`). It selects one work-folder identifier under `/srv/homelab/task-work`,
-uses that folder's non-root uid/gid, and resolves approved `homelab-task:2` to its immutable id.
+uses that folder's non-root uid/gid, and resolves approved `homelab-task:3` to its immutable id.
 Each shape fixes Docker options and the entry command. Bounded arguments and per-shape
 allow-listed environment values supply in-container task data; they never select host paths,
 images, networks, mounts or Docker flags. Agent/review stdin is a passed descriptor, and

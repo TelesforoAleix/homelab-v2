@@ -68,7 +68,7 @@ LAYOUTS = {
 }
 
 TASK_WORK_ROOT = Path("/srv/homelab/task-work")
-TASK_IMAGE = "homelab-task:2"
+TASK_IMAGE = "homelab-task:3"
 TASK_STRING_LIMIT = 32768
 TASK_ARGUMENT_LIMIT = 256
 TASK_DATA_LIMIT = 48 * 1024

@@ -37,6 +37,7 @@ telegram-bot = [
 ]
 
 [tool.uv]
+required-version = "==0.13.9"
 # Tests use the Mac benchmark helpers and the real Telegram library (CI syncs both).
 default-groups = ["dev", "benchmark", "telegram-bot"]
 

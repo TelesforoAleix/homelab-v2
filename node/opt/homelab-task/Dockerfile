@@ -4,7 +4,7 @@ FROM node:22-bookworm-slim@sha256:9f0dde62d10e7ff7a310ecaebd66225f6b46c17e6cb778
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git libpq5 python3 python3-venv ripgrep \
     && rm -rf /var/lib/apt/lists/*
-RUN python3 -m venv /opt/bootstrap && /opt/bootstrap/bin/pip install --no-cache-dir uv==0.9.30
+RUN python3 -m venv /opt/bootstrap && /opt/bootstrap/bin/pip install --no-cache-dir uv==0.13.9
 ENV PATH=/work/.venv/bin:/opt/bootstrap/bin:/usr/local/bin:/usr/bin:/bin \
     UV_PYTHON_INSTALL_DIR=/opt/python
 # This uv release names the exact Python 3.13 it installs.
