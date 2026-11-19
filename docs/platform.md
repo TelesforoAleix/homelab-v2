@@ -43,7 +43,8 @@ Reference for what runs today. For the overview, see the [README](../README.md).
 
 [Coding tickets](operations.md#runs-service) run one at a time on the node through the
 platform's unprivileged `runs` service. `config/executors.yaml` selects the worker at the
-request's level: Codex first, then Claude when usage limits require fallback. Both use the
+request's level: Codex first at light, Claude first at standard and strong, with the other
+as fallback when usage limits require it. Both use the
 fixed launcher's `cli-run` profile. Tickets retain the task path's fresh clone, pinned paths,
 allowed-file import, check, commit step and repository-scoped GitHub App push. A failed check
 gets one retry from a fresh clone with its output as feedback, then escalates. There is no
