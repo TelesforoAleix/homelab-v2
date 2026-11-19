@@ -46,7 +46,7 @@ failure drop-ins, and the narrow polkit grant are recorded here. Private allowli
 credential contents stay outside this tree.
 
 Base SSH, ufw, Docker, sysctl, console timeout and Wi-Fi configuration also live in `node/`;
-their installed modes are in [Installing host files](host-files.md#installed-modes). Recovery is the
+their installed modes are in [Installed modes](operations.md#installed-modes). Recovery is the
 [Rebuilding the node](operations.md#rebuilding-the-node) procedure: no node backup, a public code
 clone, Brain from the owner's Mac, originals restored from an encrypted copy (or the
 owner's Mac corpus), re-ingestion and re-issued secrets.

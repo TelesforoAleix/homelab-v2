@@ -5,7 +5,8 @@ the task store and the stopped host runner kept for rollback, with their provisi
 and rollback steps. Read it before changing `src/homelab/api/runs.py`,
 `src/homelab/api/run_contract.py`, `src/homelab/runs/`, `src/homelab/tasks/`,
 `config/executors.yaml` or the task scripts. The wire contract for clients is
-[run-api.md](run-api.md); the launcher it depends on is [launcher.md](launcher.md).
+[run-api.md](run-api.md); the launcher it depends on is in
+[operations.md](operations.md#install-the-fixed-fence-launcher).
 
 ## Run API
 
@@ -202,7 +203,7 @@ Each shape fixes Docker options and the entry command. Bounded arguments and per
 allow-listed environment values supply in-container task data; they never select host paths,
 images, networks, mounts or Docker flags. Agent/review stdin is a passed descriptor, and
 content goes only to the caller's output descriptors. The stopped host runner starts its
-containers directly. The [launcher contract and node probe](launcher.md#task-launcher-profile)
+containers directly. The [launcher contract and node probe](operations.md#task-launcher-profile)
 describe this boundary.
 
 Prepare's only way out is `package-proxy`, a tinyproxy on the internal `homelab-packages` network,

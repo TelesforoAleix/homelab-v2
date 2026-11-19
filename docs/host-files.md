@@ -38,43 +38,6 @@ script or node GitHub key.
 
 ## Installed modes
 
-These are installed modes, not Git's executable bit. Files are `root:root`. Directories are
-`root:root` too, except the vendor-managed `polkit-1/rules.d`, which stays `root:polkitd`.
-The `.d` rows cover each unit's drop-in directory.
-
-| Repository directory | Directory mode | File mode |
-|---|---|---|
-| `node/etc/` | `0755` | `0644` |
-| `node/etc/ssh/` | `0755` | — |
-| `node/etc/ssh/sshd_config.d/` | `0755` | `0600` |
-| `node/etc/ufw/` | `0755` | `0640` |
-| `node/etc/docker/` | `0755` | `0644` |
-| `node/etc/containerd/` | `0755` | `0644` |
-| `node/etc/sysctl.d/` | `0755` | `0644` |
-| `node/etc/profile.d/` | `0755` | `0644` |
-| `node/etc/tmpfiles.d/` | `0755` | `0644` |
-| `node/etc/systemd/system/` | `0755` | `0644` |
-| `node/etc/systemd/system/homelab-notify@.service.d/` | `0755` | `0644` |
-| `node/etc/systemd/system/homelab-watchdog.service.d/` | `0755` | `0644` |
-| `node/etc/systemd/system/homelab-telegram-bot.service.d/` | `0755` | `0644` |
-| `node/etc/systemd/system/docker.service.d/` | `0755` | `0644` |
-| `node/etc/systemd/system/docker.socket.d/` | `0755` | `0644` |
-| `node/etc/systemd/system/containerd.service.d/` | `0755` | `0644` |
-| `node/etc/sudoers.d/` | `0755` | `0440` |
-| `node/etc/polkit-1/rules.d/` | `0750` | `0644` |
-| `node/etc/homelab-deployer/` | `0755` | `0644` |
-| `node/etc/homelab-launcher/` | `0755` | `0644` |
-| `node/etc/homelab-task/` | `0755` | `0644` |
-| `node/opt/homelab-telegram-bot/` | `0755` | `0644` |
-| `node/opt/homelab-context/` | `0755` | `0644` |
-| `node/opt/homelab-task/` | `0755` | `0644` |
-| `node/opt/homelab-package-proxy/` | `0755` | `0644` |
-| `node/opt/homelab-fence/` | `0755` | `0644` |
-| `node/opt/homelab-fence/cli/` | `0755` | `0644` |
-| `node/opt/homelab-fence/proxy/` | `0755` | `0644` |
-| `node/opt/homelab-deployer/test-app/` | `0755` | `0644` |
-| `node/usr/local/sbin/` | `0755` | `0755` |
-
-Files created on the node rather than copied from this tree keep the modes their part
-documents give (for example the launcher's locally generated `images` approval list is
-`0600`, and the deployer's token is `0600`).
+The directory and file mode of every repository directory under `node/` is in
+[Installed modes](operations.md#installed-modes), inside the rebuild procedure that applies
+them. Use those modes for every `sudo install`.

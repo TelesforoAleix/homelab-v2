@@ -1118,9 +1118,9 @@ wrong facts in prompts. `AGENTS.md` is now a short router with the CI commands, 
 a document map and the update rule; its host-file mode table moved to `docs/host-files.md`.
 `ARCHITECTURE.md` keeps only parts, ownership, flows, placement, other repositories and the
 eight rules; its per-part detail moved, with the matching reference text from the runbook, to
-one document per part (`docs/gateway.md`, `mac.md`, `telegram-bot.md`, `runs.md`, `launcher.md`,
-`node.md`, `knowledge.md`). `docs/operations.md` keeps the node-wide procedures and points to
-each part's steps. `docs/contracts.md` lists what other systems depend on. `docs/claims.json`
+one document per part (`docs/gateway.md`, `mac.md`, `telegram-bot.md`, `runs.md`,
+`node.md`, `knowledge.md`). `docs/operations.md` keeps the node-wide procedures, including the launcher and fence installs
+and the host-file mode table that existing tests read there, and points to each part's steps. `docs/contracts.md` lists what other systems depend on. `docs/claims.json`
 records the core documents' claims with their cited lines for Factory's `cplane docs-verify`;
 the per-part references are detailed documents outside that core set, like the existing API
 guides. A link test in `uv run pytest` keeps the map, links, anchors and citations resolvable.

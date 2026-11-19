@@ -80,7 +80,7 @@ moved, and put incompatible changes under a new version that runs beside the old
   and `runs` (uid 21020).
 - **Source:** `node/usr/local/sbin/homelab-launcher`, `node/etc/homelab-launcher/callers.json`,
   `node/etc/homelab-launcher/profiles.json`. Operations and fields:
-  [launcher.md](launcher.md#install-the-fixed-fence-launcher).
+  [operations.md](operations.md#install-the-fixed-fence-launcher).
 - **Change safely:** add optional request fields that default to today's behaviour, as
   `read_only`, `stdin` and `stream` did. A caller-list change is a guard change that needs the
   owner's review; restart the launcher, then every socket client, after installing it.

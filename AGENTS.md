@@ -65,7 +65,7 @@ When you do the first thing, read the document, and keep it current in the same 
 - Change a purpose, a gateway hook or a media model → [docs/gateway.md](docs/gateway.md)
 - Change the run API's wire format or run keys → [docs/run-api.md](docs/run-api.md)
 - Change the `runs` service, the task store or the rollback host runner → [docs/runs.md](docs/runs.md)
-- Change the launcher or the CLI fence → [docs/launcher.md](docs/launcher.md)
+- Change the launcher or the CLI fence → [docs/operations.md](docs/operations.md#install-the-fixed-fence-launcher), where their install steps and protocol live
 - Change the decisions API → [docs/decisions-api.md](docs/decisions-api.md)
 - Change the application deployer or its manifests → [docs/deployer.md](docs/deployer.md)
 - Change the Telegram bot, its inbox or its order endpoint → [docs/telegram-bot.md](docs/telegram-bot.md)

@@ -930,7 +930,7 @@ Default HTTP access logging is disabled; the private log contains result and byt
 No copy content passes through this channel.
 
 After merging, install the changed bot files and reminder from the node clone after showing
-`sudo diff`, using the modes in [Installing host files](host-files.md#installed-modes). Configure the private listener URL as described in
+`sudo diff`, using the modes in [Installed modes](operations.md#installed-modes). Configure the private listener URL as described in
 [Rebuilding the node](operations.md#rebuilding-the-node), then restart only
 `homelab-telegram-bot.service`. Validate `/backup` with the card ejected, inserted, and the
 agent stopped; restart the agent afterwards. Verify the card file and

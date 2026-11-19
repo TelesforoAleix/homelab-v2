@@ -52,7 +52,7 @@ review inside a ticket; the client reviews the slice before merge. If neither ex
 usable, the run waits `usage_limit` until a scheduled queue retry. Each attempt records the
 executor that ran.
 
-The [fixed container launcher](launcher.md#install-the-fixed-fence-launcher) starts every
+The [fixed container launcher](operations.md#install-the-fixed-fence-launcher) starts every
 container; `runs` has no Docker socket or tool logins. Whole-slice CLI turns, write/read cuts,
 read-only reviews, conversation resumes and usage fallback are enabled through
 `HOMELAB_RUN_ROLES=slice,cut,review`. Ended CLI copies are removed through the launcher

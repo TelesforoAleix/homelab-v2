@@ -41,8 +41,8 @@ containment and the API contracts. Only the LiteLLM container holds the gateway 
 | `cli` | The `homelab` command: `ingest`, `eval`, `routes`, `providers` (`src/homelab/cli.py`) | Inside the platform image | [knowledge.md](docs/knowledge.md) |
 | `task-store` | Task, attempt, trace and run tables with their submit, claim and finish commands (`src/homelab/tasks/`) | Inside `api`, `runs` and the platform image | [runs.md](docs/runs.md#task-store) |
 | `runs` | The execution service: tickets, slices, cuts, reviews and checks (`src/homelab/runs/`) | Compose service under the `runs` profile, uid 21020 | [runs.md](docs/runs.md) |
-| `launcher` | Root socket helper that starts every agent container from fixed profiles | Host service on the node | [launcher.md](docs/launcher.md) |
-| `fence` | The sealed CLI image, its allow-list proxy and probe that the launcher builds on | Host files and containers on the node | [launcher.md](docs/launcher.md#install-the-cli-fence) |
+| `launcher` | Root socket helper that starts every agent container from fixed profiles | Host service on the node | [operations.md](docs/operations.md#install-the-fixed-fence-launcher) |
+| `fence` | The sealed CLI image, its allow-list proxy and probe that the launcher builds on | Host files and containers on the node | [operations.md](docs/operations.md#install-the-cli-fence) |
 | `deployer` | Root socket helper that installs application images from `main` with rollback | Host service on the node | [deployer.md](docs/deployer.md) |
 | `host-runner` | `homelab-task-run` and `homelab-task-runner`, the stopped rollback execution path | Host scripts and a disabled unit | [runs.md](docs/runs.md#coding-tasks-in-a-container) |
 | `telegram-bot` | python-telegram-bot service: commands, planning reads, inbox, order endpoint | Host service on the node, as `homelab-bot` | [telegram-bot.md](docs/telegram-bot.md) |

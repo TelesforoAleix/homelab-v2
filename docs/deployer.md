@@ -187,7 +187,7 @@ changes are needed for this update.
 
 The notifier and units are also covered by the rebuild's wildcard installation; install them
 only once. The deployer directories' modes are in
-[Installing host files](host-files.md#installed-modes).
+[Installed modes](operations.md#installed-modes).
 
 The owner creates `/etc/homelab-deployer/github-token`, root:root **0600**, containing a
 read-only fine-grained GitHub token scoped to the manifest repository with Contents and
