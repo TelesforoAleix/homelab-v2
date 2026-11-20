@@ -76,6 +76,26 @@ def test_repository_scoped_installation_token_with_real_rs256(app_files, tmp_pat
     ]
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "permissions"),
+    [
+        ({}, {"contents": "write", "metadata": "read"}),
+        ({"workflows": False}, {"contents": "write", "metadata": "read"}),
+        ({"workflows": True}, {"contents": "write", "metadata": "read", "workflows": "write"}),
+    ],
+)
+def test_token_requests_workflows_only_when_asked(app_files, kwargs, permissions):
+    bodies = []
+
+    def github(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(201, json={"token": "FAKE-IN-MEMORY-TOKEN"})
+
+    with httpx.Client(transport=httpx.MockTransport(github)) as client:
+        app.GitHubApp(*app_files, client=client).token("owner/repo", **kwargs)
+    assert bodies == [{"repositories": ["repo"], "permissions": permissions}]
+
+
 @pytest.mark.parametrize("repository", ["../repo", "owner/repo/extra", "owner/re..po", "-x/repo"])
 def test_token_refuses_invalid_repository(app_files, repository):
     with pytest.raises(app.Refused):

@@ -80,6 +80,22 @@ def remote_refs(repository, token):
     return default[1], refs
 
 
+def changed_paths(directory, base, tip):
+    names = git(
+        directory,
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--name-only",
+        "-z",
+        base,
+        tip,
+        "--",
+    ).stdout.split(b"\0")
+    return [name.decode("utf-8", "surrogateescape") for name in filter(None, names)]
+
+
 @contextlib.contextmanager
 def checked_bundle(bundle, document, parent):
     with tempfile.TemporaryDirectory(dir=parent, prefix="verify-") as temporary:
@@ -113,21 +129,9 @@ def checked_bundle(bundle, document, parent):
         )
         base = document["base_commit"]
         git(directory, "merge-base", "--is-ancestor", base, tip)
-        paths = git(
-            directory,
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-renames",
-            "--name-only",
-            "-z",
-            base,
-            tip,
-            "--",
-        ).stdout.split(b"\0")
+        paths = changed_paths(directory, base, tip)
         allowed, pinned = document["work"]["allowed_files"], document["work"]["pinned_paths"]
-        for name in filter(None, paths):
-            path = name.decode("utf-8", "surrogateescape")
+        for path in paths:
 
             def covers(entry, path=path):
                 return path == entry or path.startswith(entry + "/")
@@ -168,7 +172,16 @@ def push_checked(directory, document, tip):
         raise Refused("push_refused")
     if tip == document["base_commit"]:
         return []
-    token = GitHubApp().token(document["repository"])
+    workflows = any(
+        path.startswith(".github/workflows/")
+        for path in changed_paths(directory, document["base_commit"], tip)
+    )
+    app = GitHubApp()
+    token = (
+        app.token(document["repository"], workflows=True)
+        if workflows
+        else app.token(document["repository"])
+    )
     default, _ = remote_refs(document["repository"], token)
     if document["branch"] in {"main", default}:
         raise Refused("push_refused")

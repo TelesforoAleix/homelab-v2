@@ -39,7 +39,7 @@ class GitHubApp:
     ):
         self.key, self.config, self.client, self.clock = Path(key), Path(config), client, clock
 
-    def token(self, repository):
+    def token(self, repository, *, workflows=False):
         repository_name(repository)
         try:
             settings = json.loads(self.config.read_bytes())
@@ -66,9 +66,11 @@ class GitHubApp:
             ).stdout
             jwt = (message + b"." + encoded(signature)).decode("ascii")
             if self.client is not None:
-                return self._mint(self.client, settings["installation_id"], repository, jwt)
+                return self._mint(
+                    self.client, settings["installation_id"], repository, jwt, workflows
+                )
             with httpx.Client(timeout=30, trust_env=False, follow_redirects=False) as client:
-                return self._mint(client, settings["installation_id"], repository, jwt)
+                return self._mint(client, settings["installation_id"], repository, jwt, workflows)
         except (
             OSError,
             ValueError,
@@ -80,7 +82,10 @@ class GitHubApp:
             raise Refused("app_token_failed") from None
 
     @staticmethod
-    def _mint(client, installation, repository, jwt):
+    def _mint(client, installation, repository, jwt, workflows=False):
+        permissions = {"contents": "write", "metadata": "read"}
+        if workflows:
+            permissions["workflows"] = "write"
         response = client.post(
             f"https://api.github.com/app/installations/{installation}/access_tokens",
             headers={
@@ -91,7 +96,7 @@ class GitHubApp:
             },
             json={
                 "repositories": [repository.split("/")[1]],
-                "permissions": {"contents": "write", "metadata": "read"},
+                "permissions": permissions,
             },
         )
         response.raise_for_status()
