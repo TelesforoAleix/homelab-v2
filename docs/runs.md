@@ -80,6 +80,28 @@ non-null store executor/hash use an empty selection and its hash, projected as n
 No migration is needed. Whole-run completion writes its task mirror before its authoritative
 run state in one transaction, preserving marked conversation states against the legacy bridge.
 
+### Contract usage
+
+`src/homelab/api/contract_usage.py` counts what the run-api readers accept. After a body
+validates, `POST /v1/runs`, `POST /v1/runs/{run_id}/messages` and, after its ownership check,
+`POST /v1/runs/{run_id}/cancel` add one to `homelab_contract_usage`, keyed by contract
+(`run-api`), application, operation, shape and day. `shape` returns `base` for every request
+today. The same request's unknown fields, found by walking the raw JSON against the request
+models through nested models, lists and optional types (free-form dictionaries such as
+`attribution` are not walked), are upserted into `homelab_contract_unknown_fields` as paths
+such as `$.work.reviewer` or `$.assets[].note`, keyed by contract, application, operation and
+path, with first and last seen times and a count. A name outside `^[A-Za-z0-9_-]{1,64}$` is
+recorded as `?`, and at most 32 paths are kept for a request. Refused requests and reads are not
+counted. Recording is best effort: a failure logs one warning naming only the exception type,
+and the request proceeds. Both tables are created by `schema.sql` with `IF NOT EXISTS`.
+
+`GET /v1/contracts/usage` requires `runs:read` and returns
+`{contract, schema, since, shapes, unknown_fields}` for every application over the last 30 days,
+today included: shapes ordered by day, application, operation and shape; unknown fields, by last
+seen within the window, ordered by application, operation and path. `schema` is the SHA-256
+of the exact text `python -m homelab.contracts.export run-api` prints, computed once per
+process; the same hash names the document in a `422 invalid_request`.
+
 ## Container task runner
 
 The platform image contains `python -m homelab.runs`. Compose defines it as `runs` under the

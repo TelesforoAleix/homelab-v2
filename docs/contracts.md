@@ -22,6 +22,10 @@ moved, and put incompatible changes under a new version that runs beside the old
   an existing request must still compare equal, so never change how omitted fields default.
   Scope names, status reasons and error codes are part of the contract. Key-file changes keep
   the `{application, sha256, scopes, repositories}` shape.
+- **Readers:** request readers ignore unknown fields and record their paths, so a newer sender
+  keeps working after a provider rollback; senders still send none. `GET /v1/contracts/usage`
+  (`runs:read`) reports accepted shapes and unknown field paths, recorded by
+  `src/homelab/api/contract_usage.py`; see [runs.md](runs.md#contract-usage).
 
 ## decisions-api
 

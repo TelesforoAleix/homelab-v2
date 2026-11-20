@@ -14,8 +14,10 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
+from homelab.api import contract_usage
 from homelab.api.run_keys import ApplicationKey, RunError, authorize, load_keys
 from homelab.contracts.run_api import (
+    ContractUsage,
     Message,
     RunCreated,
     RunPage,
@@ -73,13 +75,29 @@ def create(identity: ApplicationKey, body: RunRequest, **kwargs):
         )
 
 
+class InvalidRequest(RunError):
+    """A refused body, named by the schema path of its first error and never by a value."""
+
+    def __init__(self, field: str):
+        super().__init__(422, "invalid_request")
+        self.field = field
+
+
 def parse(model, raw: bytes):
     if len(raw) > BODY_LIMIT:
         raise RunError(413, "body_too_large")
     try:
         return model.model_validate_json(raw)
-    except ValidationError:
-        raise RunError(422, "invalid_request") from None
+    except ValidationError as error:
+        errors = error.errors(include_url=False, include_context=False, include_input=False)
+        location = errors[0]["loc"] if errors else ()
+        raise InvalidRequest(contract_usage.error_field(model, location)) from None
+
+
+def observe(identity: ApplicationKey, operation: str, model, body, raw: bytes):
+    """Count an accepted request and record its unknown field paths, best effort."""
+    fields = contract_usage.unknown_fields(model, raw) if model is not None else []
+    contract_usage.record(connect, identity.application, operation, body, fields)
 
 
 async def request_bytes(request: Request):
@@ -104,6 +122,12 @@ def failure(error: RunError):
         content["status_reason"] = error.status_reason
     if error.message is not None:
         content["message"] = error.message
+    if isinstance(error, InvalidRequest):
+        content.update(
+            contract=contract_usage.CONTRACT,
+            field=error.field,
+            schema=contract_usage.schema_hash(),
+        )
     return JSONResponse(content, status_code=error.status)
 
 
@@ -119,9 +143,11 @@ def response(content, status_code=200):
 async def post_run(request: Request):
     try:
         identity = authorize(request, "runs:write")
-        body = parse(RunRequest, await request_bytes(request))
+        raw = await request_bytes(request)
+        body = parse(RunRequest, raw)
         if body.eval and "runs:eval" not in identity.scopes:
             raise RunError(403, "scope_required")
+        await run_in_threadpool(observe, identity, "POST /v1/runs", RunRequest, body, raw)
         record, created = await run_in_threadpool(create, identity, body)
         return response({"run_id": record["id"]}, 201 if created else 200)
     except RunError as error:
@@ -284,7 +310,10 @@ async def post_message(run_id: str, request: Request):
         identity = authorize(request, "runs:write")
         # Ownership precedes body parsing so another application's run always gets 404.
         await run_in_threadpool(read, identity.application, identifier(run_id))
-        message = parse(Message, await request_bytes(request))
+        raw = await request_bytes(request)
+        message = parse(Message, raw)
+        operation = "POST /v1/runs/{run_id}/messages"
+        await run_in_threadpool(observe, identity, operation, Message, message, raw)
         return response(
             await run_in_threadpool(messaging, identity.application, identifier(run_id), message)
         )
@@ -308,6 +337,17 @@ def cancelling(application: str, run_id: UUID):
 def post_cancel(run_id: str, request: Request):
     try:
         identity = authorize(request, "runs:write")
+        read(identity.application, identifier(run_id))
+        observe(identity, "POST /v1/runs/{run_id}/cancel", None, None, b"")
         return response(cancelling(identity.application, identifier(run_id)))
+    except RunError as error:
+        return failure(error)
+
+
+@router.get("/v1/contracts/usage", responses=responses({200: ContractUsage}))
+def get_contract_usage(request: Request):
+    try:
+        authorize(request, "runs:read")
+        return response(contract_usage.usage(connect))
     except RunError as error:
         return failure(error)

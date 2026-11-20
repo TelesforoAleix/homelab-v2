@@ -35,7 +35,7 @@ jobs:
       - run: uv run pytest
       - name: Check the run-api contract
         run: |
-          uv tool install git+https://github.com/TelesforoAleix/factory@94c7273ae16d4031b8d95b383a99dd0a4722fdf5
+          uv tool install git+https://github.com/TelesforoAleix/factory@b83262493bcaaac6579cb87ef2bb06f0f00bcb86
           curl -fsSL https://github.com/oasdiff/oasdiff/releases/download/v1.37.0/oasdiff_1.37.0_linux_amd64.tar.gz -o "$RUNNER_TEMP/oasdiff.tar.gz"
           echo "eac87307d31d08c36800c58a409c247f1c5db37fbb72e2544402f22a87cbca3c  $RUNNER_TEMP/oasdiff.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/oasdiff.tar.gz" -C "$RUNNER_TEMP" oasdiff

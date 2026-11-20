@@ -99,7 +99,7 @@ work uses the separate `runs` queue.
 ## Data
 
 Postgres holds the knowledge tables of each collection, Procrastinate's schema, the task and
-run tables, `homelab_image_costs`, `homelab_video_jobs`, `homelab_decision_calls` and
+run tables with the run-api usage counters, `homelab_image_costs`, `homelab_video_jobs`, `homelab_decision_calls` and
 `homelab_providers`. The API applies its image, video and decisions migrations at startup; the
 worker applies Procrastinate's schema and the task schema before it starts. Factory keeps its
 own database in the same cluster, so the daily dump covers both. Derived data is rebuilt from

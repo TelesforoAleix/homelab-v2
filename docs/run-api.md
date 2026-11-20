@@ -10,7 +10,12 @@ submission returns `201 {"run_id":"<uuid>"}`, and a retry of the same validated 
 `200` with that id, without another task or job. A changed request returns
 `409 request_conflict`. Omitted optional fields and their explicit defaults compare equally. Real request retries
 retain their pre-overlay fingerprints across this upgrade.
-Unknown fields and invalid types return a redacted `422 invalid_request`; a bad asset digest
+Readers are tolerant with strict types: unknown fields are ignored, never stored or echoed,
+and their paths are recorded (see [Contract usage](runs.md#contract-usage)); senders still send
+none, as the published schemas say. Invalid types return
+`422 {"error":"invalid_request","contract":"run-api","field":<path>,"schema":<sha256>}`, where
+`field` is the first error's path in schema field names (any other element is `*`) and
+`schema` is the SHA-256 of the committed document; no value is echoed. A bad asset digest
 returns `400 asset_hash_mismatch`. Asset digests cover UTF-8 text. Serialized assets together
 are limited to 200,000 UTF-8 bytes, with at most 32 entries. Requests are bounded to 4 MiB.
 
@@ -76,7 +81,8 @@ models belong in `src/homelab/contracts/`. The routes still read bodies by hand,
 request schema with `openapi_extra` and its responses with `responses=`. A test validates
 what the real record builder returns against the response models, so the document cannot
 drift from the code. Response models describe fields without forbidding extra ones; request
-models stay strict.
+models share a tolerant base (`extra="ignore"`, `strict=True`) that still publishes
+`"additionalProperties": false`. `GET /v1/contracts/usage` is part of the document.
 
 `python -m homelab.contracts.export run-api` prints the OpenAPI document of the `/v1/runs`
 routes only, in canonical form. It is committed as `contracts/run-api/openapi.json`; after

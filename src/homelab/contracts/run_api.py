@@ -5,27 +5,49 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from homelab.api.run_keys import RunError
 from homelab.tasks.executors import Executor
 from homelab.tasks.runs import enabled_roles
-from homelab.tasks.submit import INT_MAX, EvalName, RepositoryPath, Strict
+from homelab.tasks.submit import INT_MAX, EvalName, RepositoryPath
 
 RequestId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._:-]{1,64}$")]
 Text = Annotated[str, StringConstraints(pattern=r"^[^\x00]*$")]
+# Readers ignore unknown fields, so a newer sender survives a provider rollback, and keep strict
+# types. The published schema still forbids them: senders send none, the route records any.
+TOLERANT = ConfigDict(
+    extra="ignore", strict=True, json_schema_extra={"additionalProperties": False}
+)
 
 
-class Overlay(Strict):
+class Tolerant(BaseModel):
+    model_config = TOLERANT
+
+
+class TolerantExecutor(Executor):
+    """A request's executor entry; the catalogue loader keeps the strict `Executor`."""
+
+    model_config = ConfigDict(**TOLERANT, title="Executor")
+
+
+class Overlay(Tolerant):
     commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     paths: list[RepositoryPath] = Field(min_length=1)
 
 
-class Work(Strict):
+class Work(Tolerant):
     goal: Text = Field(min_length=1, max_length=200_000)
     allowed_files: list[RepositoryPath] | None = None
     pinned_paths: list[RepositoryPath] = []
@@ -34,7 +56,7 @@ class Work(Strict):
     overlay: Overlay | None = None
 
 
-class Asset(Strict):
+class Asset(Tolerant):
     name: Text = Field(min_length=1)
     type: Text = Field(min_length=1)
     version: Text = Field(min_length=1)
@@ -42,19 +64,19 @@ class Asset(Strict):
     text: Text
 
 
-class Limits(Strict):
+class Limits(Tolerant):
     requests: int | None = Field(default=None, ge=0)
     minutes: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
-class RunEval(Strict):
+class RunEval(Tolerant):
     set: EvalName
     case: EvalName
-    executor: Executor | None = None
+    executor: TolerantExecutor | None = None
 
 
-class RunRequest(Strict):
+class RunRequest(Tolerant):
     contract: Literal[1]
     request_id: RequestId
     attribution: dict[Text, Annotated[Text, Field(max_length=120)]] = Field(
@@ -130,7 +152,7 @@ class RunRequest(Strict):
         return self
 
 
-class Message(Strict):
+class Message(Tolerant):
     contract: Literal[1]
     message_id: RequestId
     text: Text = Field(min_length=1, max_length=200_000)
@@ -149,6 +171,9 @@ class ErrorBody(Response):
     error: str
     status_reason: str | None = None
     message: str | None = None
+    contract: str | None = None
+    field: str | None = None
+    schema_: str | None = Field(default=None, alias="schema")
 
 
 class RunCreated(Response):
@@ -236,6 +261,33 @@ class RunRecord(Response):
 class RunPage(Response):
     runs: list[RunRecord]
     cursor: str
+
+
+class ShapeCount(Response):
+    application: str
+    operation: str
+    shape: str
+    day: date
+    count: int
+
+
+class UnknownField(Response):
+    application: str
+    operation: str
+    field: str
+    first_seen: datetime
+    last_seen: datetime
+    count: int
+
+
+class ContractUsage(Response):
+    """Accepted request shapes and unknown field paths; never a field value."""
+
+    contract: Literal["run-api"]
+    schema_: str = Field(alias="schema")
+    since: date
+    shapes: list[ShapeCount]
+    unknown_fields: list[UnknownField]
 
 
 def inline(schema: dict) -> dict:
