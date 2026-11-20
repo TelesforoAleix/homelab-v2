@@ -104,16 +104,19 @@ def test_deleted_and_renamed_pins_are_checked(bundle, tmp_path):
             pytest.fail("must not deliver renamed pin")
 
 
-def github(monkeypatch, *, private=False):
+def github(monkeypatch, *, private=False, asked=None):
     real_client = httpx.Client
 
     def respond(request):
         assert request.headers["Authorization"] == "Bearer FAKE-APP-TOKEN"
         return httpx.Response(200, json={"private": private})
 
-    monkeypatch.setattr(
-        delivery, "GitHubApp", lambda: SimpleNamespace(token=lambda repository: "FAKE-APP-TOKEN")
-    )
+    def token(repository, workflows=False):
+        if asked is not None:
+            asked.append(workflows)
+        return "FAKE-APP-TOKEN"
+
+    monkeypatch.setattr(delivery, "GitHubApp", lambda: SimpleNamespace(token=token))
     monkeypatch.setattr(
         delivery.httpx,
         "Client",
@@ -133,6 +136,8 @@ def test_delivery_push_is_nonforce_and_authentication_is_environment_only(
 
         def run(command, **kwargs):
             calls.append((command, kwargs))
+            if "push" not in command:
+                return SimpleNamespace(returncode=0, stdout=b"")
             return SimpleNamespace(returncode=code, stdout=b"PRIVATE GIT RESPONSE")
 
         monkeypatch.setattr(delivery.subprocess, "run", run)
@@ -141,7 +146,7 @@ def test_delivery_push_is_nonforce_and_authentication_is_environment_only(
                 delivery.push_checked(directory, document, tip)
         else:
             delivery.push_checked(directory, document, tip)
-        command, options = calls[0]
+        command, options = next(call for call in calls if "push" in call[0])
         assert command[-2:] == ["https://github.com/owner/repo.git", tip + ":refs/heads/slice/test"]
         assert "--force" not in command and "FAKE-APP-TOKEN" not in repr(command)
         assert options["env"]["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic ")
@@ -461,3 +466,34 @@ def test_push_checked_reports_only_tip_after_new_commits(bundle, tmp_path, monke
         )
         assert kwargs == {"token": "FAKE-APP-TOKEN", "check": False}
         assert commits == [tip]
+
+
+@pytest.mark.parametrize(
+    ("changed", "expected"),
+    [(".github/workflows/ci.yml", True), ("src/app", False), (".github/CODEOWNERS", False)],
+)
+def test_push_checked_asks_for_workflows_only_when_a_workflow_changes(
+    bundle, tmp_path, monkeypatch, changed, expected
+):
+    copy, path, document, _ = bundle
+    target = copy / changed
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("changed again")
+    git(copy, "add", ".")
+    git(copy, "commit", "-qm", "Touch file")
+    git(copy, "bundle", "create", str(path), "HEAD", "refs/heads/slice/test")
+    document["work"]["allowed_files"] = None
+    asked = []
+    github(monkeypatch, private=True, asked=asked)
+    monkeypatch.setattr(delivery, "private_content_check", lambda *a, **kw: None)
+    with delivery.checked_bundle(path, document, tmp_path) as (directory, tip):
+        original = delivery.git
+
+        def push(directory, *args, **kwargs):
+            if args[0] == "push":
+                return SimpleNamespace(returncode=0)
+            return original(directory, *args, **kwargs)
+
+        monkeypatch.setattr(delivery, "git", push)
+        delivery.push_checked(directory, document, tip)
+    assert asked == [expected]

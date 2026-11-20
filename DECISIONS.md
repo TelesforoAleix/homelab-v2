@@ -1142,3 +1142,10 @@ Factory's pinned `factory-contracts` and a checksum-verified `oasdiff`, checks t
 file is generated and, once the file exists on `origin/main`, that no breaking change appears.
 That step is not in this PR: a test pins the digest of `.github/workflows/ci.yml`, so a
 follow-up slice adds the step and updates that digest.
+
+**2026-11-20 — Push tokens carry the workflows permission only when a run changes a workflow.**
+GitHub refuses a push touching `.github/workflows/` without it, and the down-scoped token never
+had it. `GitHubApp.token(repository, *, workflows=False)` adds `"workflows": "write"` only when
+asked; `push_checked` asks only when the base-to-tip diff adds, changes or deletes a path under
+`.github/workflows/`, using the same path listing as `checked_bundle`. Other callers keep the
+default. `.github/` stays owner-reviewed through CODEOWNERS, so the merge still waits for the owner.

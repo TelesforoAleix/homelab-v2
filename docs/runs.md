@@ -511,7 +511,9 @@ diff must be within `allowed_files` (null means unrestricted, empty means none) 
 `pinned_paths`, including deletions and rename sources. Refusal ends
 `failed: outside_allowed_files` before push. Delivery rechecks the authenticated remote
 default, scans every outgoing public commit with the deny list/canary, and pushes with a
-fresh App token and no force. Deny hits, an unreadable deny list and rewritten branches
+fresh App token and no force. That token also carries workflows-write only when the
+base-to-tip diff adds, changes or deletes a path under `.github/workflows/`; every other
+token, and every other caller, keeps contents-write/metadata-read. Deny hits, an unreadable deny list and rewritten branches
 end `failed: push_refused`, without matched content, filenames or lines in the reason.
 
 Final kinds map to resumable states: `handover` to `done`, `question` to `question`,
@@ -566,7 +568,7 @@ access is restricted to `ticket-<id>-<attempt>` or `run-<uuid>` names and requir
 
 For pushes, a short-lived RS256 App JWT is signed with OpenSSL. Each push requests a fresh
 installation token restricted to that one repository with contents-write/metadata-read
-permissions. Git receives the authorization header only through its environment. Its URL
+permissions (plus workflows-write for a delivery whose diff touches `.github/workflows/`). Git receives the authorization header only through its environment. Its URL
 and refspec are explicit, credential helpers/hooks are off, and a temporary Git directory
 exposes only the protected clone's objects/refs, never its config. The remote default branch
 and `main` are refused. The existing deny-list/canary scan runs before each push; it still
