@@ -479,16 +479,23 @@
    "id": "arch-gateway-embed-large",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    16,
-    19
+    38,
+    38
    ],
-   "text": "The embed-large route uses llama-embed-large.",
+   "text": "The embed-large route sends requests to http://llama-embed-large:8080/v1, and llama-embed-large is a compose service.",
    "sources": [
     {
      "path": "config/litellm.yaml",
      "lines": [
       90,
-      94
+      93
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      245,
+      245
      ]
     }
    ]
@@ -2822,13 +2829,13 @@
     39,
     39
    ],
-   "text": "The Telegram bot sends a request to /chat/completions with model frontline.",
+   "text": "The Telegram bot posts to HOMELAB_MODELS_BASE_URL plus /chat/completions with the model frontline.",
    "sources": [
     {
      "path": "node/opt/homelab-telegram-bot/conversation.py",
      "lines": [
-      236,
-      242
+      227,
+      241
      ]
     }
    ]
@@ -4199,6 +4206,13 @@
       81,
       82
      ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      92,
+      92
+     ]
     }
    ]
   },
@@ -4900,6 +4914,13 @@
     {
      "path": "compose.yaml",
      "lines": [
+      245,
+      245
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
       248,
       248
      ]
@@ -4967,12 +4988,12 @@
     103,
     103
    ],
-   "text": "The deployer finishes with migration failed when the dump or migration command fails.",
+   "text": "On an install with a migration, the deployer finishes with migration failed when homelab-dump.service or the migration command fails.",
    "sources": [
     {
      "path": "node/usr/local/sbin/homelab-deployer",
      "lines": [
-      790,
+      773,
       802
      ]
     }
@@ -5021,20 +5042,20 @@
     1445,
     1445
    ],
-   "text": "homelab-copy passes the tar archive to age with the recipient file /etc/homelab-copy.recipient.",
+   "text": "homelab-copy pipes the tar archive into age -R with the recipient file /etc/homelab-copy.recipient.",
    "sources": [
     {
      "path": "node/usr/local/sbin/homelab-copy",
      "lines": [
-      3,
-      4
+      13,
+      13
      ]
     },
     {
      "path": "node/usr/local/sbin/homelab-copy",
      "lines": [
-      27,
-      48
+      33,
+      56
      ]
     }
    ]
@@ -5046,13 +5067,13 @@
     1523,
     1523
    ],
-   "text": "TABLE is the path to config/litellm.yaml.",
+   "text": "The route table the management documents hash is config/litellm.yaml (TABLE).",
    "sources": [
     {
      "path": "src/homelab/manage/__init__.py",
      "lines": [
-      15,
-      15
+      16,
+      16
      ]
     }
    ]
@@ -5265,7 +5286,7 @@
    "to": "TelesforoAleix/factory:runner",
    "how": "contract",
    "contract": "bot-orders",
-   "text": "Factory polls GET /orders on the bot endpoint at TCP 8110 over Tailscale or from homelab_default.",
+   "text": "The bot serves GET /orders on TCP 8110, and ufw accepts it on tailscale0 and from 172.18.0.0/16 (homelab_default).",
    "provider_sources": [
     {
      "path": "node/opt/homelab-telegram-bot/order_listener.py",
@@ -5277,8 +5298,8 @@
     {
      "path": "node/opt/homelab-telegram-bot/order_listener.py",
      "lines": [
-      43,
-      57
+      47,
+      54
      ]
     }
    ],
@@ -5287,14 +5308,14 @@
      "path": "node/etc/ufw/user.rules",
      "lines": [
       20,
-      27
+      21
      ]
     },
     {
-     "path": "docs/contracts.md",
+     "path": "node/etc/ufw/user.rules",
      "lines": [
-      108,
-      111
+      26,
+      27
      ]
     }
    ]
@@ -5775,19 +5796,19 @@
    "to": "task-store",
    "how": "table",
    "contract": null,
-   "text": "The runs service calls store.claim(), which fetches jobs from the Procrastinate queue named runs.",
+   "text": "The slice loop calls store.claim(), where store is homelab.tasks.slices; claim() fetches jobs from the Procrastinate queue \"runs\".",
    "provider_sources": [
     {
      "path": "src/homelab/tasks/runs.py",
      "lines": [
-      17,
+      18,
       18
      ]
     },
     {
      "path": "src/homelab/tasks/slices.py",
      "lines": [
-      30,
+      28,
       35
      ]
     }
@@ -5796,15 +5817,15 @@
     {
      "path": "src/homelab/runs/slice_loop.py",
      "lines": [
-      51,
-      55
+      14,
+      14
      ]
     },
     {
-     "path": "compose.yaml",
+     "path": "src/homelab/runs/slice_loop.py",
      "lines": [
-      125,
-      126
+      54,
+      55
      ]
     }
    ]
