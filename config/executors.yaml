@@ -36,5 +36,5 @@ review:
     - {harness: claude, model: sonnet}
     - {harness: codex, model: gpt-6.1-sol, effort: high}
   strong:
-    - {harness: claude, model: opus}
+    - {harness: claude, model: sonnet}
     - {harness: codex, model: gpt-6.1-sol, effort: high}

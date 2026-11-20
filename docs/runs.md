@@ -93,7 +93,7 @@ and two worker slots across slice, cut and review. Tickets keep their serial `ta
 `HOMELAB_RUN_ROLES=slice,cut,review` enables submission and dispatch; the API and service both
 receive the setting, whose Compose default is empty. Only review requires read mode; cut
 accepts write mode to commit failing tests, as well as read mode. Review tries Claude first
-(sonnet at light/standard, opus at strong), then Codex gpt-6.1-sol high.
+(sonnet at every level), then Codex gpt-6.1-sol high.
 The node enables both this setting and the Compose profile; the stopped host runner, lifetime
 locks and shared-directory prerequisites remain part of rollback and recovery.
 
@@ -473,7 +473,7 @@ role/level list in `config/executors.yaml`; eval marks supply an exact executor 
 
 | Role | Light | Standard | Strong |
 |---|---|---|---|
-| `review` | Claude sonnet, then Codex gpt-6.1-sol high | Claude sonnet, then Codex gpt-6.1-sol high | Claude opus, then Codex gpt-6.1-sol high |
+| `review` | Claude sonnet, then Codex gpt-6.1-sol high | Claude sonnet, then Codex gpt-6.1-sol high | Claude sonnet, then Codex gpt-6.1-sol high |
 
 Claude uses its default effort. Codex's launcher `usage` reading
 permits five-hour usage below 99%. Claude permits below 90% from a reading less than an hour

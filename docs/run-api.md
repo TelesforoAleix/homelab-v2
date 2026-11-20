@@ -91,8 +91,7 @@ A normal `ticket` write becomes one task on the serial task queue. The runner us
 | strong | Claude opus | Codex gpt-6.1-sol, high |
 
 Slice uses the same order as tickets. Cuts use Claude opus first and Codex gpt-6.1-sol,
-high second at every level; reviews use Claude sonnet first at light and standard and
-Claude opus first at strong, with Codex gpt-6.1-sol, high second at every level.
+high second at every level; reviews use Claude sonnet first at every level, with Codex gpt-6.1-sol, high second at every level.
 
 Fallback uses the same subscription windows, unknown-reading policy and Claude probe cache
 as slices. With none usable the run waits `usage_limit`, with `resume_at` set to the earliest
