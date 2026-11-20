@@ -9,7 +9,7 @@ server. Read it before changing a volume user, a unit's mount conditions, `homel
 
 One `compose.yaml`: `api`, `worker`, `postgres` (pgvector image), `llama-embed` (llama.cpp
 server), `llama-embed-large` (CPU Qwen3-Embedding-4B), `litellm` and `package-proxy` (tinyproxy, for
-a task's prepare step). Only `api` publishes a port, on loopback.
+a task's prepare step). Only `api` and `litellm` publish ports, on loopback.
 `node/etc/systemd/system/homelab.service` wraps the stack so it starts after the encrypted
 volume is unlocked (`homelab-data.target`) and
 stops with it. Brain and the corpus are bind-mounted read-only; Postgres data stays on main.
