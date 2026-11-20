@@ -66,7 +66,7 @@ def test_busy_copy_is_retried_without_changing_record(monkeypatch):
 
 def test_review_catalogue():
     table = load_executors()
-    for level, model in [("light", "sonnet"), ("standard", "sonnet"), ("strong", "opus")]:
+    for level, model in [("light", "sonnet"), ("standard", "sonnet"), ("strong", "sonnet")]:
         assert [executor.selection() for executor in table["review"][level]] == [
             {"harness": "claude", "model": model},
             {"harness": "codex", "model": "gpt-6.1-sol", "effort": "high"},

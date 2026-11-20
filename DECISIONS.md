@@ -1125,3 +1125,5 @@ records the core documents' claims with their cited lines for Factory's `cplane 
 the per-part references are detailed documents outside that core set, like the existing API
 guides. A link test in `uv run pytest` keeps the map, links, anchors and citations resolvable.
 Measurement narratives and completed one-time steps were dropped; git keeps them.
+
+**2026-11-20 — Strong reviews move to Claude Sonnet.** Reviews were most of the Claude use, and 25 of 37 review runs in a 30-hour sample ran on Opus at the strong level. A trial showed a cheap classifier cannot replace the review, so the review stays on a cheaper model. By the owner's choice after the review-cost trial, `review.strong` is now Claude Sonnet first, then Codex gpt-6.1-sol high, like `review.standard`. No other row changes.

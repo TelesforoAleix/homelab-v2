@@ -31,7 +31,7 @@ def test_initial_executor_table():
         "review": {
             "light": [("claude", "sonnet", None), ("codex", "gpt-6.1-sol", "high")],
             "standard": [("claude", "sonnet", None), ("codex", "gpt-6.1-sol", "high")],
-            "strong": [("claude", "opus", None), ("codex", "gpt-6.1-sol", "high")],
+            "strong": [("claude", "sonnet", None), ("codex", "gpt-6.1-sol", "high")],
         },
     }
     expected["slice"] = expected["ticket"]
