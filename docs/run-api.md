@@ -67,6 +67,24 @@ resume a question, escalation, client wait or completed conversation, retaining 
 session and executor; message ids deduplicate turns. Content stays in the private store and
 never enters logs. See the [service runbook](runs.md#runs-service) for copy retention.
 
+## Contract module and committed document
+
+The wire models live in `src/homelab/contracts/run_api.py`: the request and message models
+and the response models (run record, listing page, created id, error body). Only boundary
+models belong in `src/homelab/contracts/`. The routes still read bodies by hand, so
+`request_bytes` and `parse` keep their `413` and `422` behaviour; each route declares its
+request schema with `openapi_extra` and its responses with `responses=`. A test validates
+what the real record builder returns against the response models, so the document cannot
+drift from the code. Response models describe fields without forbidding extra ones; request
+models stay strict.
+
+`python -m homelab.contracts.export run-api` prints the OpenAPI document of the `/v1/runs`
+routes only, in canonical form. It is committed as `contracts/run-api/openapi.json`; after
+changing a model or route, regenerate it with that command and commit the result. A
+follow-up slice adds the CI check: `factory-contracts generated` to fail when the committed
+file differs from the code, then `factory-contracts compat` against `origin/main` to fail on a
+breaking change in either direction. Factory keeps a pinned copy of the document and checks what it sends against it.
+
 ## Executors and current capability
 
 `config/executors.yaml` maps each of `ticket`, `slice`, `cut` and `review` to `light`, `standard`

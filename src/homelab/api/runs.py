@@ -14,8 +14,17 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from homelab.api.run_contract import Message, RunRequest
 from homelab.api.run_keys import ApplicationKey, RunError, authorize, load_keys
+from homelab.contracts.run_api import (
+    Message,
+    RunCreated,
+    RunPage,
+    RunRecord,
+    RunRequest,
+    query_parameters,
+    request_body,
+    responses,
+)
 from homelab.settings import get_settings
 from homelab.tasks import runs as store
 from homelab.tasks.executors import Executor, load_executors
@@ -102,7 +111,11 @@ def response(content, status_code=200):
     return JSONResponse(jsonable_encoder(content), status_code=status_code)
 
 
-@router.post("/v1/runs")
+@router.post(
+    "/v1/runs",
+    openapi_extra=request_body(RunRequest),
+    responses=responses({200: RunCreated, 201: RunCreated}, 400, 403, 409, 413, 422),
+)
 async def post_run(request: Request):
     try:
         identity = authorize(request, "runs:write")
@@ -197,7 +210,7 @@ def read(application: str, run_id: UUID):
             return record(connection, saved)
 
 
-@router.get("/v1/runs/{run_id}")
+@router.get("/v1/runs/{run_id}", responses=responses({200: RunRecord}, 404))
 def get_run(run_id: str, request: Request):
     try:
         identity = authorize(request, "runs:read")
@@ -240,7 +253,11 @@ def listing(application: str, *, changed_after: str | None, request_id: str | No
     return {"runs": documents, "cursor": encode_cursor(application, watermark)}
 
 
-@router.get("/v1/runs")
+@router.get(
+    "/v1/runs",
+    openapi_extra=query_parameters("changed_after", "request_id"),
+    responses=responses({200: RunPage}, 400),
+)
 def get_runs(request: Request):
     try:
         identity = authorize(request, "runs:read")
@@ -257,7 +274,11 @@ def get_runs(request: Request):
         return failure(error)
 
 
-@router.post("/v1/runs/{run_id}/messages")
+@router.post(
+    "/v1/runs/{run_id}/messages",
+    openapi_extra=request_body(Message),
+    responses=responses({200: RunRecord}, 400, 404, 409, 413, 422),
+)
 async def post_message(run_id: str, request: Request):
     try:
         identity = authorize(request, "runs:write")
@@ -283,7 +304,7 @@ def cancelling(application: str, run_id: UUID):
         return record(connection, store.cancel(connection, application, run_id))
 
 
-@router.post("/v1/runs/{run_id}/cancel")
+@router.post("/v1/runs/{run_id}/cancel", responses=responses({200: RunRecord}, 404, 409))
 def post_cancel(run_id: str, request: Request):
     try:
         identity = authorize(request, "runs:write")

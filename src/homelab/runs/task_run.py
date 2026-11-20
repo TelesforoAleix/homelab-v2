@@ -353,7 +353,7 @@ def valid_eval_mark(mark):
     if not isinstance(mark, dict) or set(mark) != {"set", "case", "executor"}:
         return False
     try:
-        from homelab.api.run_contract import RunEval
+        from homelab.contracts.run_api import RunEval
 
         return RunEval.model_validate(mark).executor is not None
     except ValueError:

@@ -3,7 +3,7 @@
 This document covers how coding work executes: the run API's internals, the `runs` service,
 the task store and the stopped host runner kept for rollback, with their provisioning, switch
 and rollback steps. Read it before changing `src/homelab/api/runs.py`,
-`src/homelab/api/run_contract.py`, `src/homelab/runs/`, `src/homelab/tasks/`,
+`src/homelab/contracts/run_api.py`, `src/homelab/runs/`, `src/homelab/tasks/`,
 `config/executors.yaml` or the task scripts. The wire contract for clients is
 [run-api.md](run-api.md); the launcher it depends on is in
 [operations.md](operations.md#install-the-fixed-fence-launcher).

@@ -1127,3 +1127,18 @@ guides. A link test in `uv run pytest` keeps the map, links, anchors and citatio
 Measurement narratives and completed one-time steps were dropped; git keeps them.
 
 **2026-11-20 — Strong reviews move to Claude Sonnet.** Reviews were most of the Claude use, and 25 of 37 review runs in a 30-hour sample ran on Opus at the strong level. A trial showed a cheap classifier cannot replace the review, so the review stays on a cheaper model. By the owner's choice after the review-cost trial, `review.strong` is now Claude Sonnet first, then Codex gpt-6.1-sol high, like `review.standard`. No other row changes.
+
+**2026-11-20 — The run-api contract is a generated, committed OpenAPI document.** Home Lab is
+moving to machine-checked contracts, each generated from code and committed in the provider,
+with the user keeping a pinned copy. The decisions: (1) wire models move from
+`api/run_contract.py` to `contracts/run_api.py`, only boundary models live in `contracts/`, and
+no re-export remains; (2) the routes keep parsing bodies by hand, with the request schema
+declared through `openapi_extra`; (3) response models describe the run record, listing page,
+message and cancel results through `responses=`, and a test validates the real builders'
+output against them; (4) `python -m homelab.contracts.export run-api` prints the document of the
+`/v1/runs` routes only, committed as `contracts/run-api/openapi.json`; (5) requests stay
+`extra="forbid"` and strict until a later slice makes readers tolerant; (6) one CI step installs
+Factory's pinned `factory-contracts` and a checksum-verified `oasdiff`, checks the committed
+file is generated and, once the file exists on `origin/main`, that no breaking change appears.
+That step is not in this PR: a test pins the digest of `.github/workflows/ci.yml`, so a
+follow-up slice adds the step and updates that digest.
