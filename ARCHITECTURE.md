@@ -69,8 +69,8 @@ containment and the API contracts. Only the LiteLLM container holds the gateway 
 
 - **Model call.** A client sends a purpose name as `model` to `/v1` on the gateway. The gateway
   checks the purpose and the caller's network, calls Vercel AI Gateway, a node embedding
-  server or the Mac router, and writes one content-free audit line. Clients learn purposes from
-  `GET /v1/models`; no application names a provider or model.
+  server or the Mac router, and records audited model-endpoint requests. Clients learn purposes
+  from `GET /v1/models`; no application names a provider or model.
 - **Knowledge answer.** `POST /v1/knowledge/answer` embeds the question through `embed`,
   retrieves chunks from pgvector and asks `chat` to answer only from them, with citations.
 - **Run.** `POST /v1/runs` validates the request against the caller's run key, writes the run

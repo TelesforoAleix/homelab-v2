@@ -321,13 +321,95 @@
     21,
     22
    ],
-   "text": "The launcher socket path is /run/homelab-launcher.sock.",
+   "text": "The launcher caller list admits uid 21010 for cli-run, bundle and usage.",
    "sources": [
     {
-     "path": "src/homelab/runs/launcher.py",
+     "path": "docs/operations.md",
+     "lines": [
+      854,
+      854
+     ]
+    },
+    {
+     "path": "node/etc/homelab-launcher/callers.json",
+     "lines": [
+      9,
+      9
+     ]
+    }
+   ]
+  },
+  {
+   "id": "arch-launcher-root",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    21,
+    22
+   ],
+   "text": "The launcher caller list admits uid 0 for cli-run, chat, bundle, usage and task.",
+   "sources": [
+    {
+     "path": "docs/operations.md",
+     "lines": [
+      853,
+      853
+     ]
+    },
+    {
+     "path": "node/etc/homelab-launcher/callers.json",
+     "lines": [
+      2,
+      8
+     ]
+    }
+   ]
+  },
+  {
+   "id": "arch-launcher-sessions",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    21,
+    22
+   ],
+   "text": "The launcher caller list admits uid 21011 for chat, cli-run and bundle.",
+   "sources": [
+    {
+     "path": "docs/operations.md",
+     "lines": [
+      855,
+      855
+     ]
+    },
+    {
+     "path": "node/etc/homelab-launcher/callers.json",
      "lines": [
       10,
       10
+     ]
+    }
+   ]
+  },
+  {
+   "id": "arch-launcher-runs",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    21,
+    22
+   ],
+   "text": "The launcher caller list admits uid 21020 for task, cli-run, bundle and usage.",
+   "sources": [
+    {
+     "path": "docs/operations.md",
+     "lines": [
+      856,
+      856
+     ]
+    },
+    {
+     "path": "node/etc/homelab-launcher/callers.json",
+     "lines": [
+      11,
+      11
      ]
     }
    ]
@@ -455,7 +537,7 @@
     {
      "path": ".env.example",
      "lines": [
-      27,
+      23,
       28
      ]
     }
@@ -1114,13 +1196,66 @@
     60,
     61
    ],
-   "text": "Home Lab hooks add the task-network policy.",
+   "text": "Home Lab hooks require task-network requests to use a valid bearer task token, POST /v1/chat/completions, application/json and a granted purpose within the request budget.",
    "sources": [
     {
      "path": "config/litellm_hooks.py",
      "lines": [
+      388,
+      398
+     ]
+    },
+    {
+     "path": "config/litellm_hooks.py",
+     "lines": [
       430,
-      430
+      460
+     ]
+    },
+    {
+     "path": "config/litellm_hooks.py",
+     "lines": [
+      535,
+      537
+     ]
+    }
+   ]
+  },
+  {
+   "id": "arch-litellm-routing",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    60,
+    61
+   ],
+   "text": "LiteLLM routes purposes through its configured model list.",
+   "sources": [
+    {
+     "path": "config/litellm.yaml",
+     "lines": [
+      1,
+      8
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      33,
+      39
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      56,
+      57
+     ]
+    },
+    {
+     "path": "config/litellm_entrypoint.py",
+     "lines": [
+      21,
+      42
      ]
     }
    ]
@@ -1261,13 +1396,13 @@
     65,
     66
    ],
-   "text": "llama.cpp owns local model loading on the node.",
+   "text": "The llama-embed service uses the llama.cpp server image and configures its Nemotron embedding model command.",
    "sources": [
     {
      "path": "compose.yaml",
      "lines": [
       227,
-      231
+      236
      ]
     }
    ]
@@ -1334,15 +1469,15 @@
     {
      "path": "mac/homelab-router",
      "lines": [
-      181,
-      187
+      173,
+      195
      ]
     },
     {
      "path": "mac/homelab-router",
      "lines": [
-      27,
-      27
+      222,
+      224
      ]
     }
    ]
@@ -1357,10 +1492,24 @@
    "text": "Clients send a purpose name as model to /v1 on the gateway.",
    "sources": [
     {
-     "path": "config/litellm.yaml",
+     "path": "src/homelab/models/routes.py",
      "lines": [
-      1,
-      1
+      50,
+      60
+     ]
+    },
+    {
+     "path": "src/homelab/models/routes.py",
+     "lines": [
+      63,
+      65
+     ]
+    },
+    {
+     "path": "src/homelab/settings.py",
+     "lines": [
+      25,
+      27
      ]
     }
    ]
@@ -1372,13 +1521,27 @@
     70,
     73
    ],
-   "text": "The gateway logs one model_call audit line per call.",
+   "text": "The gateway model-endpoint middleware records model_call audit lines for plain and streamed responses.",
    "sources": [
     {
      "path": "config/litellm_hooks.py",
      "lines": [
+      507,
+      510
+     ]
+    },
+    {
+     "path": "config/litellm_hooks.py",
+     "lines": [
       558,
-      562
+      572
+     ]
+    },
+    {
+     "path": "config/litellm_hooks.py",
+     "lines": [
+      796,
+      817
      ]
     }
    ]
@@ -1395,8 +1558,22 @@
     {
      "path": "src/homelab/models/routes.py",
      "lines": [
-      28,
+      23,
       35
+     ]
+    },
+    {
+     "path": "src/homelab/models/routes.py",
+     "lines": [
+      63,
+      65
+     ]
+    },
+    {
+     "path": "src/homelab/settings.py",
+     "lines": [
+      25,
+      25
      ]
     }
    ]
@@ -1493,8 +1670,29 @@
     78,
     80
    ],
-   "text": "The runs service claims jobs from the runs queue.",
+   "text": "The runs service claims whole-run jobs from the runs queue.",
    "sources": [
+    {
+     "path": "src/homelab/runs/slice_loop.py",
+     "lines": [
+      13,
+      15
+     ]
+    },
+    {
+     "path": "src/homelab/runs/slice_loop.py",
+     "lines": [
+      53,
+      57
+     ]
+    },
+    {
+     "path": "src/homelab/tasks/slices.py",
+     "lines": [
+      10,
+      12
+     ]
+    },
     {
      "path": "src/homelab/tasks/slices.py",
      "lines": [
@@ -1506,7 +1704,21 @@
      "path": "src/homelab/tasks/runs.py",
      "lines": [
       18,
-      18
+      22
+     ]
+    },
+    {
+     "path": "ARCHITECTURE.md",
+     "lines": [
+      77,
+      78
+     ]
+    },
+    {
+     "path": "ARCHITECTURE.md",
+     "lines": [
+      97,
+      97
      ]
     }
    ]
@@ -1518,8 +1730,29 @@
     78,
     80
    ],
-   "text": "The launcher client connects to /run/homelab-launcher.sock.",
+   "text": "The runs service requests containers through its launcher client, which connects to /run/homelab-launcher.sock.",
    "sources": [
+    {
+     "path": "src/homelab/runs/task_run.py",
+     "lines": [
+      300,
+      303
+     ]
+    },
+    {
+     "path": "src/homelab/runs/task_run.py",
+     "lines": [
+      523,
+      544
+     ]
+    },
+    {
+     "path": "src/homelab/runs/launcher.py",
+     "lines": [
+      71,
+      96
+     ]
+    },
     {
      "path": "src/homelab/runs/launcher.py",
      "lines": [
@@ -1530,8 +1763,22 @@
     {
      "path": "src/homelab/runs/launcher.py",
      "lines": [
-      41,
+      36,
       44
+     ]
+    },
+    {
+     "path": "ARCHITECTURE.md",
+     "lines": [
+      21,
+      22
+     ]
+    },
+    {
+     "path": "ARCHITECTURE.md",
+     "lines": [
+      78,
+      78
      ]
     }
    ]
@@ -1550,6 +1797,31 @@
      "lines": [
       166,
       187
+     ]
+    },
+    {
+     "path": "mac/homelab-router",
+     "lines": [
+      222,
+      224
+     ]
+    }
+   ]
+  },
+  {
+   "id": "arch-llamacpp-node-large",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    65,
+    66
+   ],
+   "text": "The llama-embed-large service uses the llama.cpp server image and configures its Qwen3-Embedding-4B model command.",
+   "sources": [
+    {
+     "path": "compose.yaml",
+     "lines": [
+      245,
+      255
      ]
     }
    ]
