@@ -80,9 +80,9 @@ models stay strict.
 
 `python -m homelab.contracts.export run-api` prints the OpenAPI document of the `/v1/runs`
 routes only, in canonical form. It is committed as `contracts/run-api/openapi.json`; after
-changing a model or route, regenerate it with that command and commit the result. A
-follow-up slice adds the CI check: `factory-contracts generated` to fail when the committed
-file differs from the code, then `factory-contracts compat` against `origin/main` to fail on a
+changing a model or route, regenerate it with that command and commit the result. CI runs
+`factory-contracts generated` to check the committed file against the export command, then runs
+`factory-contracts compat` against `origin/main` when that base file exists, failing on a
 breaking change in either direction. Factory keeps a pinned copy of the document and checks what it sends against it.
 
 ## Executors and current capability

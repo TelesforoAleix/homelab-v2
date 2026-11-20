@@ -33,6 +33,18 @@ jobs:
           sudo ln -s "$RUNNER_TEMP/bot-venv" /opt/homelab-telegram-bot/.venv
           sudo systemd-analyze verify node/etc/systemd/system/homelab-telegram-bot.service node/etc/systemd/system/homelab-bot-data-ready.service node/etc/systemd/system/homelab-bot-data-released.service
       - run: uv run pytest
+      - name: Check the run-api contract
+        run: |
+          uv tool install git+https://github.com/TelesforoAleix/factory@94c7273ae16d4031b8d95b383a99dd0a4722fdf5
+          curl -fsSL https://github.com/oasdiff/oasdiff/releases/download/v1.37.0/oasdiff_1.37.0_linux_amd64.tar.gz -o "$RUNNER_TEMP/oasdiff.tar.gz"
+          echo "eac87307d31d08c36800c58a409c247f1c5db37fbb72e2544402f22a87cbca3c  $RUNNER_TEMP/oasdiff.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/oasdiff.tar.gz" -C "$RUNNER_TEMP" oasdiff
+          factory-contracts generated --command "uv run python -m homelab.contracts.export run-api" --file contracts/run-api/openapi.json
+          if git cat-file -e origin/main:contracts/run-api/openapi.json 2>/dev/null; then
+            factory-contracts compat --base git:origin/main:contracts/run-api/openapi.json --revision contracts/run-api/openapi.json --oasdiff "$RUNNER_TEMP/oasdiff"
+          else
+            echo "compat skipped: contracts/run-api/openapi.json does not exist on origin/main"
+          fi
       - run: docker build -t homelab:ci .
       - name: Verify the pinned LiteLLM image without external networking or real secrets
         run: |

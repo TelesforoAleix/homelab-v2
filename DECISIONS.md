@@ -1143,6 +1143,11 @@ file is generated and, once the file exists on `origin/main`, that no breaking c
 That step is not in this PR: a test pins the digest of `.github/workflows/ci.yml`, so a
 follow-up slice adds the step and updates that digest.
 
+**2026-11-20 — CI checks the run-api OpenAPI document.** The `test` job installs the pinned
+`factory-contracts` tool and checksum-verifies `oasdiff` v1.37.0, checks that the committed
+document matches its export command, and checks compatibility against `origin/main` when the
+base document exists.
+
 **2026-11-20 — Push tokens carry the workflows permission only when a run changes a workflow.**
 GitHub refuses a push touching `.github/workflows/` without it, and the down-scoped token never
 had it. `GitHubApp.token(repository, *, workflows=False)` adds `"workflows": "write"` only when
