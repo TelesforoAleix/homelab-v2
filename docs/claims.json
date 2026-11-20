@@ -2483,48 +2483,13 @@
     142,
     142
    ],
-   "text": "LiteLLM, runs and llama-embed-large set a non-root user, the platform image's last user is uid 10001, and package-proxy's image runs as node.",
+   "text": "The LiteLLM service sets user to 10001:10001.",
    "sources": [
     {
      "path": "compose.yaml",
      "lines": [
       38,
       38
-     ]
-    },
-    {
-     "path": "compose.yaml",
-     "lines": [
-      130,
-      130
-     ]
-    },
-    {
-     "path": "compose.yaml",
-     "lines": [
-      248,
-      248
-     ]
-    },
-    {
-     "path": "Dockerfile",
-     "lines": [
-      20,
-      20
-     ]
-    },
-    {
-     "path": "Dockerfile",
-     "lines": [
-      26,
-      26
-     ]
-    },
-    {
-     "path": "node/opt/homelab-package-proxy/Dockerfile",
-     "lines": [
-      7,
-      7
      ]
     }
    ]
@@ -2857,20 +2822,13 @@
     39,
     39
    ],
-   "text": "The Telegram bot and this repository's api use the gateway.",
+   "text": "The Telegram bot sends a request to /chat/completions with model frontline.",
    "sources": [
     {
      "path": "node/opt/homelab-telegram-bot/conversation.py",
      "lines": [
       236,
-      236
-     ]
-    },
-    {
-     "path": "compose.yaml",
-     "lines": [
-      11,
-      11
+      242
      ]
     }
    ]
@@ -3035,20 +2993,13 @@
     71,
     72
    ],
-   "text": "Clients are configured by HOMELAB_MODELS_BASE_URL and HOMELAB_MODELS_API_KEY.",
+   "text": "Settings define models_base_url with default http://litellm:4000/v1.",
    "sources": [
     {
      "path": "src/homelab/settings.py",
      "lines": [
       25,
-      27
-     ]
-    },
-    {
-     "path": "compose.yaml",
-     "lines": [
-      11,
-      12
+      25
      ]
     }
    ]
@@ -3887,27 +3838,13 @@
     103,
     103
    ],
-   "text": "For an install whose manifest has a migration, the deployer starts homelab-dump.service first and finishes the install as migration failed if the dump or the migration command fails.",
+   "text": "When operation is install and config migration is set, the deployer starts homelab-dump.service.",
    "sources": [
     {
      "path": "node/usr/local/sbin/homelab-deployer",
      "lines": [
       773,
       778
-     ]
-    },
-    {
-     "path": "node/usr/local/sbin/homelab-deployer",
-     "lines": [
-      790,
-      791
-     ]
-    },
-    {
-     "path": "node/usr/local/sbin/homelab-deployer",
-     "lines": [
-      800,
-      802
      ]
     }
    ]
@@ -4254,41 +4191,13 @@
     801,
     801
    ],
-   "text": "HOMELAB_RUN_ROLES is passed to the api and runs services, defaults to empty and decides which run roles are enabled.",
+   "text": "The api service sets HOMELAB_RUN_ROLES from the HOMELAB_RUN_ROLES variable, defaulting to an empty value.",
    "sources": [
     {
      "path": "compose.yaml",
      "lines": [
       81,
       82
-     ]
-    },
-    {
-     "path": "compose.yaml",
-     "lines": [
-      92,
-      92
-     ]
-    },
-    {
-     "path": "compose.yaml",
-     "lines": [
-      125,
-      126
-     ]
-    },
-    {
-     "path": "compose.yaml",
-     "lines": [
-      137,
-      137
-     ]
-    },
-    {
-     "path": "src/homelab/tasks/runs.py",
-     "lines": [
-      21,
-      22
      ]
     }
    ]
@@ -4382,27 +4291,13 @@
     1445,
     1445
    ],
-   "text": "homelab-copy lists every *-data/originals folder and the inbox when present, and streams one tar archive through age to the recipient file.",
+   "text": "homelab-copy collects folders matching *-data/originals.",
    "sources": [
-    {
-     "path": "node/usr/local/sbin/homelab-copy",
-     "lines": [
-      13,
-      13
-     ]
-    },
     {
      "path": "node/usr/local/sbin/homelab-copy",
      "lines": [
       20,
       24
-     ]
-    },
-    {
-     "path": "node/usr/local/sbin/homelab-copy",
-     "lines": [
-      33,
-      52
      ]
     }
    ]
@@ -4507,20 +4402,20 @@
     1523,
     1523
    ],
-   "text": "Management documents carry the SHA-256 of the route table file as their version.",
+   "text": "documents() computes version as the SHA-256 digest of raw route table bytes.",
    "sources": [
     {
      "path": "src/homelab/manage/__init__.py",
      "lines": [
-      50,
-      52
+      15,
+      15
      ]
     },
     {
      "path": "src/homelab/manage/__init__.py",
      "lines": [
-      90,
-      91
+      50,
+      52
      ]
     }
    ]
@@ -4971,6 +4866,193 @@
      "lines": [
       80,
       80
+     ]
+    }
+   ]
+  },
+  {
+   "id": "rule-runs-user",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    142,
+    142
+   ],
+   "text": "The runs service sets user to 21020:21020.",
+   "sources": [
+    {
+     "path": "compose.yaml",
+     "lines": [
+      130,
+      130
+     ]
+    }
+   ]
+  },
+  {
+   "id": "rule-embed-large-user",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    142,
+    142
+   ],
+   "text": "The llama-embed-large service sets user to 10001:10001.",
+   "sources": [
+    {
+     "path": "compose.yaml",
+     "lines": [
+      248,
+      248
+     ]
+    }
+   ]
+  },
+  {
+   "id": "rule-platform-uid",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    142,
+    142
+   ],
+   "text": "The Dockerfile creates user homelab with uid 10001 and sets USER homelab.",
+   "sources": [
+    {
+     "path": "Dockerfile",
+     "lines": [
+      20,
+      26
+     ]
+    }
+   ]
+  },
+  {
+   "id": "rule-package-proxy-user",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    142,
+    142
+   ],
+   "text": "The package-proxy image sets USER node.",
+   "sources": [
+    {
+     "path": "node/opt/homelab-package-proxy/Dockerfile",
+     "lines": [
+      7,
+      7
+     ]
+    }
+   ]
+  },
+  {
+   "id": "con-client-key",
+   "doc": "docs/contracts.md",
+   "doc_lines": [
+    71,
+    72
+   ],
+   "text": "Settings define models_api_key as a SecretStr with default homelab.",
+   "sources": [
+    {
+     "path": "src/homelab/settings.py",
+     "lines": [
+      27,
+      27
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ops-deployer-migration-failed",
+   "doc": "docs/operations.md",
+   "doc_lines": [
+    103,
+    103
+   ],
+   "text": "The deployer finishes with migration failed when the dump or migration command fails.",
+   "sources": [
+    {
+     "path": "node/usr/local/sbin/homelab-deployer",
+     "lines": [
+      790,
+      802
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ops-runs-service-role-env",
+   "doc": "docs/operations.md",
+   "doc_lines": [
+    801,
+    801
+   ],
+   "text": "The runs service sets HOMELAB_RUN_ROLES from the HOMELAB_RUN_ROLES variable, defaulting to an empty value.",
+   "sources": [
+    {
+     "path": "compose.yaml",
+     "lines": [
+      125,
+      137
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ops-copy-inbox",
+   "doc": "docs/operations.md",
+   "doc_lines": [
+    1445,
+    1445
+   ],
+   "text": "homelab-copy appends frontline/inbox when it exists or is a symlink.",
+   "sources": [
+    {
+     "path": "node/usr/local/sbin/homelab-copy",
+     "lines": [
+      21,
+      23
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ops-copy-tar-age",
+   "doc": "docs/operations.md",
+   "doc_lines": [
+    1445,
+    1445
+   ],
+   "text": "homelab-copy passes the tar archive to age with the recipient file /etc/homelab-copy.recipient.",
+   "sources": [
+    {
+     "path": "node/usr/local/sbin/homelab-copy",
+     "lines": [
+      3,
+      4
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-copy",
+     "lines": [
+      27,
+      48
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ops-manage-table-path",
+   "doc": "docs/operations.md",
+   "doc_lines": [
+    1523,
+    1523
+   ],
+   "text": "TABLE is the path to config/litellm.yaml.",
+   "sources": [
+    {
+     "path": "src/homelab/manage/__init__.py",
+     "lines": [
+      15,
+      15
      ]
     }
    ]
