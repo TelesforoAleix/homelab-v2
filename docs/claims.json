@@ -275,8 +275,15 @@
     21,
     22
    ],
-   "text": "The runs service reaches containers only through the launcher socket /run/homelab-launcher.sock, which Factory's runner and sessions also use.",
+   "text": "The runs service mounts the launcher socket /run/homelab-launcher.sock, and its client sends requests to that path; the launcher's caller list admits uid 21020, the uid runs runs as.",
    "sources": [
+    {
+     "path": "compose.yaml",
+     "lines": [
+      130,
+      130
+     ]
+    },
     {
      "path": "compose.yaml",
      "lines": [
@@ -285,9 +292,41 @@
      ]
     },
     {
+     "path": "src/homelab/runs/launcher.py",
+     "lines": [
+      10,
+      10
+     ]
+    },
+    {
+     "path": "src/homelab/runs/launcher.py",
+     "lines": [
+      36,
+      40
+     ]
+    },
+    {
      "path": "node/etc/homelab-launcher/callers.json",
      "lines": [
-      9,
+      11,
+      11
+     ]
+    }
+   ]
+  },
+  {
+   "id": "arch-launcher-callers",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    21,
+    22
+   ],
+   "text": "The launcher's caller list admits uids 21010, 21011 and 21020 and root to its socket, each for a fixed set of operations.",
+   "sources": [
+    {
+     "path": "node/etc/homelab-launcher/callers.json",
+     "lines": [
+      1,
       11
      ]
     }
@@ -325,34 +364,48 @@
     16,
     19
    ],
-   "text": "The gateway sends hosted calls to Vercel AI Gateway, embeddings to llama-embed and llama-embed-large, and Mac purposes to the Mac llama.cpp router.",
+   "text": "The route table sends hosted chat calls to Vercel AI Gateway, embed and embed-large to llama-embed and llama-embed-large, and vision and embed-large-bulk to a Mac router URL set in the private environment.",
    "sources": [
     {
      "path": "config/litellm.yaml",
      "lines": [
-      6,
+      3,
       6
      ]
     },
     {
      "path": "config/litellm.yaml",
      "lines": [
-      83,
-      83
+      57,
+      61
      ]
     },
     {
      "path": "config/litellm.yaml",
      "lines": [
-      93,
-      93
+      80,
+      84
      ]
     },
     {
      "path": "config/litellm.yaml",
      "lines": [
-      60,
-      60
+      90,
+      94
+     ]
+    },
+    {
+     "path": "config/litellm.yaml",
+     "lines": [
+      100,
+      103
+     ]
+    },
+    {
+     "path": ".env.example",
+     "lines": [
+      23,
+      25
      ]
     }
    ]
@@ -731,13 +784,27 @@
     47,
     47
    ],
-   "text": "homelab-task-runner.service runs the host task runner script of the rollback execution path.",
+   "text": "homelab-task-runner.service runs homelab-task-runner, which consumes the tasks queue and runs each task through homelab-task-run.",
    "sources": [
     {
      "path": "node/etc/systemd/system/homelab-task-runner.service",
      "lines": [
       20,
       20
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-task-runner",
+     "lines": [
+      1,
+      5
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-task-runner",
+     "lines": [
+      36,
+      36
      ]
     }
    ]
@@ -817,12 +884,12 @@
     51,
     51
    ],
-   "text": "Daily database dumps, restore checks and the encrypted originals copy run on the node host.",
+   "text": "homelab-dump.timer starts the database dump daily, and homelab-restore-check and homelab-copy are node host helpers that check a dump and stream the encrypted originals.",
    "sources": [
     {
      "path": "node/etc/systemd/system/homelab-dump.timer",
      "lines": [
-      8,
+      7,
       8
      ]
     },
@@ -838,6 +905,13 @@
      "lines": [
       1,
       2
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-copy",
+     "lines": [
+      50,
+      51
      ]
     }
    ]
@@ -1093,15 +1167,29 @@
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
     65,
-    65
+    66
    ],
-   "text": "llama.cpp servers run the node's embedding models and the Mac router.",
+   "text": "llama.cpp servers load the node's two embedding models and the Mac router's models, and the router sets idle sleep and presets for them.",
    "sources": [
     {
      "path": "compose.yaml",
      "lines": [
-      231,
+      227,
       231
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      245,
+      250
+     ]
+    },
+    {
+     "path": "mac/homelab-router",
+     "lines": [
+      2,
+      2
      ]
     },
     {
@@ -1110,6 +1198,20 @@
       27,
       27
      ]
+    },
+    {
+     "path": "mac/homelab-router",
+     "lines": [
+      148,
+      151
+     ]
+    },
+    {
+     "path": "mac/homelab-router",
+     "lines": [
+      181,
+      187
+     ]
     }
    ]
   },
@@ -1117,8 +1219,8 @@
    "id": "flow-model-call",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    69,
-    72
+    70,
+    73
    ],
    "text": "Clients send a purpose name as model, the gateway writes one model_call audit line per call, and clients discover purposes from GET /v1/models.",
    "sources": [
@@ -1149,8 +1251,8 @@
    "id": "flow-knowledge-answer",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    73,
-    74
+    74,
+    75
    ],
    "text": "The answer endpoint embeds the question with embed, retrieves chunks and asks chat to answer only from the numbered chunks with citations.",
    "sources": [
@@ -1181,10 +1283,10 @@
    "id": "flow-run",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    75,
+    76,
     78
    ],
-   "text": "POST /v1/runs authorizes the run key, creates the run, task and job in one transaction, and runs pushes with a GitHub App token.",
+   "text": "POST /v1/runs checks the caller's run key, then one transaction writes the run and its task and defers the Procrastinate job.",
    "sources": [
     {
      "path": "src/homelab/api/runs.py",
@@ -1203,8 +1305,68 @@
     {
      "path": "src/homelab/tasks/runs.py",
      "lines": [
+      155,
+      155
+     ]
+    },
+    {
+     "path": "src/homelab/tasks/runs.py",
+     "lines": [
+      178,
+      178
+     ]
+    },
+    {
+     "path": "src/homelab/tasks/runs.py",
+     "lines": [
+      206,
+      206
+     ]
+    },
+    {
+     "path": "src/homelab/tasks/runs.py",
+     "lines": [
       213,
       213
+     ]
+    }
+   ]
+  },
+  {
+   "id": "flow-run-execute",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    78,
+    80
+   ],
+   "text": "The runs service claims the whole-run job from the runs queue, asks the launcher for containers, and pushes with a GitHub App token.",
+   "sources": [
+    {
+     "path": "src/homelab/tasks/slices.py",
+     "lines": [
+      30,
+      35
+     ]
+    },
+    {
+     "path": "src/homelab/runs/slice_loop.py",
+     "lines": [
+      53,
+      55
+     ]
+    },
+    {
+     "path": "src/homelab/runs/launcher.py",
+     "lines": [
+      10,
+      10
+     ]
+    },
+    {
+     "path": "src/homelab/runs/task_run.py",
+     "lines": [
+      301,
+      301
      ]
     },
     {
@@ -1220,8 +1382,8 @@
    "id": "flow-run-read",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    78,
-    78
+    79,
+    80
    ],
    "text": "Clients read runs with GET /v1/runs and GET /v1/runs/{run_id}.",
    "sources": [
@@ -1229,14 +1391,14 @@
      "path": "src/homelab/api/runs.py",
      "lines": [
       200,
-      200
+      203
      ]
     },
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
       243,
-      243
+      246
      ]
     }
    ]
@@ -1245,8 +1407,8 @@
    "id": "flow-decision",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    79,
-    80
+    81,
+    82
    ],
    "text": "POST /v1/decisions calls the provider adapter, aggregates the repeats and refuses calls once the monthly budget is reached.",
    "sources": [
@@ -1277,8 +1439,8 @@
    "id": "flow-media",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    81,
-    82
+    83,
+    84
    ],
    "text": "Image and video charges are added to homelab_image_costs, and GET /v1/images/cost reads the bearer key's total.",
    "sources": [
@@ -1309,8 +1471,8 @@
    "id": "flow-mac-offer",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    83,
-    84
+    85,
+    86
    ],
    "text": "A periodic job every minute reads the Mac's offer and stores it in homelab_providers; homelab providers prints it.",
    "sources": [
@@ -1341,16 +1503,23 @@
    "id": "flow-deploy",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    85,
-    86
+    87,
+    89
    ],
-   "text": "homelab.service builds and starts the checked-out stack; the deployer installs Factory automatically.",
+   "text": "homelab.service builds and starts the checked-out stack, and the deployer accepts a socket install only for an application named in its automatic list, which names factory.",
    "sources": [
     {
      "path": "node/etc/systemd/system/homelab.service",
      "lines": [
       20,
       20
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-deployer",
+     "lines": [
+      713,
+      718
      ]
     },
     {
@@ -1366,8 +1535,8 @@
    "id": "jobs-queues",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    90,
-    92
+    93,
+    95
    ],
    "text": "Jobs persist before acknowledgement; the worker serves default (ping, provider offer) and local with concurrency 1 (ingest_brain).",
    "sources": [
@@ -1412,8 +1581,8 @@
    "id": "jobs-tasks-queue",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    93,
-    94
+    96,
+    97
    ],
    "text": "run_coding_task is registered on the tasks queue and raises if the worker runs it; whole-run work uses the runs queue.",
    "sources": [
@@ -1451,8 +1620,8 @@
    "id": "data-tables",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    98,
-    100
+    101,
+    103
    ],
    "text": "Postgres holds homelab_image_costs, homelab_video_jobs, homelab_decision_calls and homelab_providers alongside the task tables.",
    "sources": [
@@ -1490,16 +1659,16 @@
    "id": "data-migrations",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    100,
-    101
+    103,
+    104
    ],
-   "text": "The API applies image, video and decisions migrations at startup; the worker applies Procrastinate's and the task schema before starting.",
+   "text": "The API applies the image, video and decisions migrations at startup, and the worker applies Procrastinate's schema and the task schema before it starts.",
    "sources": [
     {
      "path": "src/homelab/api/app.py",
      "lines": [
-      136,
-      137
+      132,
+      138
      ]
     },
     {
@@ -1510,17 +1679,24 @@
      ]
     },
     {
+     "path": "src/homelab/api/decisions.py",
+     "lines": [
+      78,
+      80
+     ]
+    },
+    {
      "path": "src/homelab/jobs/schema.py",
      "lines": [
-      22,
-      28
+      17,
+      29
      ]
     },
     {
      "path": "compose.yaml",
      "lines": [
-      121,
-      121
+      119,
+      123
      ]
     }
    ]
@@ -1529,8 +1705,8 @@
    "id": "data-factory-dump",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    101,
-    102
+    104,
+    105
    ],
    "text": "The daily dump covers every non-template database in the cluster.",
    "sources": [
@@ -1554,8 +1730,8 @@
    "id": "where-node",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    107,
-    110
+    111,
+    114
    ],
    "text": "homelab.service runs the Compose stack after homelab-data.target and stops with it.",
    "sources": [
@@ -1579,8 +1755,8 @@
    "id": "where-mac",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    111,
-    112
+    115,
+    116
    ],
    "text": "Mac tools run from a private installed copy under ~/Library/Application Support/homelab/mac.",
    "sources": [
@@ -1597,8 +1773,8 @@
    "id": "where-mac-tailscale",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    112,
-    112
+    116,
+    116
    ],
    "text": "The Mac router serves on its Tailscale address, port 8090.",
    "sources": [
@@ -1622,8 +1798,8 @@
    "id": "where-ssh",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    113,
-    114
+    117,
+    118
    ],
    "text": "Mac tools reach the node as the homelab-agent SSH account.",
    "sources": [
@@ -1640,8 +1816,8 @@
    "id": "rule-secrets",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    131,
-    132
+    135,
+    136
    ],
    "text": "Gateway keys are Compose secrets, the bot token is a systemd encrypted credential, and the decisions provider key reaches only the api through its environment.",
    "sources": [
@@ -1672,8 +1848,8 @@
    "id": "rule-ports",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    133,
-    136
+    137,
+    140
    ],
    "text": "Only api and LiteLLM publish ports, on loopback; the bot's order listener binds the Tailscale IPv4 on TCP 8110 and ufw accepts 8110 from 172.18.0.0/16.",
    "sources": [
@@ -1718,16 +1894,76 @@
    "id": "rule-brain-ro",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    137,
-    137
+    141,
+    141
    ],
-   "text": "Brain is mounted read-only into the platform containers.",
+   "text": "Brain is mounted read-only into the api and worker containers.",
    "sources": [
     {
      "path": "compose.yaml",
      "lines": [
-      94,
+      18,
+      19
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      81,
+      82
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      93,
       94
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      111,
+      113
+     ]
+    }
+   ]
+  },
+  {
+   "id": "rule-derived-volume",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    141,
+    141
+   ],
+   "text": "Postgres data and the models live under the LUKS-backed /srv/homelab and /srv/homelab-bulk mounts.",
+   "sources": [
+    {
+     "path": "node/etc/crypttab",
+     "lines": [
+      2,
+      3
+     ]
+    },
+    {
+     "path": "node/etc/fstab",
+     "lines": [
+      2,
+      3
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      217,
+      217
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      240,
+      240
      ]
     }
    ]
@@ -1736,10 +1972,10 @@
    "id": "rule-cap-drop",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    138,
-    138
+    142,
+    142
    ],
-   "text": "The platform's application containers drop all capabilities with no-new-privileges, and LiteLLM and runs run as non-root uids.",
+   "text": "The api and worker (through the shared service defaults), LiteLLM, runs, llama-embed-large and package-proxy drop all capabilities and set no-new-privileges.",
    "sources": [
     {
      "path": "compose.yaml",
@@ -1748,6 +1984,59 @@
       27
      ]
     },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      81,
+      82
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      111,
+      112
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      65,
+      66
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      196,
+      197
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      261,
+      262
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      274,
+      275
+     ]
+    }
+   ]
+  },
+  {
+   "id": "rule-non-root",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    142,
+    142
+   ],
+   "text": "LiteLLM, runs and llama-embed-large set a non-root user, the platform image's last user is uid 10001, and package-proxy's image runs as node.",
+   "sources": [
     {
      "path": "compose.yaml",
      "lines": [
@@ -1761,6 +2050,59 @@
       130,
       130
      ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      248,
+      248
+     ]
+    },
+    {
+     "path": "Dockerfile",
+     "lines": [
+      20,
+      20
+     ]
+    },
+    {
+     "path": "Dockerfile",
+     "lines": [
+      26,
+      26
+     ]
+    },
+    {
+     "path": "node/opt/homelab-package-proxy/Dockerfile",
+     "lines": [
+      7,
+      7
+     ]
+    }
+   ]
+  },
+  {
+   "id": "rule-cap-exceptions",
+   "doc": "ARCHITECTURE.md",
+   "doc_lines": [
+    143,
+    143
+   ],
+   "text": "The postgres and llama-embed service definitions set neither cap_drop nor a user.",
+   "sources": [
+    {
+     "path": "compose.yaml",
+     "lines": [
+      207,
+      225
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      227,
+      244
+     ]
     }
    ]
   },
@@ -1768,8 +2110,8 @@
    "id": "rule-no-content-logs",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    139,
-    139
+    144,
+    144
    ],
    "text": "Logging prompts and retrieved text is off by default; ids, sizes and timings are logged.",
    "sources": [
@@ -1786,8 +2128,8 @@
    "id": "rule-spend",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    140,
-    141
+    145,
+    146
    ],
    "text": "Typed decisions refuse calls with 429 once the month's recorded cost reaches the configured cap.",
    "sources": [
@@ -1811,8 +2153,8 @@
    "id": "rule-jobs",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    142,
-    142
+    147,
+    147
    ],
    "text": "Jobs are persisted before acknowledgement, and tasks are idempotent or declare retry=0.",
    "sources": [
@@ -1829,8 +2171,8 @@
    "id": "rule-local-indexing",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    143,
-    144
+    148,
+    149
    ],
    "text": "Ingestion embeds with the local embed route, and the answer prompt contains only the question and the retrieved chunks.",
    "sources": [
@@ -1861,8 +2203,8 @@
    "id": "rule-vision",
    "doc": "ARCHITECTURE.md",
    "doc_lines": [
-    145,
-    145
+    150,
+    150
    ],
    "text": "vision goes to the Mac router and vision:xhigh to the hosted gateway model.",
    "sources": [
@@ -1993,16 +2335,37 @@
    "id": "con-decisions-scope",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    29,
-    29
+    28,
+    28
    ],
-   "text": "POST /v1/decisions requires a run key with decisions:write.",
+   "text": "POST /v1/decisions requires a bearer run key whose scopes include decisions:write.",
    "sources": [
     {
      "path": "src/homelab/api/decisions.py",
      "lines": [
-      245,
+      242,
       245
+     ]
+    },
+    {
+     "path": "src/homelab/api/run_keys.py",
+     "lines": [
+      18,
+      18
+     ]
+    },
+    {
+     "path": "src/homelab/api/run_keys.py",
+     "lines": [
+      54,
+      54
+     ]
+    },
+    {
+     "path": "src/homelab/api/run_keys.py",
+     "lines": [
+      66,
+      68
      ]
     }
    ]
@@ -2071,27 +2434,34 @@
     52,
     53
    ],
-   "text": "Media models are in media_model_list in config/litellm.yaml, with video jobs in video_jobs.py and costs in image_costs.py.",
+   "text": "Media models are in media_model_list in config/litellm.yaml, video job metadata in video_jobs.py and image cost accounting in image_costs.py.",
    "sources": [
     {
      "path": "config/litellm.yaml",
      "lines": [
       328,
-      328
+      330
      ]
     },
     {
      "path": "src/homelab/api/video_jobs.py",
      "lines": [
       1,
-      3
+      1
      ]
     },
     {
      "path": "src/homelab/api/image_costs.py",
      "lines": [
-      28,
-      28
+      1,
+      1
+     ]
+    },
+    {
+     "path": "src/homelab/api/image_costs.sql",
+     "lines": [
+      1,
+      3
      ]
     }
    ]
@@ -2160,13 +2530,34 @@
     61,
     61
    ],
-   "text": "The bot's /ask posts to /v1/knowledge/answer.",
+   "text": "The bot's /ask posts the question as JSON to /v1/knowledge/answer, which the api serves.",
    "sources": [
     {
      "path": "node/opt/homelab-telegram-bot/executors.py",
      "lines": [
       305,
       305
+     ]
+    },
+    {
+     "path": "node/opt/homelab-telegram-bot/executors.py",
+     "lines": [
+      308,
+      308
+     ]
+    },
+    {
+     "path": "node/opt/homelab-telegram-bot/executors.py",
+     "lines": [
+      318,
+      323
+     ]
+    },
+    {
+     "path": "src/homelab/api/app.py",
+     "lines": [
+      214,
+      215
      ]
     }
    ]
@@ -2221,7 +2612,7 @@
     78,
     78
    ],
-   "text": "The launcher reads one JSON line per connection on /run/homelab-launcher.sock.",
+   "text": "The launcher socket unit listens on /run/homelab-launcher.sock, and the launcher reads one newline-terminated JSON line of at most 64 KiB per connection.",
    "sources": [
     {
      "path": "node/etc/systemd/system/homelab-launcher.socket",
@@ -2235,6 +2626,13 @@
      "lines": [
       25,
       25
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-launcher",
+     "lines": [
+      683,
+      699
      ]
     }
    ]
@@ -2479,7 +2877,7 @@
     141,
     143
    ],
-   "text": "offer.py writes public/homelab-offer.json, the router writes public/homelab-profile.json, and providers.py reads the offer.",
+   "text": "offer.py writes public/homelab-offer.json, the router creates public/homelab-profile.json when it is absent, and providers.py reads the offer from the router's /homelab-offer.json.",
    "sources": [
     {
      "path": "mac/offer.py",
@@ -2491,15 +2889,15 @@
     {
      "path": "mac/homelab-router",
      "lines": [
-      122,
-      122
+      119,
+      124
      ]
     },
     {
      "path": "src/homelab/jobs/providers.py",
      "lines": [
-      66,
-      66
+      60,
+      67
      ]
     }
    ]
@@ -2569,16 +2967,23 @@
    "id": "con-profile-fields",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    166,
+    165,
     166
    ],
-   "text": "The menu app decodes allowed, state and running for each service.",
+   "text": "The menu app decodes a services map whose entries carry optional allowed, state and running fields.",
    "sources": [
     {
      "path": "mac/MenuBar/Sources/HomeLabMenuBar/Reports.swift",
      "lines": [
-      17,
-      19
+      5,
+      7
+     ]
+    },
+    {
+     "path": "mac/MenuBar/Sources/HomeLabMenuBar/Reports.swift",
+     "lines": [
+      15,
+      20
      ]
     }
    ]
@@ -2606,9 +3011,9 @@
    "doc": "docs/contracts.md",
    "doc_lines": [
     174,
-    174
+    175
    ],
-   "text": "Serena's tools are a fixed list of six read tools.",
+   "text": "Serena's configuration lists six fixed tools: find_symbol, get_symbols_overview, find_referencing_symbols, find_declaration, find_implementations and search_for_pattern.",
    "sources": [
     {
      "path": "node/opt/homelab-context/serena_config.yml",
@@ -2900,10 +3305,24 @@
    "doc": "docs/operations.md",
    "doc_lines": [
     63,
-    63
+    68
    ],
-   "text": "Development uses uv sync and uv run pytest over the tests directory.",
+   "text": "Development runs uv sync and uv run pytest, and pytest collects the tests directory.",
    "sources": [
+    {
+     "path": ".github/workflows/ci.yml",
+     "lines": [
+      15,
+      15
+     ]
+    },
+    {
+     "path": ".github/workflows/ci.yml",
+     "lines": [
+      35,
+      35
+     ]
+    },
     {
      "path": "pyproject.toml",
      "lines": [
@@ -3020,13 +3439,27 @@
     103,
     103
    ],
-   "text": "The deployer runs homelab-dump.service before a migration.",
+   "text": "For an install whose manifest has a migration, the deployer starts homelab-dump.service first and finishes the install as migration failed if the dump or the migration command fails.",
    "sources": [
     {
      "path": "node/usr/local/sbin/homelab-deployer",
      "lines": [
-      775,
-      775
+      773,
+      778
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-deployer",
+     "lines": [
+      790,
+      791
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-deployer",
+     "lines": [
+      800,
+      802
      ]
     }
    ]
@@ -3081,10 +3514,24 @@
     228,
     228
    ],
-   "text": "Docker, its socket and containerd only start once both volumes are mounted.",
+   "text": "The docker.service, docker.socket and containerd.service drop-ins refuse to start unless /srv/homelab and /srv/homelab-bulk are both mount points.",
    "sources": [
     {
      "path": "node/etc/systemd/system/docker.service.d/data-volume.conf",
+     "lines": [
+      1,
+      6
+     ]
+    },
+    {
+     "path": "node/etc/systemd/system/docker.socket.d/data-volume.conf",
+     "lines": [
+      1,
+      6
+     ]
+    },
+    {
+     "path": "node/etc/systemd/system/containerd.service.d/data-volume.conf",
      "lines": [
       1,
       6
@@ -3149,19 +3596,26 @@
     589,
     589
    ],
-   "text": "The bot, notifier and watchdog load the TPM-sealed token.cred as bot-token.",
+   "text": "The bot, notifier and watchdog load token.cred as the bot-token credential, which is sealed to the TPM2 without PCR binding.",
    "sources": [
     {
      "path": "node/etc/systemd/system/homelab-telegram-bot.service.d/credential.conf",
      "lines": [
-      17,
+      1,
       17
      ]
     },
     {
      "path": "node/etc/systemd/system/homelab-notify@.service.d/credential.conf",
      "lines": [
-      17,
+      1,
+      17
+     ]
+    },
+    {
+     "path": "node/etc/systemd/system/homelab-watchdog.service.d/credential.conf",
+     "lines": [
+      1,
       17
      ]
     }
@@ -3174,8 +3628,22 @@
     556,
     557
    ],
-   "text": "Both gateway key files are Compose secrets mounted only into LiteLLM, whose entrypoint reads them at startup.",
+   "text": "Both gateway key files are Compose secrets listed only on the LiteLLM service, whose entrypoint reads them at startup.",
    "sources": [
+    {
+     "path": "compose.yaml",
+     "lines": [
+      33,
+      33
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      39,
+      39
+     ]
+    },
     {
      "path": "compose.yaml",
      "lines": [
@@ -3186,8 +3654,15 @@
     {
      "path": "compose.yaml",
      "lines": [
-      39,
-      39
+      280,
+      284
+     ]
+    },
+    {
+     "path": "config/litellm_entrypoint.py",
+     "lines": [
+      21,
+      27
      ]
     }
    ]
@@ -3224,7 +3699,7 @@
     550,
     550
    ],
-   "text": "Compose reads the database password and the brain, corpus, Postgres and models paths from .env.",
+   "text": "Compose substitutes HOMELAB_DB_PASSWORD and the brain, corpus, Postgres and models paths, which .env.example lists for the .env file Compose reads.",
    "sources": [
     {
      "path": "compose.yaml",
@@ -3237,7 +3712,7 @@
      "path": "compose.yaml",
      "lines": [
       94,
-      94
+      95
      ]
     },
     {
@@ -3245,6 +3720,20 @@
      "lines": [
       217,
       217
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      240,
+      240
+     ]
+    },
+    {
+     "path": ".env.example",
+     "lines": [
+      1,
+      10
      ]
     }
    ]
@@ -3256,19 +3745,19 @@
     718,
     718
    ],
-   "text": "llama-embed-large runs as 10001:10001 with models/embed-large as its model directory.",
+   "text": "llama-embed-large runs as 10001:10001 and downloads Qwen3-Embedding-4B Q8_0 into the models/embed-large directory.",
    "sources": [
     {
      "path": "compose.yaml",
      "lines": [
-      246,
-      248
+      245,
+      252
      ]
     },
     {
      "path": "compose.yaml",
      "lines": [
-      259,
+      258,
       259
      ]
     }
@@ -3317,8 +3806,15 @@
     801,
     801
    ],
-   "text": "HOMELAB_RUN_ROLES reaches both the api and runs, defaulting to empty.",
+   "text": "HOMELAB_RUN_ROLES is passed to the api and runs services, defaults to empty and decides which run roles are enabled.",
    "sources": [
+    {
+     "path": "compose.yaml",
+     "lines": [
+      81,
+      82
+     ]
+    },
     {
      "path": "compose.yaml",
      "lines": [
@@ -3329,8 +3825,22 @@
     {
      "path": "compose.yaml",
      "lines": [
+      125,
+      126
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
       137,
       137
+     ]
+    },
+    {
+     "path": "src/homelab/tasks/runs.py",
+     "lines": [
+      21,
+      22
      ]
     }
    ]
@@ -3360,13 +3870,20 @@
     1433,
     1435
    ],
-   "text": "The bot replies with fixed texts for no card, done, failed and an unreachable Mac.",
+   "text": "The bot replies with fixed texts for no card, a finished copy, a failed copy and an unreachable Mac.",
    "sources": [
     {
      "path": "node/opt/homelab-telegram-bot/executors.py",
      "lines": [
       258,
       258
+     ]
+    },
+    {
+     "path": "node/opt/homelab-telegram-bot/executors.py",
+     "lines": [
+      262,
+      262
      ]
     },
     {
@@ -3417,27 +3934,27 @@
     1445,
     1445
    ],
-   "text": "The node streams the originals and the bot inbox through age to the public recipient.",
+   "text": "homelab-copy lists every *-data/originals folder and the inbox when present, and streams one tar archive through age to the recipient file.",
    "sources": [
     {
      "path": "node/usr/local/sbin/homelab-copy",
      "lines": [
-      2,
-      2
+      13,
+      13
      ]
     },
     {
      "path": "node/usr/local/sbin/homelab-copy",
      "lines": [
-      22,
-      22
+      20,
+      24
      ]
     },
     {
      "path": "node/usr/local/sbin/homelab-copy",
      "lines": [
-      51,
-      51
+      33,
+      52
      ]
     }
    ]
@@ -3542,13 +4059,20 @@
     1523,
     1523
    ],
-   "text": "Management documents carry the route table's SHA-256 as version.",
+   "text": "Management documents carry the SHA-256 of the route table file as their version.",
    "sources": [
     {
      "path": "src/homelab/manage/__init__.py",
      "lines": [
-      52,
+      50,
       52
+     ]
+    },
+    {
+     "path": "src/homelab/manage/__init__.py",
+     "lines": [
+      90,
+      91
      ]
     }
    ]
@@ -3621,12 +4145,26 @@
     18,
     19
    ],
-   "text": "Credential drop-ins load the TPM-sealed token.cred by path.",
+   "text": "The credential drop-ins load the TPM2-sealed token.cred by its path under /etc/homelab-telegram-bot, not by contents.",
    "sources": [
+    {
+     "path": "node/etc/systemd/system/homelab-telegram-bot.service.d/credential.conf",
+     "lines": [
+      1,
+      17
+     ]
+    },
+    {
+     "path": "node/etc/systemd/system/homelab-notify@.service.d/credential.conf",
+     "lines": [
+      1,
+      17
+     ]
+    },
     {
      "path": "node/etc/systemd/system/homelab-watchdog.service.d/credential.conf",
      "lines": [
-      17,
+      1,
       17
      ]
     }
@@ -3639,13 +4177,27 @@
     1127,
     1127
    ],
-   "text": "The sudoers file is installed with mode 0440.",
+   "text": "The sudoers file is validated with visudo and installed with mode 0440, the file mode the installed-modes table gives for node/etc/sudoers.d.",
    "sources": [
     {
      "path": "docs/operations.md",
      "lines": [
-      337,
+      336,
       337
+     ]
+    },
+    {
+     "path": "docs/operations.md",
+     "lines": [
+      1109,
+      1110
+     ]
+    },
+    {
+     "path": "docs/operations.md",
+     "lines": [
+      1127,
+      1127
      ]
     }
    ]
@@ -3983,13 +4535,27 @@
    "to": "TelesforoAleix/factory:runner",
    "how": "contract",
    "contract": "run-api",
-   "text": "Factory's runner submits and observes runs through the api's run API with its run key (provider api, user Factory).",
+   "text": "Factory's runner submits and reads runs through the api's run routes, authenticating with a bearer run key from the key file.",
    "provider_sources": [
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
       105,
-      105
+      112
+     ]
+    },
+    {
+     "path": "src/homelab/api/runs.py",
+     "lines": [
+      200,
+      203
+     ]
+    },
+    {
+     "path": "src/homelab/api/runs.py",
+     "lines": [
+      243,
+      246
      ]
     },
     {
@@ -4000,25 +4566,76 @@
      ]
     }
    ],
-   "user_sources": []
+   "user_sources": [
+    {
+     "path": "src/homelab/api/run_keys.py",
+     "lines": [
+      17,
+      17
+     ]
+    },
+    {
+     "path": "src/homelab/api/run_keys.py",
+     "lines": [
+      27,
+      32
+     ]
+    },
+    {
+     "path": "src/homelab/api/run_keys.py",
+     "lines": [
+      54,
+      68
+     ]
+    }
+   ]
   },
   {
    "id": "factory-decisions",
    "from": "api",
-   "to": "TelesforoAleix/factory:cplane",
+   "to": "TelesforoAleix/factory:docs-verify",
    "how": "contract",
    "contract": "decisions-api",
-   "text": "Factory's cplane calls the api's POST /v1/decisions with a run key holding decisions:write.",
+   "text": "Factory's docs-verify calls the api's POST /v1/decisions with a bearer run key that holds decisions:write.",
    "provider_sources": [
     {
      "path": "src/homelab/api/decisions.py",
      "lines": [
       242,
-      242
+      246
+     ]
+    },
+    {
+     "path": "src/homelab/api/run_keys.py",
+     "lines": [
+      18,
+      18
      ]
     }
    ],
-   "user_sources": []
+   "user_sources": [
+    {
+     "path": "src/homelab/api/run_keys.py",
+     "lines": [
+      17,
+      17
+     ]
+    },
+    {
+     "path": "src/homelab/api/run_keys.py",
+     "lines": [
+      27,
+      32
+     ]
+    },
+    {
+     "path": "src/homelab/api/run_keys.py",
+     "lines": [
+      54,
+      68
+     ]
+    }
+   ]
   },
   {
    "id": "factory-launcher",
@@ -4118,17 +4735,32 @@
    "to": "TelesforoAleix/factory:runner",
    "how": "contract",
    "contract": "bot-orders",
-   "text": "Factory collects queued orders from the bot's order endpoint on TCP 8110.",
+   "text": "Factory collects queued orders from the bot's order endpoint on TCP 8110, over Tailscale or from the Compose default network.",
    "provider_sources": [
     {
      "path": "node/opt/homelab-telegram-bot/order_listener.py",
      "lines": [
       12,
-      12
+      25
+     ]
+    },
+    {
+     "path": "node/opt/homelab-telegram-bot/order_listener.py",
+     "lines": [
+      47,
+      57
      ]
     }
    ],
-   "user_sources": []
+   "user_sources": [
+    {
+     "path": "node/etc/ufw/user.rules",
+     "lines": [
+      26,
+      27
+     ]
+    }
+   ]
   },
   {
    "id": "med-ask-gateway",
@@ -4159,8 +4791,8 @@
     {
      "path": "compose.yaml",
      "lines": [
-      208,
-      208
+      207,
+      217
      ]
     }
    ],
@@ -4171,6 +4803,27 @@
       10,
       10
      ]
+    },
+    {
+     "path": "src/homelab/api/image_costs.py",
+     "lines": [
+      16,
+      17
+     ]
+    },
+    {
+     "path": "src/homelab/api/image_costs.py",
+     "lines": [
+      28,
+      31
+     ]
+    },
+    {
+     "path": "src/homelab/api/decisions.py",
+     "lines": [
+      78,
+      80
+     ]
     }
    ]
   },
@@ -4180,22 +4833,36 @@
    "to": "postgres",
    "how": "table",
    "contract": null,
-   "text": "The worker's Procrastinate app stores jobs in Postgres.",
+   "text": "The worker's Procrastinate app connects to Postgres through HOMELAB_DATABASE_URL and stores jobs there.",
    "provider_sources": [
     {
      "path": "compose.yaml",
      "lines": [
-      208,
-      208
+      207,
+      217
      ]
     }
    ],
    "user_sources": [
     {
+     "path": "compose.yaml",
+     "lines": [
+      10,
+      10
+     ]
+    },
+    {
      "path": "src/homelab/jobs/app.py",
      "lines": [
-      19,
-      19
+      17,
+      21
+     ]
+    },
+    {
+     "path": "src/homelab/settings.py",
+     "lines": [
+      14,
+      16
      ]
     }
    ]
@@ -4258,13 +4925,27 @@
    "to": "gateway",
    "how": "call",
    "contract": "model-gateway",
-   "text": "The homelab CLI lists purposes and embeds through the gateway.",
+   "text": "The homelab CLI lists purposes from the gateway's /models endpoint and embeds through the gateway.",
    "provider_sources": [
     {
-     "path": "src/homelab/models/routes.py",
+     "path": "compose.yaml",
      "lines": [
-      28,
-      28
+      33,
+      36
+     ]
+    },
+    {
+     "path": "config/litellm.yaml",
+     "lines": [
+      1,
+      3
+     ]
+    },
+    {
+     "path": "config/litellm.yaml",
+     "lines": [
+      80,
+      84
      ]
     }
    ],
@@ -4273,7 +4954,28 @@
      "path": "src/homelab/cli.py",
      "lines": [
       16,
-      17
+      20
+     ]
+    },
+    {
+     "path": "src/homelab/cli.py",
+     "lines": [
+      32,
+      32
+     ]
+    },
+    {
+     "path": "src/homelab/models/routes.py",
+     "lines": [
+      28,
+      34
+     ]
+    },
+    {
+     "path": "src/homelab/models/routes.py",
+     "lines": [
+      42,
+      48
      ]
     }
    ]
@@ -4284,20 +4986,20 @@
    "to": "embedding-servers",
    "how": "call",
    "contract": null,
-   "text": "The gateway routes embed and embed-large to the two llama.cpp embedding servers.",
+   "text": "The gateway routes embed and embed-large to the llama-embed and llama-embed-large llama.cpp servers.",
    "provider_sources": [
     {
      "path": "compose.yaml",
      "lines": [
       227,
-      227
+      231
      ]
     },
     {
      "path": "compose.yaml",
      "lines": [
       245,
-      245
+      250
      ]
     }
    ],
@@ -4305,15 +5007,15 @@
     {
      "path": "config/litellm.yaml",
      "lines": [
-      83,
-      83
+      80,
+      84
      ]
     },
     {
      "path": "config/litellm.yaml",
      "lines": [
-      93,
-      93
+      90,
+      94
      ]
     }
    ]
@@ -4324,13 +5026,27 @@
    "to": "mac-router",
    "how": "call",
    "contract": "mac-router",
-   "text": "The gateway sends vision and embed-large-bulk calls to the Mac router's URL.",
+   "text": "The gateway sends vision and embed-large-bulk calls to the Mac router's URL taken from the private environment.",
    "provider_sources": [
     {
      "path": "mac/homelab-router",
      "lines": [
       29,
       29
+     ]
+    },
+    {
+     "path": "mac/homelab-router",
+     "lines": [
+      181,
+      191
+     ]
+    },
+    {
+     "path": ".env.example",
+     "lines": [
+      23,
+      28
      ]
     }
    ],
@@ -4339,14 +5055,21 @@
      "path": "compose.yaml",
      "lines": [
       44,
-      44
+      45
      ]
     },
     {
-     "path": "compose.yaml",
+     "path": "config/litellm.yaml",
      "lines": [
-      45,
-      45
+      57,
+      61
+     ]
+    },
+    {
+     "path": "config/litellm.yaml",
+     "lines": [
+      100,
+      103
      ]
     }
    ]
@@ -4360,19 +5083,40 @@
    "text": "The gateway's hooks add image charges to homelab_image_costs.",
    "provider_sources": [
     {
+     "path": "compose.yaml",
+     "lines": [
+      207,
+      217
+     ]
+    },
+    {
      "path": "src/homelab/api/image_costs.sql",
      "lines": [
       1,
-      1
+      8
+     ]
+    },
+    {
+     "path": "src/homelab/api/image_costs.py",
+     "lines": [
+      28,
+      31
      ]
     }
    ],
    "user_sources": [
     {
+     "path": "compose.yaml",
+     "lines": [
+      41,
+      41
+     ]
+    },
+    {
      "path": "config/litellm_hooks.py",
      "lines": [
-      165,
-      165
+      160,
+      166
      ]
     }
    ]
@@ -4415,7 +5159,7 @@
      "path": "src/homelab/knowledge/retrieve.py",
      "lines": [
       41,
-      41
+      50
      ]
     }
    ],
@@ -4425,6 +5169,27 @@
      "lines": [
       21,
       21
+     ]
+    },
+    {
+     "path": "src/homelab/api/app.py",
+     "lines": [
+      186,
+      196
+     ]
+    },
+    {
+     "path": "src/homelab/api/app.py",
+     "lines": [
+      198,
+      199
+     ]
+    },
+    {
+     "path": "src/homelab/api/app.py",
+     "lines": [
+      214,
+      218
      ]
     }
    ]
@@ -4440,17 +5205,24 @@
     {
      "path": "compose.yaml",
      "lines": [
-      208,
-      208
+      207,
+      217
      ]
     }
    ],
    "user_sources": [
     {
+     "path": "compose.yaml",
+     "lines": [
+      10,
+      10
+     ]
+    },
+    {
      "path": "src/homelab/knowledge/index.py",
      "lines": [
       35,
-      35
+      56
      ]
     }
    ]
@@ -4492,8 +5264,22 @@
     {
      "path": "src/homelab/tasks/slices.py",
      "lines": [
-      33,
-      33
+      18,
+      22
+     ]
+    },
+    {
+     "path": "src/homelab/tasks/slices.py",
+     "lines": [
+      30,
+      35
+     ]
+    },
+    {
+     "path": "src/homelab/tasks/runs.py",
+     "lines": [
+      18,
+      18
      ]
     }
    ],
@@ -4501,8 +5287,22 @@
     {
      "path": "compose.yaml",
      "lines": [
+      125,
+      126
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
       134,
       134
+     ]
+    },
+    {
+     "path": "src/homelab/runs/slice_loop.py",
+     "lines": [
+      53,
+      55
      ]
     }
    ]
@@ -4518,17 +5318,31 @@
     {
      "path": "compose.yaml",
      "lines": [
-      208,
-      208
+      207,
+      217
      ]
     }
    ],
    "user_sources": [
     {
+     "path": "compose.yaml",
+     "lines": [
+      10,
+      10
+     ]
+    },
+    {
      "path": "src/homelab/tasks/schema.sql",
      "lines": [
       27,
-      27
+      29
+     ]
+    },
+    {
+     "path": "src/homelab/tasks/submit.py",
+     "lines": [
+      136,
+      136
      ]
     }
    ]
@@ -4573,14 +5387,35 @@
       59,
       59
      ]
+    },
+    {
+     "path": "config/litellm.yaml",
+     "lines": [
+      322,
+      322
+     ]
     }
    ],
    "user_sources": [
     {
+     "path": "compose.yaml",
+     "lines": [
+      175,
+      176
+     ]
+    },
+    {
      "path": "src/homelab/runs/task_run.py",
      "lines": [
-      366,
-      366
+      33,
+      33
+     ]
+    },
+    {
+     "path": "src/homelab/runs/task_run.py",
+     "lines": [
+      363,
+      378
      ]
     }
    ]
@@ -4591,13 +5426,34 @@
    "to": "fence",
    "how": "file",
    "contract": null,
-   "text": "The launcher imports homelab-fence's builders and uses the homelab-fence network.",
+   "text": "The launcher imports homelab-fence's builders, uses its homelab-fence network for the fence profiles, and the fence's own compose file defines that network.",
    "provider_sources": [
     {
      "path": "node/opt/homelab-fence/compose.yaml",
      "lines": [
-      3,
-      3
+      1,
+      5
+     ]
+    },
+    {
+     "path": "node/opt/homelab-fence/compose.yaml",
+     "lines": [
+      16,
+      21
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-fence",
+     "lines": [
+      15,
+      16
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-fence",
+     "lines": [
+      70,
+      70
      ]
     }
    ],
@@ -4605,8 +5461,22 @@
     {
      "path": "node/usr/local/sbin/homelab-launcher",
      "lines": [
-      32,
-      32
+      30,
+      33
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-launcher",
+     "lines": [
+      41,
+      41
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-launcher",
+     "lines": [
+      638,
+      638
      ]
     }
    ]
@@ -4623,7 +5493,21 @@
      "path": "compose.yaml",
      "lines": [
       267,
-      267
+      275
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      305,
+      311
+     ]
+    },
+    {
+     "path": "node/opt/homelab-package-proxy/tinyproxy.conf",
+     "lines": [
+      3,
+      3
      ]
     }
    ],
@@ -4631,15 +5515,8 @@
     {
      "path": "node/usr/local/sbin/homelab-launcher",
      "lines": [
-      83,
-      83
-     ]
-    },
-    {
-     "path": "node/usr/local/sbin/homelab-launcher",
-     "lines": [
-      87,
-      87
+      82,
+      88
      ]
     }
    ]
@@ -4707,8 +5584,8 @@
     {
      "path": "node/etc/systemd/system/homelab-dump.service",
      "lines": [
-      9,
-      9
+      1,
+      10
      ]
     }
    ],
@@ -4716,8 +5593,15 @@
     {
      "path": "node/usr/local/sbin/homelab-deployer",
      "lines": [
-      775,
-      775
+      773,
+      778
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-deployer",
+     "lines": [
+      800,
+      802
      ]
     }
    ]
@@ -4728,7 +5612,7 @@
    "to": "notifier",
    "how": "call",
    "contract": null,
-   "text": "The deployer starts homelab-notify@deployer.service on a failure.",
+   "text": "After a failed install the deployer starts homelab-notify@deployer.service, and the notifier maps the deployer alias to homelab-deployer.service.",
    "provider_sources": [
     {
      "path": "node/etc/systemd/system/homelab-notify@.service",
@@ -4736,14 +5620,21 @@
       29,
       29
      ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-notify.sh",
+     "lines": [
+      88,
+      90
+     ]
     }
    ],
    "user_sources": [
     {
      "path": "node/usr/local/sbin/homelab-deployer",
      "lines": [
-      651,
-      651
+      647,
+      653
      ]
     }
    ]
@@ -4754,13 +5645,20 @@
    "to": "api",
    "how": "call",
    "contract": null,
-   "text": "The image cost notice runs the api's accounting command through docker compose exec and sends through homelab-notify.sh.",
+   "text": "The image cost notice runs the api's image_costs alerts command through docker compose exec and sends each message through homelab-notify.sh.",
    "provider_sources": [
     {
      "path": "src/homelab/api/image_costs.py",
      "lines": [
-      28,
-      28
+      89,
+      98
+     ]
+    },
+    {
+     "path": "src/homelab/api/image_costs.py",
+     "lines": [
+      105,
+      106
      ]
     }
    ],
@@ -4768,8 +5666,15 @@
     {
      "path": "node/usr/local/sbin/homelab-image-cost-notice",
      "lines": [
-      13,
-      22
+      10,
+      23
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-image-cost-notice",
+     "lines": [
+      33,
+      40
      ]
     }
    ]
@@ -4809,10 +5714,17 @@
    "text": "The bot asks the frontline purpose on the gateway's loopback port.",
    "provider_sources": [
     {
+     "path": "compose.yaml",
+     "lines": [
+      33,
+      36
+     ]
+    },
+    {
      "path": "config/litellm.yaml",
      "lines": [
       9,
-      9
+      12
      ]
     }
    ],
@@ -4820,15 +5732,8 @@
     {
      "path": "node/opt/homelab-telegram-bot/conversation.py",
      "lines": [
-      230,
-      230
-     ]
-    },
-    {
-     "path": "node/opt/homelab-telegram-bot/conversation.py",
-     "lines": [
-      236,
-      236
+      228,
+      237
      ]
     }
    ]
@@ -4906,14 +5811,21 @@
       1,
       3
      ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-queue-notice",
+     "lines": [
+      20,
+      26
+     ]
     }
    ],
    "user_sources": [
     {
      "path": "mac/profile_queue.py",
      "lines": [
-      441,
-      441
+      432,
+      446
      ]
     }
    ]
@@ -4924,7 +5836,7 @@
    "to": "mac-router",
    "how": "call",
    "contract": null,
-   "text": "homelab-profile reloads and loads native presets through the router's API.",
+   "text": "homelab-profile writes the router's presets, then reloads and loads native models through the router's API.",
    "provider_sources": [
     {
      "path": "mac/homelab-router",
@@ -4932,20 +5844,34 @@
       29,
       29
      ]
+    },
+    {
+     "path": "mac/homelab-router",
+     "lines": [
+      181,
+      191
+     ]
     }
    ],
    "user_sources": [
     {
      "path": "mac/homelab-profile",
      "lines": [
-      396,
+      392,
+      392
+     ]
+    },
+    {
+     "path": "mac/homelab-profile",
+     "lines": [
+      394,
       396
      ]
     },
     {
      "path": "mac/homelab-profile",
      "lines": [
-      405,
+      401,
       405
      ]
     }
@@ -4963,7 +5889,14 @@
      "path": "mac/homelab-profile",
      "lines": [
       1422,
-      1422
+      1423
+     ]
+    },
+    {
+     "path": "mac/homelab-profile",
+     "lines": [
+      1557,
+      1558
      ]
     }
    ],
@@ -4971,15 +5904,15 @@
     {
      "path": "mac/MenuBar/Sources/HomeLabMenuBar/ProfileCommand.swift",
      "lines": [
-      32,
-      32
+      28,
+      40
      ]
     },
     {
      "path": "mac/MenuBar/Sources/HomeLabMenuBar/Reports.swift",
      "lines": [
       5,
-      5
+      13
      ]
     }
    ]
@@ -4998,6 +5931,13 @@
       3,
       3
      ]
+    },
+    {
+     "path": "node/etc/crypttab",
+     "lines": [
+      3,
+      3
+     ]
     }
    ],
    "user_sources": [
@@ -5006,6 +5946,13 @@
      "lines": [
       240,
       240
+     ]
+    },
+    {
+     "path": "compose.yaml",
+     "lines": [
+      259,
+      259
      ]
     }
    ]
@@ -5020,6 +5967,13 @@
    "provider_sources": [
     {
      "path": "node/etc/fstab",
+     "lines": [
+      2,
+      2
+     ]
+    },
+    {
+     "path": "node/etc/crypttab",
      "lines": [
       2,
       2
@@ -5050,6 +6004,13 @@
       2,
       2
      ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-context",
+     "lines": [
+      31,
+      32
+     ]
     }
    ],
    "user_sources": [
@@ -5073,8 +6034,8 @@
     {
      "path": "compose.yaml",
      "lines": [
-      208,
-      208
+      207,
+      217
      ]
     }
    ],
@@ -5082,8 +6043,8 @@
     {
      "path": "node/usr/local/sbin/homelab-dump",
      "lines": [
-      42,
-      42
+      26,
+      43
      ]
     }
    ]
@@ -5094,13 +6055,27 @@
    "to": "data-volumes",
    "how": "file",
    "contract": null,
-   "text": "The bot keeps its planning data, orders and inbox under /srv/homelab/frontline.",
+   "text": "The bot keeps its planning data under /srv/homelab/frontline on the main volume, and the originals copy reads the bot inbox from frontline/inbox.",
    "provider_sources": [
     {
      "path": "node/etc/fstab",
      "lines": [
       2,
       2
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-copy",
+     "lines": [
+      12,
+      12
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-copy",
+     "lines": [
+      22,
+      24
      ]
     }
    ],
@@ -5110,6 +6085,13 @@
      "lines": [
       22,
       22
+     ]
+    },
+    {
+     "path": "node/opt/homelab-telegram-bot/planning.py",
+     "lines": [
+      159,
+      159
      ]
     }
    ]

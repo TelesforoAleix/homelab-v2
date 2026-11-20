@@ -25,7 +25,7 @@ moved, and put incompatible changes under a new version that runs beside the old
 
 ## decisions-api
 
-- **Version:** 1 (`POST /v1/decisions`).
+- **Version:** 1 (`POST /v1/decisions`, run key with `decisions:write`).
 - **Provider:** `api`. **Users:** Factory (its `cplane docs-verify` checks claims with it).
 - **Source:** `src/homelab/api/decisions.py`, `src/homelab/api/decisions.sql`. Wire format and
   limits: [decisions-api.md](decisions-api.md).

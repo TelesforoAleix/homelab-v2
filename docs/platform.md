@@ -117,60 +117,15 @@ Private configuration and a read-only deploy key stay on the node; see the
 
 ## Storage
 
-Docker state and rebuildable files live on the encrypted second SSD at `/srv/homelab-bulk`;
-databases, originals and corpus stay on `/srv/homelab`. After boot the owner unlocks main,
-which supplies bulk’s key, then Docker and the applications start. See
-[Rebuilding the node](operations.md#rebuilding-the-node) for setup and recovery.
+Docker state and rebuildable files live on the second encrypted SSD, databases and originals on
+the main volume; the owner unlocks main, which supplies bulk's key. See
+[Data volumes](node.md#data-volumes).
 
 ## Mac job queue
 
-The installed `homelab-profile` runs resumable commands one at a time through launchd, in
-any profile. Commands use an absolute executable and argv, without a shell:
-
-```bash
-homelab-profile queue add corpus --cwd /absolute/project -- /absolute/python /absolute/label.py
-homelab-profile queue list
-homelab-profile queue play
-homelab-profile queue stop
-homelab-profile queue top corpus
-homelab-profile queue remove corpus
-homelab-profile queue requeue corpus
-```
-
-Every command prints JSON; `status` includes the same queue data. `top` moves a waiting job
-forward without interrupting a run. `stop` terminates the whole process group (SIGKILL after
-10 seconds), turns play off and puts that job first, waiting. `play` resumes from whatever the
-command saved. A nonzero exit retries once, then stays failed while the queue moves on;
-`requeue` resets a failed or stopped job's attempts and appends it. Remove waiting, failed or finished
-jobs to delete their local logs and progress files.
-
-The platform bot tells the owner's private chat when a job fails after its retry (name,
-exit code and last five log lines), and when the last waiting job ends: "Mac queue empty;
-the Mac is free". Other completions, stops and battery pauses are silent. Sends run outside
-the queue lock with a short timeout; failures are logged on the Mac and dropped without retry.
-
-Nothing starts on battery. Ten continuous minutes on battery stop the running job while
-keeping play on (`paused_on_battery`); ten continuous minutes back on AC resume it. The menu
-reports when power is holding the queue and the remaining debounce time. A running
-job keeps the Mac awake, but closing the lid still sleeps it. Scheduled jobs retain their
-profile/AC/idle requirements and take the next slot before queued work. Queue jobs count as
-activity for the automatic return to Working, without changing profiles themselves.
-
-Logs (0600) stay under `~/.local/state/homelab-profile/` until removal. A command may overwrite
-the file named by `HOMELAB_QUEUE_PROGRESS` with one short progress line. Status reports that
-line, elapsed seconds, attempt, log path, process-group physical footprint (`physical_footprint_mb`)
-and available memory (`free_memory_mb`) in MiB. Footprint includes charged Metal allocations
-but excludes clean mapped model-file pages; available memory uses macOS `memory_pressure`'s
-free percentage (including immediately reclaimable memory), rounded by macOS to whole percent.
-Install updates from merged main using `mac/install-mac-tools`; the queue worker is the
-`org.homelab.profile.queue` login agent.
-
-The menu’s **Job queue** section sits below services: Play/Stop, battery pause, running job,
-elapsed time, attempt, progress and footprint beside available memory. Waiting jobs stay in
-order with **To front** and **Remove**; failed jobs offer **Requeue** and **Remove**, finished
-jobs **Remove**. Moving to front leaves the running job alone; Stop immediately stops the
-attempt, so unsaved items are redone on resume. Status refreshes every five seconds while the
-menu is open. Add jobs through the command above.
+`homelab-profile queue` runs resumable commands one at a time on the owner's Mac, with a menu bar
+section and Telegram notices for failures. Commands, battery rules, logs and notices are in
+[Job queue](mac.md#job-queue).
 
 ## Image studio: operations and video jobs
 

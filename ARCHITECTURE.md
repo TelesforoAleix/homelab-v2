@@ -44,11 +44,11 @@ containment and the API contracts. Only the LiteLLM container holds the gateway 
 | `launcher` | Root socket helper that starts every agent container from fixed profiles | Host service on the node | [operations.md](docs/operations.md#install-the-fixed-fence-launcher) |
 | `fence` | The sealed CLI image, its allow-list proxy and probe that the launcher builds on | Host files and containers on the node | [operations.md](docs/operations.md#install-the-cli-fence) |
 | `deployer` | Root socket helper that installs application images from `main` with rollback | Host service on the node | [deployer.md](docs/deployer.md) |
-| `host-runner` | `homelab-task-run` and `homelab-task-runner`, the stopped rollback execution path | Host scripts and a disabled unit | [runs.md](docs/runs.md#coding-tasks-in-a-container) |
+| `host-runner` | `homelab-task-run` and `homelab-task-runner`, the host execution path kept as the rollback | Host scripts and a systemd unit | [runs.md](docs/runs.md#coding-tasks-in-a-container) |
 | `telegram-bot` | python-telegram-bot service: commands, planning reads, inbox, order endpoint | Host service on the node, as `homelab-bot` | [telegram-bot.md](docs/telegram-bot.md) |
 | `data-volumes` | The encrypted main and bulk volumes, their unlock script and `homelab-data.target` | Node host | [node.md](docs/node.md#data-volumes) |
 | `notifier` | `homelab-notify.sh` and the units and helpers that send through it: failure alerts, watchdog, image-cost and queue notices | Node host | [node.md](docs/node.md#host-files-and-recovery) |
-| `backups` | Daily database dumps, restore checks and the weekly encrypted originals copy | Node host | [operations.md](docs/operations.md#database-dumps-and-restore-checks) |
+| `backups` | A daily database dump timer, the on-demand restore check and the encrypted originals copy | Node host | [operations.md](docs/operations.md#database-dumps-and-restore-checks) |
 | `context-server` | On-demand Serena MCP container over SSH, with no network | Node host | [node.md](docs/node.md#code-context-server) |
 | `mac-router` | Native llama.cpp router serving `vision` and `embed-large-bulk` | Owner's Mac, launchd | [mac.md](docs/mac.md#model-router) |
 | `mac-profiles` | `homelab-profile`: Working and Inference profiles, model registry, calendar jobs and the job queue | Owner's Mac, launchd | [mac.md](docs/mac.md#usage-profiles) |
@@ -62,7 +62,8 @@ containment and the API contracts. Only the LiteLLM container holds the gateway 
 - **LlamaIndex** owns parsing, chunking, embedding calls, storage and retrieval.
 - **Procrastinate** owns job storage, queues, retries and locks for both the worker and `runs`.
 - **python-telegram-bot** owns Telegram transport, polling and command registration.
-- **llama.cpp** owns local model loading, idle sleep and native presets, on the node and the Mac.
+- **llama.cpp** owns local model loading on the node and the Mac; the Mac router adds idle sleep
+  and native presets.
 
 ## Request and data flow
 
@@ -75,7 +76,8 @@ containment and the API contracts. Only the LiteLLM container holds the gateway 
 - **Run.** `POST /v1/runs` validates the request against the caller's run key, writes the run
   and its task in one transaction and defers a Procrastinate job. `runs` claims the job, asks
   the launcher for each container (clone, prepare, the Pi or CLI worker, check, commit), then
-  pushes through the GitHub App. Clients read progress with `GET /v1/runs`.
+  pushes through the GitHub App. Clients read progress with `GET /v1/runs` and
+  `GET /v1/runs/{run_id}`.
 - **Decision.** `POST /v1/decisions` sends shared text and questions to the provider adapter,
   aggregates the repeats and records content-free accounting under a monthly cap.
 - **Media.** Image calls go through LiteLLM; video jobs are Home Lab middleware in the gateway.
@@ -83,7 +85,8 @@ containment and the API contracts. Only the LiteLLM container holds the gateway 
 - **Mac offer.** The worker's periodic job reads the Mac's published offer every minute and
   stores it in `homelab_providers`; `homelab providers` shows it.
 - **Deploy.** The platform is deployed by hand (`git pull --ff-only`, then restarting
-  `homelab.service`). Factory and other applications are installed by the deployer.
+  `homelab.service`). The deployer installs Factory on a socket request; any other application
+  waits for the owner.
 
 ## Jobs
 
@@ -97,10 +100,11 @@ work uses the separate `runs` queue.
 
 Postgres holds the knowledge tables of each collection, Procrastinate's schema, the task and
 run tables, `homelab_image_costs`, `homelab_video_jobs`, `homelab_decision_calls` and
-`homelab_providers`. The API applies its accounting migrations at startup; the worker applies
-the task schema before it starts. Factory keeps its own database in the same cluster, so the
-daily dump covers both. Derived data is rebuilt from sources; irreplaceable inputs live under
-`/srv/homelab/<project>-data/originals/` and are copied weekly.
+`homelab_providers`. The API applies its image, video and decisions migrations at startup; the
+worker applies Procrastinate's schema and the task schema before it starts. Factory keeps its
+own database in the same cluster, so the daily dump covers both. Derived data is rebuilt from
+sources; irreplaceable inputs live under `/srv/homelab/<project>-data/originals/` and are
+copied weekly.
 
 ## Where it runs
 
@@ -135,7 +139,8 @@ daily dump covers both. Derived data is rebuilt from sources; irreplaceable inpu
    the tailnet under Tailscale policy and from `homelab_default` (`172.18.0.0/16`) under
    a ufw input rule. The Mac host listener on 8091 remains gated by Tailscale policy.
 3. Brain is mounted read-only; everything derived lives on the encrypted volume.
-4. Containers run as non-root with `cap_drop: ALL`.
+4. Containers run as non-root and drop all capabilities (`cap_drop: ALL`, `no-new-privileges`).
+   Postgres and `llama-embed` are the exceptions: Compose sets neither for them.
 5. Content is not logged by default; ids, sizes, timings and costs are.
 6. Spend control is the gateway key's budget and dashboard; typed decisions have their own
    API-enforced monthly cap and content-free accounting.
