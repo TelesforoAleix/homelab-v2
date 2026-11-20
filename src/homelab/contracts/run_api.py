@@ -1,12 +1,15 @@
-"""Version-one wire input. Validation errors never echo caller content."""
+"""Version-one run-api wire models: requests, messages and responses. Validation errors never
+echo caller content."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from typing import Annotated, Literal
+from uuid import UUID
 
-from pydantic import Field, StringConstraints, field_validator, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 from homelab.api.run_keys import RunError
 from homelab.tasks.executors import Executor
@@ -136,3 +139,139 @@ class Message(Strict):
     @classmethod
     def integer_version(cls, value):
         return RunRequest.integer_version(value)
+
+
+class Response(BaseModel):
+    """Responses are described, not enforced: readers may meet new fields."""
+
+
+class ErrorBody(Response):
+    error: str
+    status_reason: str | None = None
+    message: str | None = None
+
+
+class RunCreated(Response):
+    run_id: UUID
+
+
+class ExecutorSelection(Response):
+    configuration: str | None = None
+    harness: Literal["codex", "claude"] | None = None
+    model: str | None = None
+    effort: Literal["low", "medium", "high"] | None = None
+
+
+class Tokens(Response):
+    fresh: int | None
+    cached: int | None
+    output: int | None
+
+
+class AttemptMetrics(Response):
+    requests: int | None
+    tokens: Tokens
+    usd: float | None
+    minutes: float | None
+
+
+class RunMetrics(Response):
+    requests: int
+    tokens: Tokens
+    usd: float | None
+    minutes: float
+
+
+class Attempt(Response):
+    number: int
+    status: str
+    outcome: str | None
+    started_at: datetime | None
+    ended_at: datetime | None
+    configuration_hash: str | None
+    check_exit_code: int | None
+    metrics: AttemptMetrics
+
+
+class CheckResult(Response):
+    exit_code: int
+    tail: str
+
+
+RunStatus = Literal[
+    "queued", "running", "done", "question", "waiting", "escalated", "failed", "cancelled"
+]
+
+
+class RunRecord(Response):
+    """What every run route returns for one run. Goals and assets are never included."""
+
+    contract: Literal[1]
+    run_id: UUID
+    request_id: str
+    application: str
+    attribution: dict[str, str]
+    repository: str
+    branch: str | None
+    mode: Literal["write", "read"]
+    role: Literal["slice", "ticket", "cut", "review", "check"]
+    level: Literal["light", "standard", "strong"]
+    status: RunStatus
+    status_reason: str | None
+    executor: ExecutorSelection | None
+    configuration_hash: str | None
+    attempts: list[Attempt]
+    commits: list[str]
+    metrics: RunMetrics
+    resumable: bool
+    final_message: str | None
+    resume_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    check: CheckResult | None = None
+
+
+class RunPage(Response):
+    runs: list[RunRecord]
+    cursor: str
+
+
+def inline(schema: dict) -> dict:
+    """Resolve local references so the schema stands alone inside any OpenAPI document."""
+    definitions = schema.get("$defs", {})
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "$ref" in node and node["$ref"].startswith("#/$defs/"):
+                return walk(definitions[node["$ref"].rsplit("/", 1)[1]])
+            return {key: walk(value) for key, value in node.items() if key != "$defs"}
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        return node
+
+    return walk(schema)
+
+
+def request_body(model: type[BaseModel]) -> dict:
+    """The `openapi_extra` for a route that parses its own body."""
+    schema = inline(model.model_json_schema())
+    return {"requestBody": {"required": True, "content": {"application/json": {"schema": schema}}}}
+
+
+def responses(success: dict[int, type[BaseModel]], *errors: int) -> dict:
+    """The `responses=` for a run route: its success models and the error body."""
+    declared = {status: {"model": model} for status, model in success.items()}
+    declared.update({status: {"model": ErrorBody} for status in errors})
+    return declared
+
+
+def query_parameters(*names: str) -> dict:
+    """The `openapi_extra` for a route that reads its optional string query by hand."""
+    return {
+        "parameters": [
+            {"name": name, "in": "query", "required": False, "schema": {"type": "string"}}
+            for name in names
+        ]
+    }

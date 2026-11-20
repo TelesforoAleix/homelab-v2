@@ -1629,8 +1629,8 @@
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      105,
-      112
+      114,
+      125
      ]
     },
     {
@@ -1845,15 +1845,15 @@
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      200,
-      203
+      213,
+      216
      ]
     },
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      243,
-      246
+      256,
+      263
      ]
     }
    ]
@@ -2654,17 +2654,17 @@
    "text": "Run requests and messages carry contract 1.",
    "sources": [
     {
-     "path": "src/homelab/api/run_contract.py",
+     "path": "src/homelab/contracts/run_api.py",
      "lines": [
-      55,
-      55
+      58,
+      58
      ]
     },
     {
-     "path": "src/homelab/api/run_contract.py",
+     "path": "src/homelab/contracts/run_api.py",
      "lines": [
-      131,
-      131
+      134,
+      134
      ]
     }
    ]
@@ -2676,20 +2676,20 @@
     18,
     20
    ],
-   "text": "run_contract.py defines the request shape, runs.py the routes, run_keys.py the scopes, and executors.yaml the catalogue.",
+   "text": "run_api.py defines the wire models, runs.py the routes, run_keys.py the scopes, and executors.yaml the catalogue.",
    "sources": [
     {
-     "path": "src/homelab/api/run_contract.py",
+     "path": "src/homelab/contracts/run_api.py",
      "lines": [
-      54,
-      54
+      57,
+      57
      ]
     },
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      105,
-      105
+      114,
+      118
      ]
     },
     {
@@ -5091,22 +5091,22 @@
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      105,
-      112
+      114,
+      125
      ]
     },
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      200,
-      203
+      213,
+      216
      ]
     },
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      243,
-      246
+      256,
+      263
      ]
     },
     {
@@ -5784,8 +5784,8 @@
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      20,
-      20
+      29,
+      29
      ]
     }
    ]

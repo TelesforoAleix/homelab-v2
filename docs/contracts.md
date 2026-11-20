@@ -15,9 +15,9 @@ moved, and put incompatible changes under a new version that runs beside the old
 
 - **Version:** 1 (`"contract": 1` in every request and message).
 - **Provider:** `api` in this repository. **Users:** Factory's runner and eval runner.
-- **Source:** `src/homelab/api/run_contract.py` (request and message shapes),
-  `src/homelab/api/runs.py` (routes), `src/homelab/api/run_keys.py` (keys and scopes),
-  `config/executors.yaml` (executor catalogue). Wire format: [run-api.md](run-api.md).
+- **Source:** `src/homelab/contracts/run_api.py` (wire models), `src/homelab/api/runs.py` (routes),
+  `src/homelab/api/run_keys.py` (keys and scopes), `config/executors.yaml` (executor catalogue).
+  Schema: `contracts/run-api/openapi.json`. Wire format and checks: [run-api.md](run-api.md).
 - **Change safely:** add optional fields with defaults that keep today's behaviour; a retry of
   an existing request must still compare equal, so never change how omitted fields default.
   Scope names, status reasons and error codes are part of the contract. Key-file changes keep

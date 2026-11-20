@@ -353,7 +353,7 @@ def test_valid_assets_reach_only_the_claimed_ticket_and_are_not_logged(api, capl
 
 
 def test_real_retry_accepts_a_pre_overlay_request_fingerprint(api):
-    from homelab.api.run_contract import RunRequest
+    from homelab.contracts.run_api import RunRequest
 
     run_id = post().json()["run_id"]
     historical = RunRequest.model_validate(body()).model_dump()
@@ -364,3 +364,96 @@ def test_real_retry_accepts_a_pre_overlay_request_fingerprint(api):
     api.execute("UPDATE homelab_runs SET request_hash = %s WHERE id = %s", (digest, run_id))
     assert post().status_code == 200
     assert api.execute("SELECT count(*) FROM homelab_tasks").fetchone() == (1,)
+
+
+def assert_matches_models(document, model):
+    """The document is valid for the model, and the model names every key it carries."""
+    parsed = model.model_validate(document)
+    assert set(document) == {name for name, _ in parsed if name != "check" or "check" in document}
+    return parsed
+
+
+def test_responses_validate_against_the_contract_models(api):
+    from homelab.contracts.run_api import RunCreated, RunPage, RunRecord
+
+    created = post()
+    assert RunCreated.model_validate(created.json())
+    run_id = created.json()["run_id"]
+    task = claim.claim(api)
+    finish.record(
+        api,
+        finish.EndTask(
+            event="end_task",
+            task_id=task["id"],
+            job_id=task["job_id"],
+            status="done",
+            commits=["b" * 40],
+        ),
+    )
+    record = CLIENT.get(f"/v1/runs/{run_id}", headers=HEADERS).json()
+    assert record["attempts"]
+    assert_matches_models(record, RunRecord)
+    # A check record carries its result; no other record has the key.
+    api.execute(
+        """UPDATE homelab_runs SET request = request || %s::jsonb WHERE id = %s""",
+        (json.dumps({"role": "check", "check": {"exit_code": 1, "tail": "x"}}), run_id),
+    )
+    checked = CLIENT.get(f"/v1/runs/{run_id}", headers=HEADERS).json()
+    assert checked["check"] == {"exit_code": 1, "tail": "x"} and checked["executor"] is None
+    assert_matches_models(checked, RunRecord)
+    page = CLIENT.get("/v1/runs", headers=HEADERS).json()
+    assert page["runs"] and set(page) == set(RunPage.model_fields)
+    RunPage.model_validate(page)
+    queued = post(body(request_id="second", branch="work/other")).json()["run_id"]
+    cancelled = CLIENT.post(f"/v1/runs/{queued}/cancel", headers=HEADERS).json()
+    assert cancelled["status"] == "cancelled"
+    assert_matches_models(cancelled, RunRecord)
+
+
+def test_record_builder_output_validates_without_a_database():
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from fastapi.encoders import jsonable_encoder
+
+    from homelab.contracts.run_api import RunRecord
+
+    now = datetime.now(UTC)
+    attempt = (1, "done", None, now, now, "h" * 64, "run", 0, 3, 10, 5, 7, 0.5, 90.0)
+
+    class Connection:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def execute(self, *_):
+            return self
+
+        def fetchall(self):
+            return self.rows
+
+    saved = {
+        "id": uuid4(),
+        "task_id": 1,
+        "request_id": "ticket-1",
+        "application": "factory",
+        "request": {**body(), "role": "ticket"},
+        "status": "done",
+        "status_reason": None,
+        "executor": {"harness": "claude", "model": "sonnet"},
+        "configuration_hash": "h" * 64,
+        "commits": ["b" * 40],
+        "resumable": False,
+        "final_message": None,
+        "resume_at": None,
+        "created_at": now,
+        "updated_at": now,
+        "started_at": now,
+        "finished_at": now,
+    }
+    for rows in ([attempt], []):
+        document = jsonable_encoder(runs.record(Connection(rows), saved))
+        assert_matches_models(document, RunRecord)
+    saved["request"] = {**saved["request"], "role": "check", "check": {"exit_code": 0, "tail": ""}}
+    document = jsonable_encoder(runs.record(Connection([attempt]), saved))
+    assert document["check"] == {"exit_code": 0, "tail": ""} and document["executor"] is None
+    assert_matches_models(document, RunRecord)
