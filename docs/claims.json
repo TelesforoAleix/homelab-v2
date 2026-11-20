@@ -6119,7 +6119,7 @@
    "to": "api",
    "how": "call",
    "contract": null,
-   "text": "The image cost notice runs the api's image_costs alerts command through docker compose exec and sends each message through homelab-notify.sh.",
+   "text": "homelab-image-cost-notice runs `python -m homelab.api.image_costs alerts` in the api container, sends each printed message with homelab-notify.sh and answers \"sent\".",
    "provider_sources": [
     {
      "path": "src/homelab/api/image_costs.py",
@@ -6141,14 +6141,7 @@
      "path": "node/usr/local/sbin/homelab-image-cost-notice",
      "lines": [
       10,
-      23
-     ]
-    },
-    {
-     "path": "node/usr/local/sbin/homelab-image-cost-notice",
-     "lines": [
-      33,
-      40
+      46
      ]
     }
    ]
@@ -6244,7 +6237,7 @@
    "to": "backups",
    "how": "call",
    "contract": null,
-   "text": "The listener runs the Mac copy command, which streams homelab-copy over SSH.",
+   "text": "mac/homelab-listener runs mac/homelab-copy, which runs `ssh homelab-agent sudo homelab-copy`.",
    "provider_sources": [
     {
      "path": "node/usr/local/sbin/homelab-copy",
@@ -6357,15 +6350,8 @@
    "to": "mac-profiles",
    "how": "contract",
    "contract": "profile-cli",
-   "text": "The menu bar app runs the homelab-profile command recorded in its bundle and decodes its JSON.",
+   "text": "The menu bar app runs the homelab-profile script named by HomeLabProfileCommand with the argument status and decodes its JSON output as ProfileStatus.",
    "provider_sources": [
-    {
-     "path": "mac/homelab-profile",
-     "lines": [
-      1422,
-      1423
-     ]
-    },
     {
      "path": "mac/homelab-profile",
      "lines": [
@@ -6376,9 +6362,23 @@
    ],
    "user_sources": [
     {
+     "path": "mac/MenuBar/Sources/HomeLabMenuBar/ProfileStore.swift",
+     "lines": [
+      33,
+      35
+     ]
+    },
+    {
      "path": "mac/MenuBar/Sources/HomeLabMenuBar/ProfileCommand.swift",
      "lines": [
-      28,
+      17,
+      21
+     ]
+    },
+    {
+     "path": "mac/MenuBar/Sources/HomeLabMenuBar/ProfileCommand.swift",
+     "lines": [
+      29,
       40
      ]
     },
@@ -6437,17 +6437,10 @@
    "to": "data-volumes",
    "how": "file",
    "contract": null,
-   "text": "Postgres data lives on the main encrypted volume.",
+   "text": "Postgres mounts /srv/homelab/postgres as its data directory; /srv/homelab is the homelab-data device.",
    "provider_sources": [
     {
      "path": "node/etc/fstab",
-     "lines": [
-      2,
-      2
-     ]
-    },
-    {
-     "path": "node/etc/crypttab",
      "lines": [
       2,
       2
@@ -6458,7 +6451,7 @@
     {
      "path": "compose.yaml",
      "lines": [
-      217,
+      216,
       217
      ]
     }
@@ -6470,13 +6463,20 @@
    "to": "data-volumes",
    "how": "file",
    "contract": null,
-   "text": "The context server refuses to run while the data volume is locked.",
+   "text": "homelab-context serves nothing while /srv/homelab (VOLUME) is not mounted.",
    "provider_sources": [
     {
      "path": "node/etc/fstab",
      "lines": [
       2,
       2
+     ]
+    },
+    {
+     "path": "node/usr/local/sbin/homelab-context",
+     "lines": [
+      11,
+      11
      ]
     },
     {
@@ -6503,7 +6503,7 @@
    "to": "postgres",
    "how": "call",
    "contract": null,
-   "text": "homelab-dump dumps every non-template database in the Postgres container.",
+   "text": "homelab-dump runs psql in the homelab-postgres-1 container to list every non-template database.",
    "provider_sources": [
     {
      "path": "compose.yaml",
@@ -6529,7 +6529,7 @@
    "to": "data-volumes",
    "how": "file",
    "contract": null,
-   "text": "The bot keeps its planning data under /srv/homelab/frontline on the main volume, and the originals copy reads the bot inbox from frontline/inbox.",
+   "text": "The bot keeps its data in /srv/homelab/frontline; /srv/homelab is the homelab-data device.",
    "provider_sources": [
     {
      "path": "node/etc/fstab",
@@ -6537,7 +6537,35 @@
       2,
       2
      ]
-    },
+    }
+   ],
+   "user_sources": [
+    {
+     "path": "node/opt/homelab-telegram-bot/planning.py",
+     "lines": [
+      22,
+      22
+     ]
+    }
+   ]
+  },
+  {
+   "id": "copy-bot-inbox",
+   "from": "backups",
+   "to": "data-volumes",
+   "how": "file",
+   "contract": null,
+   "text": "The backups copy, homelab-copy, adds /srv/homelab/frontline/inbox on the data volume to the folders it copies when it exists.",
+   "provider_sources": [
+    {
+     "path": "node/etc/fstab",
+     "lines": [
+      2,
+      2
+     ]
+    }
+   ],
+   "user_sources": [
     {
      "path": "node/usr/local/sbin/homelab-copy",
      "lines": [
@@ -6550,22 +6578,6 @@
      "lines": [
       22,
       24
-     ]
-    }
-   ],
-   "user_sources": [
-    {
-     "path": "node/opt/homelab-telegram-bot/planning.py",
-     "lines": [
-      22,
-      22
-     ]
-    },
-    {
-     "path": "node/opt/homelab-telegram-bot/planning.py",
-     "lines": [
-      159,
-      159
      ]
     }
    ]
