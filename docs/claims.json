@@ -1629,8 +1629,8 @@
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      114,
-      125
+      138,
+      151
      ]
     },
     {
@@ -1845,15 +1845,15 @@
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      213,
-      216
+      239,
+      242
      ]
     },
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      256,
-      263
+      282,
+      289
      ]
     }
    ]
@@ -2078,7 +2078,7 @@
     101,
     103
    ],
-   "text": "Postgres holds homelab_image_costs, homelab_video_jobs, homelab_decision_calls and homelab_providers alongside the task tables.",
+   "text": "Postgres holds the run-api usage counters, homelab_image_costs, homelab_video_jobs, homelab_decision_calls and homelab_providers alongside the task tables.",
    "sources": [
     {
      "path": "src/homelab/api/image_costs.sql",
@@ -2106,6 +2106,13 @@
      "lines": [
       87,
       87
+     ]
+    },
+    {
+     "path": "src/homelab/tasks/schema.sql",
+     "lines": [
+      229,
+      229
      ]
     }
    ]
@@ -2656,15 +2663,15 @@
     {
      "path": "src/homelab/contracts/run_api.py",
      "lines": [
-      58,
-      58
+      80,
+      80
      ]
     },
     {
      "path": "src/homelab/contracts/run_api.py",
      "lines": [
-      134,
-      134
+      156,
+      156
      ]
     }
    ]
@@ -2681,15 +2688,15 @@
     {
      "path": "src/homelab/contracts/run_api.py",
      "lines": [
-      57,
-      57
+      79,
+      79
      ]
     },
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      114,
-      118
+      138,
+      142
      ]
     },
     {
@@ -2727,11 +2734,43 @@
    ]
   },
   {
+   "id": "con-run-api-readers",
+   "doc": "docs/contracts.md",
+   "doc_lines": [
+    25,
+    28
+   ],
+   "text": "Run-api request models ignore unknown fields with strict types, contract_usage.py records their paths, and GET /v1/contracts/usage requires runs:read.",
+   "sources": [
+    {
+     "path": "src/homelab/contracts/run_api.py",
+     "lines": [
+      30,
+      32
+     ]
+    },
+    {
+     "path": "src/homelab/api/contract_usage.py",
+     "lines": [
+      141,
+      143
+     ]
+    },
+    {
+     "path": "src/homelab/api/runs.py",
+     "lines": [
+      347,
+      350
+     ]
+    }
+   ]
+  },
+  {
    "id": "con-decisions-source",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    30,
-    30
+    34,
+    34
    ],
    "text": "The decisions API is defined in decisions.py with the table in decisions.sql.",
    "sources": [
@@ -2755,8 +2794,8 @@
    "id": "con-decisions-scope",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    28,
-    28
+    32,
+    32
    ],
    "text": "POST /v1/decisions requires a bearer run key whose scopes include decisions:write.",
    "sources": [
@@ -2794,8 +2833,8 @@
    "id": "con-gateway-source",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    41,
-    42
+    45,
+    46
    ],
    "text": "Purposes live in config/litellm.yaml, policy in litellm_hooks.py, and the homelab-models network in compose.yaml.",
    "sources": [
@@ -2826,8 +2865,8 @@
    "id": "con-gateway-users",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    39,
-    39
+    43,
+    43
    ],
    "text": "The Telegram bot posts to HOMELAB_MODELS_BASE_URL plus /chat/completions with the model frontline.",
    "sources": [
@@ -2844,8 +2883,8 @@
    "id": "con-media-source",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    52,
-    53
+    56,
+    57
    ],
    "text": "Media models are in media_model_list in config/litellm.yaml, video job metadata in video_jobs.py and image cost accounting in image_costs.py.",
    "sources": [
@@ -2883,8 +2922,8 @@
    "id": "con-media-provider",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    50,
-    50
+    54,
+    54
    ],
    "text": "The gateway handles video routes and the api serves GET /v1/images/cost.",
    "sources": [
@@ -2908,8 +2947,8 @@
    "id": "con-knowledge-source",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    62,
-    62
+    66,
+    66
    ],
    "text": "app.py defines KnowledgeQuery and the query and answer routes.",
    "sources": [
@@ -2940,8 +2979,8 @@
    "id": "con-knowledge-user",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    61,
-    61
+    65,
+    65
    ],
    "text": "The bot's /ask posts the question as JSON to /v1/knowledge/answer, which the api serves.",
    "sources": [
@@ -2979,8 +3018,8 @@
    "id": "con-knowledge-fields",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    64,
-    64
+    68,
+    68
    ],
    "text": "The answer response has answer, refused and sources.",
    "sources": [
@@ -2997,8 +3036,8 @@
    "id": "con-client-env",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    71,
-    72
+    75,
+    76
    ],
    "text": "Settings define models_base_url with default http://litellm:4000/v1.",
    "sources": [
@@ -3015,8 +3054,8 @@
    "id": "con-launcher-version",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    78,
-    78
+    82,
+    82
    ],
    "text": "The launcher socket unit listens on /run/homelab-launcher.sock, and the launcher reads one newline-terminated JSON line of at most 64 KiB per connection.",
    "sources": [
@@ -3047,8 +3086,8 @@
    "id": "con-launcher-users",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    79,
-    80
+    83,
+    84
    ],
    "text": "Callers 21010, 21011 and 21020 are permitted launcher profiles.",
    "sources": [
@@ -3065,8 +3104,8 @@
    "id": "con-launcher-optional",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    84,
-    85
+    88,
+    89
    ],
    "text": "read_only, stdin and stream are optional launcher fields defaulting to false.",
    "sources": [
@@ -3090,8 +3129,8 @@
    "id": "con-deployer-users",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    91,
-    91
+    95,
+    95
    ],
    "text": "uid 21010 may only install through the deployer; uid 0 may install and roll back.",
    "sources": [
@@ -3108,8 +3147,8 @@
    "id": "con-deployer-fields",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    95,
-    96
+    99,
+    100
    ],
    "text": "The deployer requires exactly the manifest's seven fields, and automatic lists factory.",
    "sources": [
@@ -3140,8 +3179,8 @@
    "id": "con-change-classes",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    100,
-    100
+    104,
+    104
    ],
    "text": "change-classes lines are a class followed by a pattern.",
    "sources": [
@@ -3158,8 +3197,8 @@
    "id": "con-change-classes-users",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    101,
-    102
+    105,
+    106
    ],
    "text": "The change-classes file is read by the runner before a merge and the deployer before an install.",
    "sources": [
@@ -3176,8 +3215,8 @@
    "id": "con-change-classes-self",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    105,
-    105
+    109,
+    109
    ],
    "text": "Files under .github are class 4.",
    "sources": [
@@ -3194,8 +3233,8 @@
    "id": "con-bot-orders-routes",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    109,
-    109
+    113,
+    113
    ],
    "text": "The order listener offers exactly GET /orders and POST /orders/<id>/ack on TCP 8110.",
    "sources": [
@@ -3219,8 +3258,8 @@
    "id": "con-inbox-commands",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    119,
-    119
+    123,
+    123
    ],
    "text": "homelab-inbox accepts list, file and done.",
    "sources": [
@@ -3237,8 +3276,8 @@
    "id": "con-queue-notice",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    129,
-    129
+    133,
+    133
    ],
    "text": "homelab-queue-notice takes text on stdin, optionally with --task.",
    "sources": [
@@ -3255,8 +3294,8 @@
    "id": "con-queue-notice-users",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    130,
-    131
+    134,
+    135
    ],
    "text": "The Mac queue and the host runner call homelab-queue-notice.",
    "sources": [
@@ -3280,8 +3319,8 @@
    "id": "con-mac-router-files",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    141,
-    143
+    145,
+    147
    ],
    "text": "offer.py writes public/homelab-offer.json, the router creates public/homelab-profile.json when it is absent, and providers.py reads the offer from the router's /homelab-offer.json.",
    "sources": [
@@ -3312,8 +3351,8 @@
    "id": "con-mac-router-strict",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    145,
-    145
+    149,
+    149
    ],
    "text": "The offer reader forbids unknown fields.",
    "sources": [
@@ -3330,8 +3369,8 @@
    "id": "con-mac-listener",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    150,
-    150
+    154,
+    154
    ],
    "text": "The listener runs on TCP 8091 and the bot posts to /backup with an empty body.",
    "sources": [
@@ -3355,8 +3394,8 @@
    "id": "con-profile-version",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    159,
-    159
+    163,
+    163
    ],
    "text": "homelab-profile accepts profiles.json versions 1 and 2.",
    "sources": [
@@ -3373,8 +3412,8 @@
    "id": "con-profile-fields",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    165,
-    166
+    169,
+    170
    ],
    "text": "The menu app decodes a services map whose entries carry optional allowed, state and running fields.",
    "sources": [
@@ -3398,8 +3437,8 @@
    "id": "con-context",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    170,
-    170
+    174,
+    174
    ],
    "text": "The context server runs docker with stdin and no network.",
    "sources": [
@@ -3416,8 +3455,8 @@
    "id": "con-context-tools",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    174,
-    175
+    178,
+    179
    ],
    "text": "Serena's configuration lists six fixed tools: find_symbol, get_symbols_overview, find_referencing_symbols, find_declaration, find_implementations and search_for_pattern.",
    "sources": [
@@ -3434,8 +3473,8 @@
    "id": "con-postgres",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    179,
-    179
+    183,
+    183
    ],
    "text": "Postgres 17 has the fixed address 172.18.0.2 on the default network.",
    "sources": [
@@ -3452,8 +3491,8 @@
    "id": "con-postgres-dump",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    185,
-    185
+    189,
+    189
    ],
    "text": "homelab-dump dumps every non-template database.",
    "sources": [
@@ -4967,8 +5006,8 @@
    "id": "con-client-key",
    "doc": "docs/contracts.md",
    "doc_lines": [
-    71,
-    72
+    75,
+    76
    ],
    "text": "Settings define models_api_key as a SecretStr with default homelab.",
    "sources": [
@@ -5091,22 +5130,22 @@
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      114,
-      125
+      138,
+      151
      ]
     },
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      213,
-      216
+      239,
+      242
      ]
     },
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      256,
-      263
+      282,
+      289
      ]
     },
     {
@@ -5784,8 +5823,8 @@
     {
      "path": "src/homelab/api/runs.py",
      "lines": [
-      29,
-      29
+      31,
+      31
      ]
     }
    ]
@@ -6714,7 +6753,7 @@
    "doc": "docs/contracts.md",
    "doc_lines": [
     14,
-    24
+    28
    ]
   },
   {
@@ -6726,8 +6765,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    26,
-    34
+    30,
+    38
    ]
   },
   {
@@ -6744,8 +6783,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    36,
-    45
+    40,
+    49
    ]
   },
   {
@@ -6757,8 +6796,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    47,
-    56
+    51,
+    60
    ]
   },
   {
@@ -6770,8 +6809,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    58,
-    65
+    62,
+    69
    ]
   },
   {
@@ -6783,8 +6822,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    67,
-    74
+    71,
+    78
    ]
   },
   {
@@ -6797,8 +6836,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    76,
-    86
+    80,
+    90
    ]
   },
   {
@@ -6810,8 +6849,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    88,
-    96
+    92,
+    100
    ]
   },
   {
@@ -6823,8 +6862,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    98,
-    105
+    102,
+    109
    ]
   },
   {
@@ -6836,8 +6875,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    107,
-    115
+    111,
+    119
    ]
   },
   {
@@ -6849,8 +6888,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    117,
-    125
+    121,
+    129
    ]
   },
   {
@@ -6863,8 +6902,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    127,
-    134
+    131,
+    138
    ]
   },
   {
@@ -6877,8 +6916,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    136,
-    146
+    140,
+    150
    ]
   },
   {
@@ -6890,8 +6929,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    148,
-    155
+    152,
+    159
    ]
   },
   {
@@ -6903,8 +6942,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    157,
-    166
+    161,
+    170
    ]
   },
   {
@@ -6916,8 +6955,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    168,
-    175
+    172,
+    179
    ]
   },
   {
@@ -6930,8 +6969,8 @@
    ],
    "doc": "docs/contracts.md",
    "doc_lines": [
-    177,
-    185
+    181,
+    189
    ]
   }
  ]

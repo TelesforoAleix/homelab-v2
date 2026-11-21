@@ -224,3 +224,24 @@ CREATE OR REPLACE TRIGGER homelab_run_attempt_changed
 CREATE OR REPLACE TRIGGER homelab_run_trace_changed
     AFTER INSERT OR UPDATE ON homelab_task_traces
     FOR EACH ROW EXECUTE FUNCTION homelab_run_attempt_changed();
+
+-- Run-api usage: accepted request shapes per day, and unknown field paths, never values.
+CREATE TABLE IF NOT EXISTS homelab_contract_usage (
+    contract text NOT NULL,
+    application text NOT NULL,
+    operation text NOT NULL,
+    shape text NOT NULL,
+    day date NOT NULL,
+    count bigint NOT NULL,
+    PRIMARY KEY (contract, application, operation, shape, day)
+);
+CREATE TABLE IF NOT EXISTS homelab_contract_unknown_fields (
+    contract text NOT NULL,
+    application text NOT NULL,
+    operation text NOT NULL,
+    field text NOT NULL,
+    first_seen timestamptz NOT NULL,
+    last_seen timestamptz NOT NULL,
+    count bigint NOT NULL,
+    PRIMARY KEY (contract, application, operation, field)
+);

@@ -14,6 +14,7 @@ ROUTES = {
     ("/v1/runs/{run_id}", "get"),
     ("/v1/runs/{run_id}/messages", "post"),
     ("/v1/runs/{run_id}/cancel", "post"),
+    ("/v1/contracts/usage", "get"),
 }
 
 

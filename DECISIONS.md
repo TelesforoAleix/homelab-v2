@@ -1154,3 +1154,21 @@ had it. `GitHubApp.token(repository, *, workflows=False)` adds `"workflows": "wr
 asked; `push_checked` asks only when the base-to-tip diff adds, changes or deletes a path under
 `.github/workflows/`, using the same path listing as `checked_bundle`. Other callers keep the
 default. `.github/` stays owner-reviewed through CODEOWNERS, so the merge still waits for the owner.
+
+**2026-11-20 — Run-api readers are tolerant and report their usage.** A sender newer than the
+provider must survive a provider rollback, and a later expand step needs to know which request
+shapes and fields applications still send. The run-api request models now share a base with
+`extra="ignore"` and `strict=True`; `RunEval.executor` uses a tolerant subclass of `Executor`,
+while `Executor`, its catalogue loader and `homelab.tasks.submit.Strict` stay strict. By the
+owner's answer (option B), the base keeps `"additionalProperties": false` through
+`json_schema_extra`, so the published request schemas are unchanged and still tell senders to
+send no unknown field. Unknown fields are ignored, never stored or echoed, and their schema
+paths are recorded with sanitised names, at most 32 per request; every accepted POST adds to a
+daily counter keyed by contract, application, operation and shape (`base` today, from one
+function). Recording is best effort. `GET /v1/contracts/usage` (`runs:read`) returns the last
+30 days for every application and joins the committed document. A `422 invalid_request` from
+`parse` adds `contract`, the schema path of the first error, and the document's SHA-256,
+never a value; an error raised by a request-level validator has the path `$`. CI's contract
+step moves to Factory commit `b8326249`, whose tool accepts a new operation and a new
+response enum value as compatible. There is no reject mode yet; it arrives with the first new
+boundary check.

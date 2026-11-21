@@ -128,7 +128,6 @@ def test_pi_is_refused_on_non_ticket_role(api, monkeypatch, role):
         {},
         {"harness": "codex", "model": "x"},
         {"harness": "claude"},
-        {"harness": "claude", "model": "x", "extra": "secret"},
         {"configuration": "pi/base", "harness": "claude", "model": "x"},
         {"configuration": "pi/does-not-exist"},
         None,
@@ -136,7 +135,26 @@ def test_pi_is_refused_on_non_ticket_role(api, monkeypatch, role):
 )
 def test_eval_entry_validation_matches_catalogue(api, entry):
     response = post(marked(eval={"set": "T", "case": "one", "executor": entry}))
-    assert response.status_code == 422 and response.json() == {"error": "invalid_request"}
+    result = response.json()
+    assert response.status_code == 422 and result["error"] == "invalid_request"
+    assert result["contract"] == "run-api"
+    if entry is None:
+        # The request-level validator refuses an absent executor, so no deeper path exists.
+        assert result["field"] == "$"
+    else:
+        assert result["field"].startswith("$.eval.executor")
+    submitted = [value for value in (entry or {}).values() if isinstance(value, str)]
+    assert not any(json.dumps(value) in response.text for value in submitted)
+
+
+def test_eval_executor_extra_field_is_ignored_and_recorded(api):
+    entry = {"harness": "claude", "model": "explicit-eval-model", "extra": "secret"}
+    response = post(marked(eval={"set": "T", "case": "one", "executor": entry}))
+    assert response.status_code == 201 and "secret" not in response.text
+    stored = api.execute("SELECT to_jsonb(r)::text FROM homelab_runs r").fetchone()[0]
+    assert "secret" not in stored
+    fields = api.execute("SELECT field FROM homelab_contract_unknown_fields").fetchall()
+    assert fields == [("$.eval.executor.extra",)]
 
 
 @pytest.mark.parametrize(

@@ -107,7 +107,6 @@ def test_create_retry_conflict_and_content_isolation(api, caplog):
 @pytest.mark.parametrize(
     "changes, status, error",
     [
-        ({"unknown": MARKER}, 422, "invalid_request"),
         ({"branch": "trunk"}, 409, "branch_is_default"),
         ({"repository": "unknown/repo"}, 403, "repository_not_allowed"),
         (
@@ -137,6 +136,16 @@ def test_rejections_leave_no_record(api, changes, status, error, caplog):
     assert api.execute("SELECT count(*) FROM homelab_runs").fetchone() == (0,)
     assert api.execute("SELECT count(*) FROM homelab_tasks").fetchone() == (0,)
     assert MARKER not in response.text + caplog.text
+
+
+def test_unknown_field_is_ignored_and_recorded(api, caplog):
+    response = post(body(unknown=MARKER))
+    assert response.status_code == 201
+    stored = api.execute("SELECT request::text FROM homelab_runs").fetchone()[0]
+    assert "unknown" not in stored and MARKER not in stored + response.text + caplog.text
+    assert api.execute("SELECT field FROM homelab_contract_unknown_fields").fetchall() == [
+        ("$.unknown",)
+    ]
 
 
 def test_scopes_and_application_isolation(api):
