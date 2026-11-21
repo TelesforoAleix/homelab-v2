@@ -14,6 +14,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -131,8 +132,24 @@ class RunRequest(Tolerant):
                 raise ValueError(
                     "check requires an eval mark, command and overlay, without executor"
                 )
-        elif "overlay" in self.work.model_fields_set or (self.eval and self.eval.executor is None):
+        elif "overlay" in self.work.model_fields_set:
             raise ValueError("overlay is only available for check; eval work needs an executor")
+        elif self.eval and self.eval.executor is None:
+            raise ValidationError.from_exception_data(
+                "RunRequest",
+                [
+                    {
+                        "type": "value_error",
+                        "loc": ("eval", "executor"),
+                        "input": None,
+                        "ctx": {
+                            "error": ValueError(
+                                "overlay is only available for check; eval work needs an executor"
+                            )
+                        },
+                    }
+                ],
+            )
         if self.mode == "write" and self.role != "check" and self.branch is None:
             raise ValueError("write mode requires branch")
         if self.branch and (
