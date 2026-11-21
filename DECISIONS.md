@@ -1172,3 +1172,8 @@ never a value; an error raised by a request-level validator has the path `$`. CI
 step moves to Factory commit `b8326249`, whose tool accepts a new operation and a new
 response enum value as compatible. There is no reject mode yet; it arrives with the first new
 boundary check.
+
+**2026-11-21 — Missing eval executors name their field.** A non-check run with an eval mark
+needs an executor; its validation error now locates `eval.executor`, so the refusal names
+`$.eval.executor` without changing the schema or exposing caller values. The overlay refusal
+keeps precedence when both constraints fail.

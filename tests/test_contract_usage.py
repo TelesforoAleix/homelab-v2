@@ -109,6 +109,9 @@ def test_schema_hash_matches_committed_document():
         (body(work={"goal": MARKER, "history": MARKER}), "$.work.history"),
         (body(attribution={"case": 7}), "$.attribution.*"),
         (body(base_commit=MARKER), "$.base_commit"),
+        (body(eval={"set": "T", "case": "one", "executor": None}), "$.eval.executor"),
+        (body(eval={"set": "T", "case": "one"}), "$.eval.executor"),
+        (body(work={"goal": MARKER, "overlay": None}, eval={"set": "T", "case": "one"}), "$"),
     ],
 )
 def test_refusal_names_contract_field_and_schema(keys, document, field, caplog):

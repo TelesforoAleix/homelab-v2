@@ -139,8 +139,7 @@ def test_eval_entry_validation_matches_catalogue(api, entry):
     assert response.status_code == 422 and result["error"] == "invalid_request"
     assert result["contract"] == "run-api"
     if entry is None:
-        # The request-level validator refuses an absent executor, so no deeper path exists.
-        assert result["field"] == "$"
+        assert result["field"] == "$.eval.executor"
     else:
         assert result["field"].startswith("$.eval.executor")
     submitted = [value for value in (entry or {}).values() if isinstance(value, str)]
